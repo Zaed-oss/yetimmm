@@ -1,0 +1,17 @@
+name = "yetimmm-bridge"
+main = "worker.js"
+compatibility_date = "2025-06-01"
+
+[vars]
+# Origin ONLY (no path, no trailing slash): https://<github-username>.github.io
+ALLOWED_ORIGIN = "https://zaed-oss.github.io"
+# Telegram numeric user IDs allowed to control the bot, comma separated (same as the EA's Authorized IDs)
+ALLOWED_USERS = "1939458064"
+
+[[durable_objects.bindings]]
+name = "HUB"
+class_name = "Hub"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["Hub"]
