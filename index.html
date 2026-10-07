@@ -100,10 +100,29 @@ header{display:flex;justify-content:space-between;align-items:center;gap:8px;pad
 .quote.stale .pr,.quote.stale .spk{opacity:.4}
 .btn:disabled{opacity:.4;pointer-events:none}
 .ib.dgb{color:var(--dn);border-color:color-mix(in srgb,var(--dn) 30%,transparent)}.ib:disabled{opacity:.45}.hc{display:block;font-size:11px;color:var(--mute);margin-top:2px}.hs.wt{animation:pulse 2.4s ease-in-out infinite}.cmdst{font-size:11px;font-weight:700;white-space:nowrap;margin-inline-start:8px}
+.quote.frozen .pr{color:var(--mute)!important}.quote.frozen .spk,.quote.frozen .chg{opacity:.35;filter:grayscale(1)}.quote.frozen{border-top-color:var(--dn)}#sov{z-index:70}.sheet .sico{border-radius:50%}
+
+/* ── v2 polish ── */
+.card{border-radius:20px;transition:transform .2s,box-shadow .2s,border-color .2s}.card:hover{border-color:color-mix(in srgb,var(--gold) 28%,var(--line))}
+.card h3{letter-spacing:.2px;padding-bottom:10px;border-bottom:1px dashed var(--line)}
+.btn{min-height:48px;position:relative;overflow:hidden}.btn:active{transform:scale(.97)}.btn.go{box-shadow:0 6px 18px color-mix(in srgb,var(--up) 28%,transparent)}.btn.dg{border:1px solid color-mix(in srgb,var(--dn) 30%,transparent)}
+.ib{width:40px;height:40px}.ib:active{background:var(--surf2)}
+.inp{min-height:48px;border-radius:14px}.inp:focus{box-shadow:0 0 0 3px color-mix(in srgb,var(--gold) 22%,transparent)}
+.hi{border:1px solid var(--line);border-inline-start:3px solid var(--gold);transition:transform .15s,background-color .2s}.hi:hover{transform:translateY(-1px)}
+.hs{border-radius:12px}.big{letter-spacing:-.5px}
+.sheet{position:relative;box-shadow:0 -12px 40px rgba(0,0,0,.45);animation:su .28s cubic-bezier(.2,.8,.2,1)}.sheet::before{content:"";display:block;width:42px;height:4px;border-radius:9px;background:var(--line);margin:-6px auto 14px}
+@keyframes su{from{transform:translateY(40px);opacity:.4}to{transform:none;opacity:1}}
+.pr.tu{animation:fu .5s}.pr.td{animation:fd .5s}
+@keyframes fu{0%{text-shadow:0 0 18px var(--up)}100%{text-shadow:none}}@keyframes fd{0%{text-shadow:0 0 18px var(--dn)}100%{text-shadow:none}}
+body.loading .pr,body.loading .kv b{color:transparent;border-radius:8px;background:linear-gradient(90deg,var(--surf2),var(--line),var(--surf2));background-size:200% 100%;animation:sk 1.2s infinite}@keyframes sk{to{background-position:-200% 0}}
+.nav{box-shadow:0 -8px 24px rgba(0,0,0,.18)}.nav button{min-height:56px}.nav button.on span{color:var(--gold2)}
+.lnk #retryB{margin-inline-start:auto;width:36px;height:36px}.lnk #retryB[hidden]{display:none}
+.toast{border-inline-start:3px solid var(--up)}.toast.bad{border-inline-start-color:var(--dn)}
+::-webkit-scrollbar{width:0}
 </style>
 </head>
 <body>
-<svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs><symbol id="i-chart" viewBox="0 0 24 24"><path d="M7 4v3M7 17v3M17 3v4M17 15v5"/><rect x="5" y="7" width="4" height="10" rx="1"/><rect x="15" y="7" width="4" height="8" rx="1"/></symbol><symbol id="i-hist" viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5M12 7v5l3 2"/></symbol><symbol id="i-set" viewBox="0 0 24 24"><path d="M4 6h9M17 6h3M4 12h3M11 12h9M4 18h11M19 18h1"/><circle cx="15" cy="6" r="2"/><circle cx="9" cy="12" r="2"/><circle cx="17" cy="18" r="2"/></symbol><symbol id="i-play" viewBox="0 0 24 24"><path d="M7 4l13 8-13 8z"/></symbol><symbol id="i-stop" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2"/></symbol><symbol id="i-xc" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M9 9l6 6M15 9l-6 6"/></symbol><symbol id="i-up" viewBox="0 0 24 24"><path d="M7 17L17 7M9 7h8v8"/></symbol><symbol id="i-dn" viewBox="0 0 24 24"><path d="M7 7l10 10M17 9v8H9"/></symbol><symbol id="i-shield" viewBox="0 0 24 24"><path d="M12 3l8 3v6c0 5-3.5 8-8 9-4.5-1-8-4-8-9V6z"/><path d="M9 12l2 2 4-4"/></symbol><symbol id="i-target" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="5"/><circle cx="12" cy="12" r="1"/></symbol><symbol id="i-check" viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7.5"/></symbol><symbol id="i-alert" viewBox="0 0 24 24"><path d="M12 4l9 16H3z"/><path d="M12 10v4M12 17.5h0"/></symbol><symbol id="i-save" viewBox="0 0 24 24"><path d="M5 4h11l4 4v12H5z"/><path d="M8 4v5h7V4M8 20v-6h8v6"/></symbol><symbol id="i-refresh" viewBox="0 0 24 24"><path d="M20 11a8 8 0 0 0-14-4L4 9M4 4v5h5M4 13a8 8 0 0 0 14 4l2-2M20 20v-5h-5"/></symbol><symbol id="i-pause" viewBox="0 0 24 24"><path d="M8 5v14M16 5v14"/></symbol><symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></symbol><symbol id="i-bolt" viewBox="0 0 24 24"><path d="M13 3L5 14h6l-1 7 8-11h-6z"/></symbol><symbol id="i-scale" viewBox="0 0 24 24"><path d="M12 4v16M6 20h12M5 7h14"/><path d="M5 7l-3 7a3 3 0 0 0 6 0zM19 7l-3 7a3 3 0 0 0 6 0z"/></symbol><symbol id="i-dollar" viewBox="0 0 24 24"><path d="M12 3v18M16 7.5c0-1.7-1.8-3-4-3s-4 1.3-4 3 1.8 2.6 4 3 4 1.3 4 3-1.8 3-4 3-4-1.3-4-3"/></symbol><symbol id="i-trash" viewBox="0 0 24 24"><path d="M4 7h16M10 3h4M6 7l1 13h10l1-13M10 11v6M14 11v6"/></symbol></defs></svg>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs><symbol id="i-chart" viewBox="0 0 24 24"><path d="M7 4v3M7 17v3M17 3v4M17 15v5"/><rect x="5" y="7" width="4" height="10" rx="1"/><rect x="15" y="7" width="4" height="8" rx="1"/></symbol><symbol id="i-hist" viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5M12 7v5l3 2"/></symbol><symbol id="i-set" viewBox="0 0 24 24"><path d="M4 6h9M17 6h3M4 12h3M11 12h9M4 18h11M19 18h1"/><circle cx="15" cy="6" r="2"/><circle cx="9" cy="12" r="2"/><circle cx="17" cy="18" r="2"/></symbol><symbol id="i-play" viewBox="0 0 24 24"><path d="M7 4l13 8-13 8z"/></symbol><symbol id="i-stop" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2"/></symbol><symbol id="i-xc" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M9 9l6 6M15 9l-6 6"/></symbol><symbol id="i-up" viewBox="0 0 24 24"><path d="M7 17L17 7M9 7h8v8"/></symbol><symbol id="i-dn" viewBox="0 0 24 24"><path d="M7 7l10 10M17 9v8H9"/></symbol><symbol id="i-shield" viewBox="0 0 24 24"><path d="M12 3l8 3v6c0 5-3.5 8-8 9-4.5-1-8-4-8-9V6z"/><path d="M9 12l2 2 4-4"/></symbol><symbol id="i-target" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="5"/><circle cx="12" cy="12" r="1"/></symbol><symbol id="i-check" viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7.5"/></symbol><symbol id="i-alert" viewBox="0 0 24 24"><path d="M12 4l9 16H3z"/><path d="M12 10v4M12 17.5h0"/></symbol><symbol id="i-save" viewBox="0 0 24 24"><path d="M5 4h11l4 4v12H5z"/><path d="M8 4v5h7V4M8 20v-6h8v6"/></symbol><symbol id="i-refresh" viewBox="0 0 24 24"><path d="M20 11a8 8 0 0 0-14-4L4 9M4 4v5h5M4 13a8 8 0 0 0 14 4l2-2M20 20v-5h-5"/></symbol><symbol id="i-pause" viewBox="0 0 24 24"><path d="M8 5v14M16 5v14"/></symbol><symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></symbol><symbol id="i-bolt" viewBox="0 0 24 24"><path d="M13 3L5 14h6l-1 7 8-11h-6z"/></symbol><symbol id="i-scale" viewBox="0 0 24 24"><path d="M12 4v16M6 20h12M5 7h14"/><path d="M5 7l-3 7a3 3 0 0 0 6 0zM19 7l-3 7a3 3 0 0 0 6 0z"/></symbol><symbol id="i-dollar" viewBox="0 0 24 24"><path d="M12 3v18M16 7.5c0-1.7-1.8-3-4-3s-4 1.3-4 3 1.8 2.6 4 3 4 1.3 4 3-1.8 3-4 3-4-1.3-4-3"/></symbol><symbol id="i-trash" viewBox="0 0 24 24"><path d="M4 7h16M10 3h4M6 7l1 13h10l1-13M10 11v6M14 11v6"/></symbol><symbol id="i-edit" viewBox="0 0 24 24"><path d="M4 20h4L19 9l-4-4L4 16z"/><path d="M13.5 6.5l4 4"/></symbol><symbol id="i-power" viewBox="0 0 24 24"><path d="M12 3v8"/><path d="M6.3 6.8a8 8 0 1 0 11.4 0"/></symbol><symbol id="i-wifioff" viewBox="0 0 24 24"><path d="M3 3l18 18M5 10a10 10 0 0 1 4-2.3M19 10a10 10 0 0 0-3-2M8.5 14a5 5 0 0 1 3-1.5M15.5 14a5 5 0 0 0-1-.8M12 18h0"/></symbol><symbol id="i-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h0"/></symbol></defs></svg>
 <div class="app">
 <header>
   <div class="brand">
@@ -135,7 +154,7 @@ header{display:flex;justify-content:space-between;align-items:center;gap:8px;pad
 </header>
 
 <section class="tab on" id="t0">
-  <div class="card quote" id="qc"><div class="lnk" id="lnk"><i></i><div><b id="lnkT"></b><small id="lnkS"></small></div></div><div class="qt"><div><small>XAUUSD<span class="lv"><i></i><span id="lvT">SIM</span></span></small><div class="pr num" id="pr">—</div></div><div class="chg num" id="chg"></div></div>
+  <div class="card quote" id="qc"><div class="lnk" id="lnk"><i></i><div><b id="lnkT"></b><small id="lnkS"></small></div><button class="ib" id="retryB" aria-label="Retry" hidden><svg class="ic"><use href="#i-refresh"/></svg></button></div><div class="qt"><div><small>XAUUSD<span class="lv"><i></i><span id="lvT">SIM</span></span></small><div class="pr num" id="pr">—</div></div><div class="chg num" id="chg"></div></div>
     <svg class="spk" id="spk" viewBox="0 0 200 40" preserveAspectRatio="none"><defs><linearGradient id="sgf" x1="0" y1="0" x2="0" y2="1"><stop offset="0" style="stop-color:var(--gold);stop-opacity:.35"/><stop offset="1" style="stop-color:var(--gold);stop-opacity:0"/></linearGradient></defs><polygon id="spa" fill="url(#sgf)" points=""/><polyline id="spl" points=""/></svg>
     <div class="kv" style="margin-top:12px"><div><small data-t="dB"></small><b class="num" id="dB">—</b></div><div><small data-t="dS"></small><b class="num" id="dS">—</b></div><div><small data-t="rng"></small><b class="num" id="rng">—</b></div></div></div>
   <div id="dash"></div>
@@ -159,6 +178,7 @@ header{display:flex;justify-content:space-between;align-items:center;gap:8px;pad
 
 <nav class="nav" id="nav"><button class="on" data-k="0"><svg class="ic"><use href="#i-chart"/></svg><span data-t="nav0"></span></button><button data-k="1"><svg class="ic"><use href="#i-hist"/></svg><span data-t="nav1"></span></button></nav>
 <div class="ov" id="ov"><div class="sheet" id="sheet"></div></div>
+<div class="ov" id="sov"><div class="sheet" id="ssh"></div></div>
 <div class="toast" id="toast"></div>
 
 <script async src="https://telegram.org/js/telegram-web-app.js"></script>
@@ -218,7 +238,7 @@ t_saved:["تم حفظ الإعدادات","Settings saved"],t_applied:["تم ت�
 t_reset:["تمت إعادة ضبط تسلسل المخاطرة","Risk sequence reset"],t_noReset:["لا يمكن أثناء وجود صفقة مفتوحة","Not possible while a trade is open"],
 l_sim:["وضع تجريبي (محاكاة)","Demo mode (simulation)"],l_wait:["جارٍ الاتصال بالخادم…","Connecting…"],
 l_srv:["تعذّر الوصول إلى الخادم","Server unreachable"],l_srvS:["تحقق من الإنترنت — جارٍ إعادة المحاولة","Check your internet — retrying"],
-l_auth:["غير مصرّح بالدخول","Access denied"],l_authS:["افتح التطبيق من داخل تيليجرام بحسابك المصرّح","Open the app from Telegram with an authorized account"],
+l_auth:["الرابط غير صحيح","Invalid link"],l_authS:["افتح الرابط الشخصي الخاص بك (يحتوي مفتاح الدخول)","Open your personal link (it contains your access key)"],
 l_off:["البوت غير متصل","Bot offline"],l_offS:["شغّل Yetimmm على شارت XAUUSD داخل MT5","Run Yetimmm on an XAUUSD chart in MT5"],l_last:["آخر اتصال قبل {0}","last seen {0} ago"],
 l_okWait:["البوت متصل · بانتظار الأوامر","Bot connected · waiting for commands"],l_okRun:["البوت متصل · يعمل","Bot connected · running"],
 l_okTrade:["البوت متصل · صفقة مفتوحة","Bot connected · trade open"],l_okErr:["البوت متصل · يوجد خطأ","Bot connected · error"],l_upd:["آخر تحديث قبل {0}","updated {0} ago"],
@@ -240,7 +260,8 @@ c_cancel:["إلغاء كل الأوامر المعلقة","Cancel all pending"],
 editB:["تعديل السعر","Edit price"],addB:["إضافة أمر {0}","Add {0} order"],canB:["إلغاء كل الأوامر","Cancel all orders"],okB:["تأكيد","Confirm"],newPx:["السعر الجديد لـ {0}","New price for {0}"],
 q_can:["إلغاء كل الأوامر؟","Cancel all orders?"],q_canB:["ستُحذف كل الأوامر المعلقة. الصفقة المفتوحة (إن وجدت) تبقى.","All pending orders will be deleted. An open trade (if any) stays."],
 acT:["الحساب","Account"],aBal:["الرصيد","Balance"],aEq:["الإكوتي","Equity"],aFl:["الربح العائم","Floating P/L"],aMg:["الهامش","Margin"],aFm:["الهامش الحر","Free margin"],aLev:["الرافعة","Leverage"],
-sxT:["إحصائيات مفصلة","Detailed statistics"],sPf:["معامل الربح","Profit factor"],sAw:["متوسط الربح","Avg win"],sAl:["متوسط الخسارة","Avg loss"],sMw:["أكبر ربح","Best trade"],sMl:["أكبر خسارة","Worst trade"],sBs:["شراء / بيع","Buy / Sell"],sVol:["الحجم الكلي","Total volume"],sCm:["العمولة + السواب","Comm. + swap"],sSt:["السلسلة الحالية","Current streak"],sHr:["أعلى مخاطرة","Peak risk"]
+sxT:["إحصائيات مفصلة","Detailed statistics"],sPf:["معامل الربح","Profit factor"],sAw:["متوسط الربح","Avg win"],sAl:["متوسط الخسارة","Avg loss"],sMw:["أكبر ربح","Best trade"],sMl:["أكبر خسارة","Worst trade"],sBs:["شراء / بيع","Buy / Sell"],sVol:["الحجم الكلي","Total volume"],sCm:["العمولة + السواب","Comm. + swap"],sSt:["السلسلة الحالية","Current streak"],sHr:["أعلى مخاطرة","Peak risk"],
+stM:["البوت متوقف","Bot stopped"],stMB:["تم تجميد السعر عند {0} · لا أوامر ولا صفقات ولا تحديثات حتى تعيد التشغيل","Price frozen at {0} · no orders, trades or updates until you restart"],rst:["إعادة التشغيل","Restart"],vw:["عرض فقط","View only"],frzL:["السعر مجمّد","Price frozen"],q_delW:["سيتم حذف مستوى {0} عند {1} (ما زال بانتظار السعر ولم يُوضع في MT5) ولن يُنشأ لاحقاً.","The {0} level at {1} (still waiting for price, not in MT5 yet) will be deleted and never created later."]
 };
 let LG=0;                                             // 0 = Arabic, 1 = English
 const t=(k,...a)=>(D[k]?D[k][LG]:String(k).replace(/^(r|st|sx)_/,"")).replace(/\{(\d)\}/g,(_,i)=>a[i]);
@@ -258,7 +279,7 @@ try{UI=JSON.parse(localStorage.getItem("ytUI"))||{}}catch(e){}
 prev=S.price;const SP=S.price?[S.price]:[];
 const save=()=>{try{localStorage.setItem("ytPro",JSON.stringify(S))}catch(e){}};
 const saveUI=()=>{try{localStorage.setItem("ytUI",JSON.stringify(UI))}catch(e){}};
-let tt;const toast=m=>{const e=$("toast"),bad=m.startsWith("❌"),sp=document.createElement("span");e.innerHTML=ic(bad?"alert":"check");sp.textContent=bad?m.slice(1).trim():m;e.append(sp);e.classList.toggle("bad",bad);e.classList.add("show");clearTimeout(tt);tt=setTimeout(()=>e.classList.remove("show"),2800)};
+let tt;const toast=m=>{try{const hf=TG.wa&&TG.wa.HapticFeedback;hf&&hf.notificationOccurred(String(m).startsWith("❌")?"error":"success")}catch(x){}const e=$("toast"),bad=m.startsWith("❌"),sp=document.createElement("span");e.innerHTML=ic(bad?"alert":"check");sp.textContent=bad?m.slice(1).trim():m;e.append(sp);e.classList.toggle("bad",bad);e.classList.add("show");clearTimeout(tt);tt=setTimeout(()=>e.classList.remove("show"),2800)};
 const vib=()=>{try{navigator.vibrate&&navigator.vibrate(12);const h=TG.wa&&TG.wa.HapticFeedback;h&&h.impactOccurred("light")}catch(e){}};
 
 /* ═════════════ 4) EVENT BUS (hook for bots / external code) ═════════════
@@ -277,10 +298,11 @@ Bus.on("open",p=>TG.send(`📌 <b>${p.side}</b> #${p.no}\nEntry ${f(p.entry)} ·
 Bus.on("close",h=>TG.send(`${h.pnl>=0?"✅":"❌"} #${h.no} ${h.side} ${h.reason}\n${f(h.entry)} → ${f(h.exit)} · <b>${sg(h.pnl)}$</b>`));
 
 /* ═════════════ 6) BRIDGE (live mode: bot / MT5 backend) ═════════════ */
+const KEY=(()=>{try{const u=new URL(location.href),k=u.searchParams.get("k")||new URLSearchParams(location.hash.slice(1)).get("k");if(k){localStorage.setItem("ytK",k);u.searchParams.delete("k");history.replaceState(null,"",u.pathname+u.search)}return localStorage.getItem("ytK")||""}catch(e){return""}})();
 const live=()=>CONFIG.mode==="live"&&!!CONFIG.api.baseUrl;
 const Bridge={ok:null,auth:false,at:0,init:false,lc:"",dirty:false,applyId:null,busy:false,pend:[],
   async req(path,opt){
-    const r=await fetch(CONFIG.api.baseUrl+path,{...opt,headers:{"Content-Type":"application/json","Authorization":"tma "+((window.Telegram&&Telegram.WebApp&&Telegram.WebApp.initData)||""),...CONFIG.api.headers}});
+    const r=await fetch(CONFIG.api.baseUrl+path,{...opt,headers:{"Content-Type":"application/json","X-Bridge-Key":KEY,...CONFIG.api.headers}});
     if(!r.ok){const e=new Error(r.status);e.status=r.status;throw e}
     return r.json()},
   async pull(){
@@ -293,10 +315,11 @@ const Bridge={ok:null,auth:false,at:0,init:false,lc:"",dirty:false,applyId:null,
       else if(lc&&lc.id!==this.lc){this.lc=lc.id;toast((lc.ok?"":"❌ ")+trEA(String(lc.text||"").replace(/^[\u274C\u2705\u2139\u26A0\uFE0F\s]+/,"")));if(lc.ok&&lc.id===this.applyId)this.dirty=false}
       if(!this.dirty)fillInputs();else prevCalc();
       feed();
-    }catch(e){this.ok=false;this.auth=(e.status===401||e.status===403)}
+    }catch(e){this.ok=false;this.auth=(e.status===401||e.status===403||!KEY)}
     this.busy=false;setMode();render();
   },
   async cmd(c,p){
+    const lk=c+JSON.stringify(p||{});this.lk=this.lk||{};if(Date.now()-(this.lk[lk]||0)<2500)return;this.lk[lk]=Date.now();
     try{
       const r=await this.req("/command",{method:"POST",body:JSON.stringify({cmd:c,...p})});
       if(c==="apply")this.applyId=r.id;trackCmd(r&&r.id,c,p,"sent");
@@ -305,7 +328,7 @@ const Bridge={ok:null,auth:false,at:0,init:false,lc:"",dirty:false,applyId:null,
     }catch(e){
       trackCmd(null,c,p,"fail",e.status===503?t("noLink"):t("l_srv"));
       if(e.status===503)toast("❌ "+t("noLink"));
-      else{this.ok=false;this.auth=(e.status===401||e.status===403);setMode();render();toast("❌ "+t(this.auth?"l_auth":"l_srv"))}
+      else{this.ok=false;this.auth=(e.status===401||e.status===403||!KEY);setMode();render();toast("❌ "+t(this.auth?"l_auth":"l_srv"))}
     }
   }
 };
@@ -441,6 +464,16 @@ function delOrder(tk){
 function priceSheet(ti,def,fn){$("sheet").innerHTML=`<b>${ti}</b><input class="inp" id="ps" type="number" step="any" inputmode="decimal" value="${def}" style="margin:12px 0"><div class="btns"><button class="btn" id="no">${t("back")}</button><button class="btn pri" id="yes">${t("okB")}</button></div>`;$("no").onclick=shut;$("yes").onclick=()=>{const v=num($("ps").value);if(!(v>0))return toast("❌ "+t("e_risk"));shut();fn(v)};$("ov").classList.add("show")}
 function modOrder(tk){const o=(S.orders||[]).find(x=>x.ticket==tk);if(!o)return;const b=isB(o.side);priceSheet(t("newPx",t(b?"oB":"oS")),o.price,v=>run("modify",{ticket:tk,side:b?"BUY":"SELL",price:v}))}
 function addOrder(side){const b=side==="BUY";priceSheet(t("addB",t(b?"oB":"oS")),b?S.buy:S.sell,v=>run("place",{side,price:v}))}
+function delLevel(sd,px){const b=sd==="BUY";ask(t("q_del"),t("q_delW",t(b?"oB":"oS"),f(px)),t("q_delY"),()=>run("delete",{side:sd}))}
+function modLevel(sd,px){const b=sd==="BUY";priceSheet(t("newPx",t(b?"oB":"oS")),px,v=>run("modify",{side:sd,price:v}))}
+let stShown=false,stOff=false;
+function renderStop(){
+  const st=live()&&link()==="ok"&&S.run===false&&S.state==="STOPPED",o=$("sov");
+  if(!st){stShown=false;stOff=false;o.classList.remove("show");return}
+  $("ssh").innerHTML=`<div class="sico dn" style="width:56px;height:56px;margin:0 auto 12px;font-size:28px">${ic("pause")}</div><b style="display:block;text-align:center">${t("stM")}</b><p style="text-align:center" class="num">${t("stMB",f(S.price))}</p><div class="btns"><button class="btn" id="svw">${t("vw")}</button><button class="btn go" id="srs">${ic("play")}${t("rst")}</button></div>`;
+  $("svw").onclick=()=>{stOff=true;o.classList.remove("show")};$("srs").onclick=()=>{o.classList.remove("show");start()};
+  if(!stShown&&!stOff){stShown=true;o.classList.add("show")}
+}
 function cancelAll(){ask(t("q_can"),t("q_canB"),t("canB"),()=>run("cancel"))}
 function acctCard(k){const a=S.acct;if(!a)return"";const c=a.cur||"USD";return `<div class="card"><h3><span class="hl">${ic("dollar")}${t("acT")}</span><small class="num">#${a.login||""} · ${esc(c)}</small></h3><div class="kv">${k(t("aBal"),f(a.bal))}${k(t("aEq"),f(a.eq),cl(a.eq-a.bal))}${k(t("aFl"),sg(a.fl)+"$",cl(a.fl))}${k(t("aMg"),f(a.mg))}${k(t("aFm"),f(a.fm))}${k(t("aLev"),"1:"+a.lev)}</div></div>`}
 function statsCard(){const x=S.stats;if(!x||x.pf==null)return"";const k=(l,v,c="")=>`<div><small>${l}</small><b class="num ${c}">${v}</b></div>`;return `<div class="card"><h3><span class="hl">${ic("chart")}${t("sxT")}</span></h3><div class="kv">${k(t("sPf"),f(x.pf))}${k(t("sAw"),"+"+f(x.avgW),"up")}${k(t("sAl"),"−"+f(x.avgL),"dn")}${k(t("sMw"),"+"+f(x.maxW),"up")}${k(t("sMl"),"−"+f(x.maxL),"dn")}${k(t("sBs"),x.buys+" / "+x.sells)}${k(t("sSt"),x.streak>0?"+"+x.streak:x.streak)}${k(t("sVol"),f(x.vol))}${k(t("sCm"),f(x.comm+x.swap))}</div></div>`}
@@ -468,6 +501,7 @@ function renderDash(){
   h+=S.run?`<button class="btn dg ${x?"":"w"}" onclick="stop()"${dis}>${ic("stop")}${t("stopB")}</button>`:`<button class="btn go w" onclick="start()"${dis}>${ic("play")}${t("startB")}</button>`;
   if(x)h+=`<button class="btn" onclick="closePos()"${dis}>${ic("xc")}${t("closeB")}</button>`;
   h+=`</div></div>`;
+  if(live()&&link()==="ok"&&S.frz)h=`<div class="note er" style="display:flex;justify-content:space-between;align-items:center;gap:8px"><span>${ic("pause")} ${t("frzL")} · ${f(S.price)}</span><button class="btn go" style="padding:8px 12px" onclick="start()">${t("rst")}</button></div>`+h;
   if(x){
     const b=isB(x.side),fl=floating(),lo=b?x.sl:x.tp,hi=b?x.tp:x.sl,pc=v=>Math.max(0,Math.min(100,(v-lo)/(hi-lo)*100)),z=pc(x.entry);
     const bg=b?`linear-gradient(90deg,var(--dn) ${z}%,var(--up) ${z}%)`:`linear-gradient(90deg,var(--up) ${z}%,var(--dn) ${z}%)`;
@@ -477,9 +511,9 @@ function renderDash(){
   }
   if(live()&&link()==="ok"&&!(parseFloat(S.ver)>=2.18))h=`<div class="note er">${t("oldEA")}</div>`+h;
   const WT=(S.waits||[]);
-  if(WT.length)h+=`<div class="card"><h3><span class="hl">${ic("clock")}${t("waitT")}</span></h3>`+WT.map(w=>{const b=w.side==="BUY";return `<div class="hi"><div class="hl2"><i class="hs gd">${ic("clock")}</i><div><b>${t(b?"oB":"oS")} · <span class="num">${f(w.level)}</span></b><small class="num">${t(b?"wB":"wS",f(w.now),f(w.trig),f(w.dist))}</small></div></div></div>`}).join("")+`</div>`;
+  if(WT.length)h+=`<div class="card"><h3><span class="hl">${ic("clock")}${t("waitT")}</span></h3>`+WT.map(w=>{const b=w.side==="BUY";return `<div class="hi"><div class="hl2"><i class="hs gd">${ic("clock")}</i><div><b>${t(b?"oB":"oS")} · <span class="num">${f(w.level)}</span></b><small class="num">${t(b?"wB":"wS",f(w.now),f(w.trig),f(w.dist))}</small></div></div><span style="display:flex;gap:6px"><button class="ib" aria-label="${t("editB")}" onclick="modLevel('${w.side}',${w.level})"${dis}>${ic("edit")}</button><button class="ib dgb" aria-label="${t("delB")}" onclick="delLevel('${w.side}',${w.level})"${dis}>${ic("trash")}</button></span></div>`}).join("")+`</div>`;
   const OR=S.orders||[];
-  if(OR.length)h+=`<div class="card"><h3><span class="hl">${ic("bolt")}${t("ordsT")}</span></h3>`+OR.map(o=>{const b=isB(o.side);return `<div class="hi"><div class="hl2"><i class="hs ${b?"up":"dn"}">${ic(b?"up":"dn")}</i><div><b>${t(b?"oB":"oS")} · <span class="num">${f(o.price)}</span></b><small class="num">#${o.ticket} · ${f(o.lot)} ${t("lots")} · SL ${f(o.sl)} · TP ${f(o.tp)}</small></div></div><span style="display:flex;gap:6px"><button class="ib" aria-label="${t("editB")}" onclick="modOrder(${o.ticket})"${dis}>${ic("set")}</button><button class="ib dgb" aria-label="${t("delB")}" onclick="delOrder(${o.ticket})"${dis}>${ic("trash")}</button></span></div>`}).join("")+`<div class="btns" style="margin-top:10px">${OR.length===1&&S.run&&!S.pos?`<button class="btn go" onclick="addOrder('${isB(OR[0].side)?"SELL":"BUY"}')"${dis}>${ic("bolt")}${t("addB",t(isB(OR[0].side)?"oS":"oB"))}</button>`:""}<button class="btn${OR.length===1&&S.run&&!S.pos?"":" w"}" onclick="cancelAll()"${dis}>${ic("xc")}${t("canB")}</button></div></div>`;
+  if(OR.length)h+=`<div class="card"><h3><span class="hl">${ic("bolt")}${t("ordsT")}</span></h3>`+OR.map(o=>{const b=isB(o.side);return `<div class="hi"><div class="hl2"><i class="hs ${b?"up":"dn"}">${ic(b?"up":"dn")}</i><div><b>${t(b?"oB":"oS")} · <span class="num">${f(o.price)}</span></b><small class="num">#${o.ticket} · ${f(o.lot)} ${t("lots")} · SL ${f(o.sl)} · TP ${f(o.tp)}</small></div></div><span style="display:flex;gap:6px"><button class="ib" aria-label="${t("editB")}" onclick="modOrder(${o.ticket})"${dis}>${ic("edit")}</button><button class="ib dgb" aria-label="${t("delB")}" onclick="delOrder(${o.ticket})"${dis}>${ic("trash")}</button></span></div>`}).join("")+`<div class="btns" style="margin-top:10px">${OR.length===1&&S.run&&!S.pos?`<button class="btn go" onclick="addOrder('${isB(OR[0].side)?"SELL":"BUY"}')"${dis}>${ic("bolt")}${t("addB",t(isB(OR[0].side)?"oS":"oB"))}</button>`:""}<button class="btn${OR.length===1&&S.run&&!S.pos?"":" w"}" onclick="cancelAll()"${dis}>${ic("xc")}${t("canB")}</button></div></div>`;
   h+=acctCard(k);
   const L=lotFor(S.cur,S.buy,S.sell);
   h+=`<div class="card"><h3><span class="hl">${ic("shield")}${t("rmT")}</span><span style="display:flex;gap:8px;align-items:center"><span class="num">${t("seq",S.seq+1)}</span><button class="ib" style="width:30px;height:30px" aria-label="${t("reset")}" onclick="resetUI()"${dis}>${ic("refresh")}</button></span></h3><div class="kv">${k(t("curR"),"$"+f(S.cur),"gd")}${k(t("accL"),"$"+f(S.acc),S.acc>0?"dn":"")}${k(t("lot"),L.e?"—":f(x?x.lot:L.lot))}</div></div>`;
@@ -490,9 +524,9 @@ function renderHist(){
   const RW=logRows();
   $("hist").innerHTML=`<div class="card"><h3><span class="hl">${ic("dollar")}${t("net")}</span></h3><div class="big num ${cl(net)}" style="margin-bottom:12px">${sg(net)}$</div><div class="kv">${k(t("tot"),n)}${k(t("win"),w,"up")}${k(t("rate"),(n?f(w/n*100,0):0)+"%")}</div></div>${statsCard()}<div class="card"><h3><span class="hl">${ic("hist")}${t("logT")}</span></h3>`+(RW.length?RW.map(x=>x.k==="c"?cmdRow(x):`<div class="hi"><div class="hl2"><i class="hs ${isB(x.side)?"up":"dn"}">${ic(isB(x.side)?"up":"dn")}</i><div><b>#${x.no} ${t(isB(x.side)?"buyW":"sellW")} · ${rsn(x.reason)}</b><small class="num">${f(x.entry)} → ${f(x.exit)} · ${f(x.lot)} ${t("lots")}</small></div></div><b class="p num ${cl(x.pnl)}">${sg(x.pnl)}$</b></div>`).join(""):`<div class="empty">${ic("hist")}<br>${t("none")}</div>`)+`</div>`;
 }
-function feed(){if(!(S.price>0))return;SP.push(S.price);if(SP.length>40)SP.shift()}
+function feed(){if(!(S.price>0)||S.frz)return;SP.push(S.price);if(SP.length>40)SP.shift()}
 function renderPrice(){
-  const d=S.price-prev;$("pr").textContent=S.price>0?f(S.price):"—";$("pr").className="pr num "+(d>0?"up":d<0?"dn":"");$("chg").textContent=S.price>0?sg(d):"";$("chg").className="chg num "+cl(d);
+  const d=S.frz?0:S.price-prev;$("qc").classList.toggle("frozen",!!S.frz);$("pr").textContent=S.price>0?f(S.price):"—";$("pr").className="pr num "+(d>0?"up":d<0?"dn":"");$("chg").textContent=S.price>0?sg(d):"";$("chg").className="chg num "+cl(d);
   {const o=S.price>0&&S.buy>0&&S.sell>0;$("dB").textContent=o?f(S.buy-S.price):"—";$("dS").textContent=o?f(S.price-S.sell):"—";$("rng").textContent=S.buy>0&&S.sell>0?f(S.buy-S.sell):"—"}
   if(SP.length>1){const mn=Math.min(...SP),mx=Math.max(...SP),sp=mx-mn||1;const pts=SP.map((v,i)=>(i*200/(SP.length-1)).toFixed(1)+","+(36-(v-mn)/sp*32).toFixed(1)).join(" ");$("spl").setAttribute("points",pts);$("spa").setAttribute("points",pts+" 200,40 0,40")}
 }
@@ -532,10 +566,11 @@ function renderLink(){
     su=t("l_upd",ago(eaAge()))+(S.spread!=null?" · Spread "+S.spread:"");
   }
   el.className="lnk "+c;$("lnkT").textContent=ti;$("lnkS").textContent=su;
+  $("retryB").hidden=!(k==="srv"||k==="off");
   $("qc").classList.toggle("stale",k!=="ok"&&k!=="sim");
   $("applyB").disabled=live()&&k!=="ok";
 }
-function render(){renderPrice();renderLink();renderDash();if(tab===1)renderHist()}
+function render(){renderPrice();renderLink();renderDash();renderStop();if(tab===1)renderHist()}
 
 /* order form */
 $("t0").addEventListener("click",e=>{
@@ -564,7 +599,7 @@ function resetUI(){ask(t("q_reset"),t("q_resetB",f(S.risk)),t("q_resetY"),()=>ru
 $("nav").onclick=e=>{const b=e.target.closest("button"),i=b&&b.dataset.k;if(i===undefined)return;vib();tab=+i;document.querySelectorAll(".tab").forEach((x,j)=>x.classList.toggle("on",j===tab));[...$("nav").children].forEach((c,j)=>c.classList.toggle("on",j===tab));if(tab===1)renderHist();window.scrollTo(0,0)};
 function setMode(){
   const off=live()&&link()!=="ok";$("mode").classList.toggle("off",off);
-  $("lvT").textContent=live()?(off?"OFFLINE":"LIVE"):"SIM";$("modeT").textContent=t(off?"offl":live()?"live":"demo");
+  $("lvT").textContent=live()?(off?"OFFLINE":S.frz?"STOPPED":"LIVE"):"SIM";$("modeT").textContent=t(off?"offl":live()?"live":"demo");
 }
 function setTheme(v){
   v=v==="light"?"light":"dark";document.documentElement.dataset.theme=v;
@@ -604,6 +639,16 @@ setTheme(UI.th||(matchMedia("(prefers-color-scheme: light)").matches?"light":"da
 $("in_b").value=S.buy;$("in_s").value=S.sell;$("in_r").value=S.risk;$("in_t").value=S.target;$("in_rr").value=S.rr;
 setLang(UI.lg||0);
 if(live()){Bridge.pull();setInterval(()=>{if(!document.hidden)Bridge.pull()},CONFIG.api.pollMs);setInterval(()=>{setMode();renderLink()},1000);document.addEventListener("visibilitychange",()=>{if(!document.hidden)Bridge.pull()})}else setInterval(tick,1200);
+/* ── v2 polish: tick flash, loading skeleton, retry, Esc, a11y, haptics ── */
+(function(){
+  document.body.classList.add("loading");
+  const o=Bridge.pull.bind(Bridge);let lp=0;
+  Bridge.pull=async function(){await o();document.body.classList.remove("loading")};
+  const rp=renderPrice;renderPrice=function(){const old=lp;rp();if(old&&S.price>0&&!S.frz&&S.price!==old){const e=$("pr");e.classList.remove("tu","td");void e.offsetWidth;e.classList.add(S.price>old?"tu":"td")}lp=S.price};
+  $("retryB").onclick=()=>{vib();Bridge.ok=null;Bridge.pull()};
+  document.addEventListener("keydown",e=>{if(e.key==="Escape")shut()});
+  $("sheet").setAttribute("role","dialog");$("sheet").setAttribute("aria-modal","true");$("ssh").setAttribute("role","alertdialog");$("toast").setAttribute("role","status");$("toast").setAttribute("aria-live","polite");
+})();
 </script>
 </body>
 </html>

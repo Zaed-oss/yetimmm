@@ -1,9 +1,12 @@
 // Yetimmm bridge:  Mini App  <->  Cloudflare Worker  <->  MT5 EA
 //   EA       -> POST /api/ea/sync   (header X-Bridge-Key)   body {state, ack:[ids]}  -> {ok:true, commands:[...]}
-//   Mini App -> GET  /state         (header Authorization: tma <initData>)
-//   Mini App -> POST /command       (header Authorization: tma <initData>)  body {cmd, ...params} -> {ok:true, id}
-// Secrets (wrangler secret put): BRIDGE_KEY, BOT_TOKEN
-// Vars (wrangler.toml): ALLOWED_ORIGIN, ALLOWED_USERS
+//   Mini App -> GET  /state         (OPEN ACCESS - no login, no Telegram account check)
+//   Mini App -> POST /command       (OPEN ACCESS)  body {cmd, ...params} -> {ok:true, id}
+// MULTI-CLIENT: one Worker serves many clients. Each client has a personal key "id.sig" (made with make_key.py from MASTER_SECRET).
+//   The key travels in the header X-Bridge-Key (EA and Mini App). Each key gets its OWN isolated hub: clients never see each other.
+//   No login, no Telegram account: whoever holds the personal link (index.html?k=id.sig) has access, nobody else.
+// Secret (wrangler secret put): MASTER_SECRET
+// Vars (wrangler.toml): ALLOWED_ORIGIN (optional: "*" or empty = any origin; set a URL to restrict browsers to your page)
 
 const json = (o, status = 200) =>
   new Response(JSON.stringify(o), { status, headers: { "Content-Type": "application/json" } });
@@ -20,38 +23,27 @@ async function hmac(key, data) {
   return new Uint8Array(await crypto.subtle.sign("HMAC", k, data));
 }
 
-// Validates Telegram Mini App initData (HMAC) and checks the user is in ALLOWED_USERS
-async function authTma(req, env) {
-  const h = req.headers.get("Authorization") || "";
-  const botToken = (env.BOT_TOKEN || "").trim();
-  if (!h.startsWith("tma ") || !botToken) return null;
-  const params = new URLSearchParams(h.slice(4));
-  const hash = params.get("hash");
-  if (!hash) return null;
-  params.delete("hash");
-  const dcs = [...params.entries()]
-    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
-    .map(([k, v]) => `${k}=${v}`)
-    .join("\n");
+// "id.sig": sig = first 32 hex chars of HMAC-SHA256(MASTER_SECRET, id). Returns the client id or null.
+async function clientOf(req, env) {
+  const key = (req.headers.get("X-Bridge-Key") || "").trim();
+  const i = key.indexOf(".");
+  const master = (env.MASTER_SECRET || "").trim();
+  if (i < 1 || i > 40 || !master) return null;
+  const id = key.slice(0, i);
+  if (!/^[A-Za-z0-9_-]+$/.test(id)) return null;
   const enc = new TextEncoder();
-  const secret = await hmac(enc.encode("WebAppData"), enc.encode(botToken));
-  const sig = await hmac(secret, enc.encode(dcs));
-  const hex = [...sig].map((b) => b.toString(16).padStart(2, "0")).join("");
-  if (!safeEq(hex, hash)) return null;
-  const age = Date.now() / 1000 - Number(params.get("auth_date") || 0);
-  if (!(age > -300 && age < 3 * 86400)) return null; // initData valid for 3 days
-  let user = {};
-  try { user = JSON.parse(params.get("user") || "{}"); } catch { return null; }
-  const allowed = (env.ALLOWED_USERS || "").split(",").map((s) => s.trim()).filter(Boolean);
-  return allowed.includes(String(user.id)) ? user : null;
+  const sig = [...(await hmac(enc.encode(master), enc.encode(id)))].map((b) => b.toString(16).padStart(2, "0")).join("").slice(0, 32);
+  return safeEq(sig, key.slice(i + 1)) ? id : null;
 }
 
 function corsHeaders(req, env) {
   const origin = req.headers.get("Origin");
-  if (!origin || origin !== env.ALLOWED_ORIGIN) return {};
+  const cfg = (env.ALLOWED_ORIGIN || "").trim();
+  if (!origin) return {};
+  if (cfg && cfg !== "*" && origin !== cfg) return {};
   return {
-    "Access-Control-Allow-Origin": origin,
-    "Access-Control-Allow-Headers": "Content-Type, Authorization",
+    "Access-Control-Allow-Origin": cfg && cfg !== "*" ? origin : "*",
+    "Access-Control-Allow-Headers": "Content-Type, X-Bridge-Key",
     "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
     "Vary": "Origin",
   };
@@ -63,18 +55,18 @@ export default {
     const cors = corsHeaders(req, env);
     if (req.method === "OPTIONS") return new Response(null, { status: 204, headers: cors });
 
-    const hub = env.HUB.get(env.HUB.idFromName("main"));
+    const needs = url.pathname === "/api/ea/sync" || url.pathname === "/state" || url.pathname === "/command";
+    const cid = needs ? await clientOf(req, env) : null;
+    if (needs && !cid) return new Response(JSON.stringify({ ok: false, error: "key" }), { status: 401, headers: { "Content-Type": "application/json", ...cors } });
+    const hub = env.HUB.get(env.HUB.idFromName(cid || "main"));
     let res;
     try {
       if (url.pathname === "/api/ea/sync" && req.method === "POST") {
-        if (!safeEq(req.headers.get("X-Bridge-Key") || "", (env.BRIDGE_KEY || "").trim())) res = json({ ok: false, error: "key" }, 401);
-        else res = await hub.fetch("https://hub/sync", { method: "POST", body: await req.text() });
+        res = await hub.fetch("https://hub/sync", { method: "POST", body: await req.text() });
       } else if (url.pathname === "/state" && req.method === "GET") {
-        res = (await authTma(req, env)) ? await hub.fetch("https://hub/state") : json({ error: "auth" }, 401);
+        res = await hub.fetch("https://hub/state");
       } else if (url.pathname === "/command" && req.method === "POST") {
-        res = (await authTma(req, env))
-          ? await hub.fetch("https://hub/command", { method: "POST", body: await req.text() })
-          : json({ error: "auth" }, 401);
+        res = await hub.fetch("https://hub/command", { method: "POST", body: await req.text() });
       } else if (url.pathname === "/") {
         res = json({ ok: true, service: "yetimmm-bridge" });
       } else {
@@ -140,7 +132,7 @@ export class Hub {
       if (sd !== "BUY" && sd !== "SELL") return json({ error: "bad side" }, 400);
       c.side = sd;
     }
-    if ((b.cmd === "delete" || b.cmd === "modify") && !(c.ticket > 0)) return json({ error: "ticket required" }, 400);
+    if ((b.cmd === "delete" || b.cmd === "modify") && !(c.ticket > 0) && !c.side) return json({ error: "ticket or side required" }, 400); // side only = a level that is still waiting for the price
     if ((b.cmd === "modify" || b.cmd === "place") && !(c.price > 0)) return json({ error: "price required" }, 400);
     if (b.cmd === "place" && !c.side) return json({ error: "side required" }, 400);
     const q = (await this.ctx.storage.get("cmds")) || [];

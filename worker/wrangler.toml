@@ -3,10 +3,12 @@ main = "worker.js"
 compatibility_date = "2025-06-01"
 
 [vars]
-# Origin ONLY (no path, no trailing slash): https://<github-username>.github.io
-ALLOWED_ORIGIN = "https://zaed-oss.github.io"
-# Telegram numeric user IDs allowed to control the bot, comma separated (same as the EA's Authorized IDs)
-ALLOWED_USERS = "1939458064"
+# "*" = any page may call the Worker (access is protected by each client's personal key, not by the origin).
+# To restrict to ONE page instead, write its origin only (no path, no trailing slash), e.g. https://zaed-oss.github.io
+ALLOWED_ORIGIN = "*"
+
+# Secret (NOT written here):  wrangler secret put MASTER_SECRET
+# ALLOWED_USERS / BOT_TOKEN / BRIDGE_KEY are no longer used and can be deleted from the dashboard.
 
 [[durable_objects.bindings]]
 name = "HUB"
