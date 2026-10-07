@@ -5,6 +5,9 @@
 // MULTI-CLIENT: one Worker serves many clients. Each client has a personal key "id.sig" (made with make_key.py from MASTER_SECRET).
 //   The key travels in the header X-Bridge-Key (EA and Mini App). Each key gets its OWN isolated hub: clients never see each other.
 //   No login, no Telegram account: whoever holds the personal link (index.html?k=id.sig) has access, nobody else.
+//   CONFIG (v2.19b): Telegram Bot Token + Chat IDs live in the client's hub, NOT in the EA inputs.
+//     POST /config  (X-Bridge-Key)  body {tok, auth}  -> stored, versioned; the EA receives it on its next sync (field "cfg")
+//     GET  /config  (X-Bridge-Key)  -> {hasToken, auth, v}   (the token itself is never returned)
 // Secret (wrangler secret put): MASTER_SECRET
 // Vars (wrangler.toml): ALLOWED_ORIGIN (optional: "*" or empty = any origin; set a URL to restrict browsers to your page)
 
@@ -55,7 +58,7 @@ export default {
     const cors = corsHeaders(req, env);
     if (req.method === "OPTIONS") return new Response(null, { status: 204, headers: cors });
 
-    const needs = url.pathname === "/api/ea/sync" || url.pathname === "/state" || url.pathname === "/command";
+    const needs = url.pathname === "/api/ea/sync" || url.pathname === "/state" || url.pathname === "/command" || url.pathname === "/config";
     const cid = needs ? await clientOf(req, env) : null;
     if (needs && !cid) return new Response(JSON.stringify({ ok: false, error: "key" }), { status: 401, headers: { "Content-Type": "application/json", ...cors } });
     const hub = env.HUB.get(env.HUB.idFromName(cid || "main"));
@@ -67,6 +70,10 @@ export default {
         res = await hub.fetch("https://hub/state");
       } else if (url.pathname === "/command" && req.method === "POST") {
         res = await hub.fetch("https://hub/command", { method: "POST", body: await req.text() });
+      } else if (url.pathname === "/config" && req.method === "POST") {
+        res = await hub.fetch("https://hub/setcfg", { method: "POST", body: await req.text() });
+      } else if (url.pathname === "/config" && req.method === "GET") {
+        res = await hub.fetch("https://hub/getcfg");
       } else if (url.pathname === "/") {
         res = json({ ok: true, service: "yetimmm-bridge" });
       } else {
@@ -96,6 +103,8 @@ export class Hub {
     if (p === "/sync") return this.sync(await req.json().catch(() => ({})));
     if (p === "/state") return this.getState();
     if (p === "/command") return this.command(await req.json().catch(() => null));
+    if (p === "/setcfg") return this.setCfg(await req.json().catch(() => null));
+    if (p === "/getcfg") return this.getCfg();
     return json({ error: "not found" }, 404);
   }
 
@@ -106,7 +115,30 @@ export class Hub {
     const now = Date.now();
     const next = q.filter((x) => !ack.includes(x.c.id) && now - x.t < 120000); // acked or older than 2 min -> dropped
     if (next.length !== q.length) await this.ctx.storage.put("cmds", next);
-    return json({ ok: true, commands: next.map((x) => x.c) });
+    const cfg = await this.ctx.storage.get("cfg");
+    const out = { ok: true };
+    // the config is sent only when the EA's version differs (the token never travels on every poll)
+    if (cfg && String(cfg.v) !== String(body && body.cv !== undefined ? body.cv : 0)) out.cfg = { v: String(cfg.v), tok: cfg.tok, auth: cfg.auth };
+    out.commands = next.map((x) => x.c);
+    return json(out);
+  }
+
+  async setCfg(b) {
+    if (!b || typeof b !== "object") return json({ error: "bad body" }, 400);
+    const tok = String(b.tok === undefined || b.tok === null ? "" : b.tok).trim();
+    const auth = String(b.auth === undefined || b.auth === null ? "" : b.auth).replace(/[\s;,]+/g, ",").replace(/^,+|,+$/g, "");
+    if (tok && !/^\d{5,}:[A-Za-z0-9_-]{20,}$/.test(tok)) return json({ error: "bad token" }, 400);
+    if (auth && !/^-?\d+(,-?\d+)*$/.test(auth)) return json({ error: "bad chat id" }, 400);
+    const prev = (await this.ctx.storage.get("cfg")) || { v: 0 };
+    if (prev.tok === tok && prev.auth === auth) return json({ ok: true, v: prev.v, same: true });
+    const cfg = { v: Number(prev.v || 0) + 1, tok, auth };
+    await this.ctx.storage.put("cfg", cfg);
+    return json({ ok: true, v: cfg.v });
+  }
+
+  async getCfg() {
+    const cfg = await this.ctx.storage.get("cfg");
+    return json({ ok: true, hasToken: !!(cfg && cfg.tok), auth: cfg ? cfg.auth : "", v: cfg ? cfg.v : 0 });
   }
 
   getState() {
