@@ -1,4 +1,5 @@
-.wrangler/
 node_modules/
-*.mq5
+.dev.vars
+.env
 *.log
+.wrangler/

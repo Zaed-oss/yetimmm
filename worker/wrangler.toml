@@ -2,13 +2,19 @@ name = "yetimmm-bridge"
 main = "worker.js"
 compatibility_date = "2025-06-01"
 
-[vars]
-# "*" = any page may call the Worker (access is protected by each client's personal key, not by the origin).
-# To restrict to ONE page instead, write its origin only (no path, no trailing slash), e.g. https://zaed-oss.github.io
-ALLOWED_ORIGIN = "*"
-
-# Secret (NOT written here):  wrangler secret put MASTER_SECRET
-# ALLOWED_USERS / BOT_TOKEN / BRIDGE_KEY are no longer used and can be deleted from the dashboard.
+# Required secret (your single Telegram bot):
+#   wrangler secret put BOT_TOKEN
+#
+# Everything else lives in the CONFIG block at the top of worker.js. To change a value WITHOUT editing code,
+# set it here or as a secret (the env value always wins over CONFIG):
+#   APP_PASSWORD   the app password           (wrangler secret put APP_PASSWORD)
+#   LOCK_SECONDS   lock length, default 120   (= 2 minutes)
+#   MAX_ATTEMPTS   wrong passwords before lock, default 8
+#   SESSION_DAYS   sliding session life, default 30
+#   SESSION_EPOCH  bump 1 -> 2 to sign everybody out at once
+#   REQUIRE_TG     "0" = allow sign-in from a normal browser (default: only inside Telegram)
+# [vars]
+# LOCK_SECONDS = "120"
 
 [[durable_objects.bindings]]
 name = "HUB"
