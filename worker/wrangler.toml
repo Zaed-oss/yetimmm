@@ -2,24 +2,49 @@ name = "yetimmm-bridge"
 main = "worker.js"
 compatibility_date = "2025-06-01"
 
-# Required secret (your single Telegram bot):
-#   wrangler secret put BOT_TOKEN
-#
-# Everything else lives in the CONFIG block at the top of worker.js. To change a value WITHOUT editing code,
-# set it here or as a secret (the env value always wins over CONFIG):
-#   APP_PASSWORD   the app password           (wrangler secret put APP_PASSWORD)
-#   LOCK_SECONDS   lock length, default 120   (= 2 minutes)
-#   MAX_ATTEMPTS   wrong passwords before lock, default 8
-#   SESSION_DAYS   sliding session life, default 30
-#   SESSION_EPOCH  bump 1 -> 2 to sign everybody out at once
-#   REQUIRE_TG     "0" = allow sign-in from a normal browser (default: only inside Telegram)
-# [vars]
-# LOCK_SECONDS = "120"
+[observability]
+enabled = true
 
+# ── Durable Objects ─────────────────────────────────────────────────────
+# HUB    : one isolated hub per MT5 account (EA state, sessions, commands, order alerts)
+# NOTIFY : economic calendar + unified notifications (news alerts, order alerts, Telegram delivery)
 [[durable_objects.bindings]]
 name = "HUB"
 class_name = "Hub"
 
+[[durable_objects.bindings]]
+name = "NOTIFY"
+class_name = "Notify"
+
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["Hub"]
+
+[[migrations]]
+tag = "v2"
+new_sqlite_classes = ["Notify"]
+
+# ── Secrets (never put these in this file) ──────────────────────────────
+#   wrangler secret put BOT_TOKEN      REQUIRED  Telegram bot token (also used to verify Telegram identity)
+#   wrangler secret put APP_PASSWORD   REQUIRED  the app password. Login is refused until it exists.
+#   wrangler secret put PAIR_CODE      RECOMMENDED  the EA <-> account PAIRING code (type the same value in the EA input InpBrPairCode). Falls back to APP_PASSWORD when unset.
+#   wrangler secret put ADMIN_KEY     optional  enables GET /admin/diag (internal diagnostics: raw EA command log, technical failures, archive summary). Unset = the endpoint does not exist. Never shown in the Mini App.
+#   wrangler secret put TE_KEY         optional  Trading Economics key (only used when no EA is online)
+#
+# ── Optional settings: uncomment the lines you need under [vars] above (an env value always wins over worker.js CONFIG) ──
+[vars]
+# PRODUCTION: CORS is restricted to YOUR web app. The Origin is the DOMAIN ONLY (no /repo path). Several origins: comma separated.
+# Not set / empty = no browser origin is allowed (fail-closed). "*" = open, local testing only (GET / then reports corsOpen:true).
+ALLOWED_ORIGIN = "https://spreadsupposed-jpg.github.io"
+# LOCK_SECONDS   = "120"      # lock length after too many wrong passwords
+# MAX_ATTEMPTS   = "8"        # wrong passwords before the lock
+# SESSION_DAYS   = "30"       # sliding session lifetime (any authenticated request extends it)
+# EA_STALE_SEC   = "20"       # seconds without an EA sync before it counts as offline (the app reads this value from the server)
+# PAIR_MAX_FAILS = "10"       # wrong pairing codes per account before the lock
+# PAIR_LOCK_SEC  = "300"      # pairing lock length
+# NEWS_SCOPE     = "server"   # server = calendar/notifications per broker server (default) | global = one shared shard (v4.5 behaviour)
+# SESSION_EPOCH  = "1"        # bump 1 -> 2 to sign EVERYBODY out at once
+# REQUIRE_TG     = "1"        # "0" = allow sign-in from a normal browser (default: only inside Telegram)
+# MT5_FEED       = "1"        # "0" = ignore the MT5 calendar and use only the external feeds
+# NEWS_PROVIDER  = "auto"     # auto | ff | te
+# MARKET_TZ      = "UTC"      # fallback platform time zone (the EA reports the real broker offset itself)

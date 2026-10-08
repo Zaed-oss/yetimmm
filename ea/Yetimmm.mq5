@@ -4,11 +4,14 @@
 //|  MetaTrader 5 | Telegram control | State recovery | Trade log    |
 //+------------------------------------------------------------------+
 #property copyright "Yetimmm"
-#property version   "2.19"
+#property version   "2.21"
 #property description "Yetimmm | XAUUSD | Two-level Stop Buy / Stop Sell switch + risk sequence | Telegram integration"
 
 #include <Trade\Trade.mqh>
 
+//--- v2.21 (audit fixes): InpBreachPolicy now defaults to BREACH_WAIT = the literal philosophy (SL of a Buy Stop -> a Sell Stop is placed at that SL level and
+//---   waits; no market reverse unless you opt in). New InpBrPairCode: explicit EA<->account PAIRING (the Worker mints the EA secret, MathRand is no longer the secret).
+//---   The state now carries tick size / point / position id (exact order-alert matching) and MT5 link diagnostics (connected / AutoTrading / account trading).
 //--- v2.19: EDGE-TRIGGERED ALERTS (a condition is reported once, re-armed after it clears / 1 h), FROZEN PRICE while STOPPED (state carries frz/frzT),
 //---   DELETE / EDIT of a WAITING level from the Mini App (side only, no ticket), duplicate-command guard (3 s), cached closure scan (no global-variable scan per sync)
 //--- v2.18: ZONE GATE (InpZoneGate). In a trending market one of the two stop levels is always placeable (e.g. the Sell Stop below a falling price) while the other is not;
@@ -137,8 +140,8 @@ enum ENUM_YT_MISS
 //--- after a verified SL: what if the OPPOSITE level has already been crossed (a stop order cannot be placed there)?
 enum ENUM_YT_BREACH
   {
-   BREACH_WAIT=0,     // pending orders only: wait until the level can be placed (after a gap the move may be MISSED)
-   BREACH_MARKET=1    // DEFAULT: open the opposite direction at market right after the SL (pre-flighted, lot from the real price)
+   BREACH_WAIT=0,     // DEFAULT (v2.21): the strategy's literal philosophy - pending orders only: the opposite Stop is placed at the SL level and waits for price (after a gap the move may be MISSED)
+   BREACH_MARKET=1    // ADVANCED / opt-in: open the opposite direction at market right after the SL when the price already crossed the level (pre-flighted, lot from the real price)
   };
 
 //--- which pending orders the bot must keep alive
@@ -167,10 +170,10 @@ input ENUM_YT_DEV_ACTION InpDevAction = YT_DEV_REJECT; // Action when a fill exc
 input int    InpWarnSpread     = 60;      // Spread Alert (points) - ALERT ONLY, trading is never blocked
 input double InpMinLevelGap    = 0.0;     // Minimum gap between Buy/Sell levels ($)
 input bool   InpZoneGate     = true;    // v2.18 ZONE GATE: when BOTH Buy Stop and Sell Stop are missing, place them TOGETHER only when the price is inside the zone (no lone order in a trending market)
-input ENUM_YT_BREACH InpBreachPolicy = BREACH_MARKET; // After an SL: opposite level already crossed -> MARKET (immediate) or WAIT (pending only)
+input ENUM_YT_BREACH InpBreachPolicy = BREACH_WAIT; // After an SL: WAIT (default, literal philosophy: pending Stop at the SL level) or MARKET (advanced: reverse at market when the level was already crossed)
 input bool   InpPriceFallback  = false;   // Classify SL/TP by exit price ONLY when the deal reason is unknown (never for manual / stop-out / EA closes; off = strict: DEAL_REASON only)
 input bool   InpCombinedMargin  = true;    // Place a missing Buy Stop / Sell Stop pair only when the margin of BOTH missing orders is available (off = each order is checked alone)
-input int    InpProtectCloseSec = 20;     // Position WITHOUT SL/TP: emergency-close after N seconds of failed protection (0 = never close, alert + retry only)
+input int    InpProtectCloseSec = 20;     // Position WITHOUT SL/TP: emergency-close after N seconds of failed protection. TRADING DECISION: 20 = "never stay unprotected" (a transient connection problem can close the trade at a loss larger than the planned risk); 0 = never force-close (alert + retry only; the position may stay unprotected)
 
 input group "=== Manual changes in MT5 ==="
 input ENUM_YT_EXT  InpExtPolicy  = YT_EXT_ADOPT;   // Order moved in MT5 (ADOPT = MT5 sets ENTRY only; SL/TP re-derived)
@@ -195,7 +198,8 @@ input int    InpTgPollMs       = 1000;     // Telegram fast polling interval (ms
 input group "=== Mini App Bridge (Cloudflare Worker) ==="
 input bool   InpBrEnable       = true;    // Enable Mini App bridge
 input string InpBrUrl      = "https://yetimmm-bridge.sayfhazeem078.workers.dev"; // Worker URL (pre-filled) - must also be listed in Tools > Options > Expert Advisors > Allowed URLs (MT5 does not allow an EA to add it itself)
-input bool   InpBrResetPw    = false;   // Set TRUE once (then back to FALSE) to sign every device out of this account (a normal EA restart after being away already does this)
+input string InpBrPairCode   = "";      // PAIRING CODE = the Worker secret PAIR_CODE (or APP_PASSWORD when PAIR_CODE is not set). Needed ONCE per account: without it a NEW account is refused. Visible in this EA's inputs - use a dedicated PAIR_CODE, not your trading password
+input bool   InpBrResetPw    = false;   // Set TRUE once (then back to FALSE) to sign every device out of this account (a normal EA restart does NOT sign anyone out since v4.1)
 input int    InpBrPollSec      = 3;       // Bridge sync interval (sec)
 
 //+------------------------------------------------------------------+
@@ -4766,18 +4770,40 @@ bool MagicGuardOk()
 //| the Telegram commands (DoStart / ExecStop / ApplyLevels ...).    |
 //+------------------------------------------------------------------+
 string g_brSec="";
-bool   g_brFresh=true;             // first sync after (re)start: the Worker revokes old logins if the EA was away for a while
+bool   g_brFresh=true;             // first sync after (re)start (an EA restart no longer signs anybody out; only reset / a changed MT5 server does)
 bool   g_brShared=false, g_brSharedLoaded=false;
 // v3: private secret generated once by the EA itself (invisible to the user) - proves "this is the same EA" to the Worker
+bool   g_brPairLoaded=false, g_brPairNeed=true;   // v2.21: true until the Worker confirmed the pairing (then the minted secret alone authenticates)
+string YtSha256Hex(const string src)
+  {
+   uchar inb[],outb[],keyb[];
+   int n=StringToCharArray(src,inb,0,WHOLE_ARRAY,CP_UTF8);
+   if(n>1) ArrayResize(inb,n-1);
+   ArrayResize(keyb,0);
+   if(CryptEncode(CRYPT_HASH_SHA256,inb,keyb,outb)<=0) return "";
+   string h="";
+   for(int i=0;i<ArraySize(outb);i++) h+=StringFormat("%02x",outb[i]);
+   return h;
+  }
+// The secret is now a BOOTSTRAP value only: the Worker mints the real one (CSPRNG) when the pairing code is accepted and the EA stores it ("es" in the sync reply).
+// The local value mixes several entropy sources through SHA-256 (MathRand alone is not a cryptographic generator).
 string BrKeyEff()
   {
    if(StringLen(g_brSec)>=16) return g_brSec;
    string s=CfgGet("brsec","");
    if(StringLen(s)<16)
      {
-      MathSrand((int)(GetTickCount64()%2147483647) ^ (int)TimeLocal() ^ (int)AccountInfoInteger(ACCOUNT_LOGIN));
-      s="";
-      for(int i=0;i<32;i++) s+=StringSubstr("0123456789abcdef",MathRand()%16,1);
+      ulong mix=GetMicrosecondCount() ^ (ulong)GetTickCount64() ^ ((ulong)TimeLocal()<<20) ^ (ulong)AccountInfoInteger(ACCOUNT_LOGIN);
+      MathSrand((int)(mix%2147483647));
+      string seed=IntegerToString((long)mix)+"|"+IntegerToString((long)TerminalInfoInteger(TERMINAL_MEMORY_USED))+"|"+IntegerToString((long)TerminalInfoInteger(TERMINAL_PING_LAST))+"|"+
+                  DoubleToString(SymbolInfoDouble(_Symbol,SYMBOL_BID),8)+"|"+TerminalInfoString(TERMINAL_PATH)+"|"+TerminalInfoString(TERMINAL_DATA_PATH);
+      for(int k=0;k<16;k++) seed+="|"+IntegerToString(MathRand());
+      s=YtSha256Hex(seed);
+      if(StringLen(s)<32)               // SHA-256 unavailable: legacy generator (the Worker mints the real secret anyway)
+        {
+         s="";
+         for(int i=0;i<32;i++) s+=StringSubstr("0123456789abcdef",MathRand()%16,1);
+        }
       CfgSet("brsec",s);
       CfgSaveFile();
      }
@@ -4813,6 +4839,120 @@ string JEsc(const string s)
    StringReplace(r,"\n"," | ");
    StringReplace(r,"\t"," ");
    return r;
+  }
+
+//+------------------------------------------------------------------+
+//| v2.20: MT5 built-in economic calendar -> Worker                   |
+//| The logged-in MT5 account is the news source: it carries the REAL |
+//| Actual values and the broker's own server time. The EA sends only |
+//| a tiny content hash every sync; the full table travels only when  |
+//| the content changed (or the Worker asks for it). Times are UTC.   |
+//+------------------------------------------------------------------+
+string   g_calJson="";           // rows array (JSON) of this week
+string   g_calHash="";           // content hash of g_calJson
+string   g_calSent="";           // last hash the Worker received
+bool     g_calNeed=false;        // the Worker asked for the table
+bool     g_calHot=false;         // an event is due / just released and still has no Actual -> refresh fast
+datetime g_calBuilt=0;
+
+// broker server time minus GMT, rounded to 15 min (DST of the broker is followed automatically)
+int BrTzOffset()
+  {
+   long d=(long)(TimeTradeServer()-TimeGMT());
+   long r=(long)MathRound((double)d/900.0)*900;
+   if(r>50400 || r<-50400) r=0;
+   return (int)r;
+  }
+
+string CalHash(const string s)
+  {
+   ulong h=5381;
+   int n=StringLen(s);
+   for(int i=0;i<n;i++) h=((h<<5)+h)+(ulong)StringGetCharacter(s,i);
+   return StringFormat("%I64x",h);
+  }
+
+string CalFmt(const double v,const MqlCalendarEvent &ev)
+  {
+   if(!MathIsValidNumber(v)) return "";
+   string suf="";
+   switch(ev.multiplier)
+     {
+      case CALENDAR_MULTIPLIER_THOUSANDS: suf="K"; break;
+      case CALENDAR_MULTIPLIER_MILLIONS:  suf="M"; break;
+      case CALENDAR_MULTIPLIER_BILLIONS:  suf="B"; break;
+      case CALENDAR_MULTIPLIER_TRILLIONS: suf="T"; break;
+      default: break;
+     }
+   if(ev.unit==CALENDAR_UNIT_PERCENT) suf+="%";
+   int dg=(int)ev.digits;
+   if(dg>6) dg=6;
+   return DoubleToString(v,dg)+suf;
+  }
+
+bool CalBuild()
+  {
+   string cur[]={"USD","EUR","GBP","JPY","AUD","CAD","CHF","NZD","CNY"};
+   datetime st=TimeTradeServer();
+   MqlDateTime dt;
+   TimeToStruct(st,dt);
+   datetime day0=st-(datetime)(dt.hour*3600+dt.min*60+dt.sec);
+   datetime mon=day0-(datetime)(((dt.day_of_week+6)%7)*86400);      // Monday 00:00 (server time) of this week
+   datetime from=mon, to=mon+7*86400;
+   if(dt.day_of_week==0 || dt.day_of_week==6) to=mon+14*86400;     // weekend: also show next week so "next event" is never empty
+   int off=BrTzOffset();
+   string rows="";
+   int cnt=0;
+   bool hot=false;
+   for(int c=0;c<ArraySize(cur) && cnt<450;c++)
+     {
+      MqlCalendarValue vals[];
+      ResetLastError();
+      int n=CalendarValueHistory(vals,from,to,NULL,cur[c]);
+      if(n<=0) continue;
+      for(int i=0;i<n && cnt<450;i++)
+        {
+         MqlCalendarEvent ev;
+         if(!CalendarEventById(vals[i].event_id,ev)) continue;
+         MqlCalendarCountry co;
+         if(!CalendarCountryById(ev.country_id,co)) continue;
+         string imp="";
+         if(ev.type==CALENDAR_TYPE_HOLIDAY) imp="holiday";
+         else if(ev.importance==CALENDAR_IMPORTANCE_HIGH) imp="high";
+         else if(ev.importance==CALENDAR_IMPORTANCE_MODERATE) imp="medium";
+         else if(ev.importance==CALENDAR_IMPORTANCE_LOW) imp="low";
+         else continue;
+         if(ev.type!=CALENDAR_TYPE_HOLIDAY && (ev.time_mode==CALENDAR_TIMEMODE_NOTIME || ev.time_mode==CALENDAR_TIMEMODE_TENTATIVE)) continue;   // no exact time: an alert would be a guess
+         bool euCountry=(cur[c]=="EUR" && co.code!="EU");
+         if(euCountry && (imp=="low" || imp=="holiday")) continue;   // keep the euro list readable: member-state noise only when it matters
+         string a="",f="",p="";
+         if(vals[i].HasActualValue())   a=CalFmt(vals[i].GetActualValue(),ev);
+         if(vals[i].HasForecastValue()) f=CalFmt(vals[i].GetForecastValue(),ev);
+         if(vals[i].HasRevisedValue())       p=CalFmt(vals[i].GetRevisedValue(),ev);
+         else if(vals[i].HasPreviousValue()) p=CalFmt(vals[i].GetPreviousValue(),ev);
+         if(imp!="holiday" && a=="" && vals[i].time>=st-1800 && vals[i].time<=st+180) hot=true;
+         string nm=ev.name;
+         if(euCountry) nm=co.code+" "+nm;
+         if(StringLen(nm)>90) nm=StringSubstr(nm,0,90);
+         long utc=(long)vals[i].time-(long)off;
+         rows+=(cnt>0?",":"")+"{\"t\":\""+JEsc(nm)+"\",\"c\":\""+cur[c]+"\",\"s\":"+IntegerToString(utc)+",\"m\":\""+imp+"\",\"p\":\""+JEsc(p)+"\",\"f\":\""+JEsc(f)+"\",\"a\":\""+JEsc(a)+"\"}";
+         cnt++;
+        }
+     }
+   g_calHot=hot;
+   if(cnt==0) return false;                      // calendar not synchronised yet / no data: keep what we had
+   g_calJson="["+rows+"]";
+   g_calHash=CalHash(g_calJson);
+   return true;
+  }
+
+void CalTick()
+  {
+   if(MQLInfoInteger(MQL_TESTER)) return;
+   int every=g_calHot?4:60;                      // fast only around a release, so Actual reaches the app within seconds
+   if(g_calBuilt!=0 && TimeLocal()-g_calBuilt<every) return;
+   g_calBuilt=TimeLocal();
+   if(!CalBuild() && StringLen(g_calHash)==0) g_calBuilt=TimeLocal()-50;   // first data not ready: retry in ~10 s
   }
 
 bool JDbl(const string seg,const string key,double &v)
@@ -5207,7 +5347,12 @@ string BrStateJson()
    string msg=g_blockReason;
    if(StringLen(msg)==0) msg=WaitNote();
    s+=",\"msg\":\""+JEsc(msg)+"\"";
-   s+=",\"ver\":\"2.19\",\"waits\":"+WaitsJson();
+   s+=",\"ver\":\"2.21\",\"sym\":\""+JEsc(g_sym)+"\",\"waits\":"+WaitsJson();
+   s+=",\"tick\":"+DoubleToString(g_tick,g_digits)+",\"pt\":"+DoubleToString(g_point,g_digits);   // symbol precision: the Worker matches order alerts with 3 ticks / Max Deviation, never a % of price
+   s+=",\"mt\":{\"conn\":"+(TerminalInfoInteger(TERMINAL_CONNECTED)?"true":"false")+",\"auto\":"+(TerminalInfoInteger(TERMINAL_TRADE_ALLOWED)?"true":"false")+
+      ",\"exp\":"+(MQLInfoInteger(MQL_TRADE_ALLOWED)?"true":"false")+",\"acc\":"+(AccountInfoInteger(ACCOUNT_TRADE_ALLOWED)?"true":"false")+
+      ",\"ea\":"+(AccountInfoInteger(ACCOUNT_TRADE_EXPERT)?"true":"false")+",\"tm\":"+(SymbolInfoInteger(g_sym,SYMBOL_TRADE_MODE)==SYMBOL_TRADE_MODE_FULL?"true":"false")+
+      ",\"ping\":"+IntegerToString((int)(TerminalInfoInteger(TERMINAL_PING_LAST)/1000))+"}";
    s+=",\"buy\":"+DoubleToString(g_buyLevel,g_digits)+",\"sell\":"+DoubleToString(g_sellLevel,g_digits);
    s+=",\"risk\":"+D2(g_initRisk)+",\"cur\":"+D2(g_curRisk)+",\"acc\":"+D2(g_accLoss);
    s+=",\"seq\":"+IntegerToString(g_seq)+",\"no\":"+IntegerToString(g_tradeNo);
@@ -5220,7 +5365,7 @@ string BrStateJson()
    else s+=",\"pend\":null";
    ulong tk,pid; bool buy; double vol,entry,sl,tp,pr;
    if(OwnPosInfo(tk,pid,buy,vol,entry,sl,tp,pr))
-      s+=",\"pos\":{\"side\":\""+(buy?"BUY":"SELL")+"\",\"entry\":"+DoubleToString(entry,g_digits)+",\"sl\":"+DoubleToString(sl,g_digits)+",\"tp\":"+DoubleToString(tp,g_digits)+
+      s+=",\"pos\":{\"pid\":"+IntegerToString((long)pid)+",\"side\":\""+(buy?"BUY":"SELL")+"\",\"entry\":"+DoubleToString(entry,g_digits)+",\"sl\":"+DoubleToString(sl,g_digits)+",\"tp\":"+DoubleToString(tp,g_digits)+
          ",\"lot\":"+DoubleToString(vol,2)+",\"est\":"+D2(vol*MathAbs(entry-sl)*g_contract)+",\"risk\":"+D2(PGV(pid,"R",g_curRisk))+
          ",\"no\":"+IntegerToString((long)PGV(pid,"N",0))+",\"profit\":"+D2(pr)+"}";
    else s+=",\"pos\":null";
@@ -5383,7 +5528,18 @@ void BridgeSync()
    g_brLast=TimeLocal();
 
    if(!g_brCvLoaded) { g_brCv=(int)StringToInteger(CfgGet("brcv","0")); g_brCvLoaded=true; }
-   string body="{\"login\":\""+IntegerToString((long)AccountInfoInteger(ACCOUNT_LOGIN))+"\",\"srv\":\""+JEsc(AccountInfoString(ACCOUNT_SERVER))+"\",\"fresh\":"+(g_brFresh?"true":"false")+",\"reset\":"+(InpBrResetPw?"true":"false")+",\"cv\":"+IntegerToString(g_brCv)+",\"state\":"+BrStateJson()+",\"ack\":[";
+   if(!g_brPairLoaded) { g_brPairNeed=(CfgGet("brpaired","0")!="1"); g_brPairLoaded=true; }
+   //--- v2.20: broker time offset every sync; calendar hash every sync; full table only when it changed / was requested
+   CalTick();
+   string calPart=",\"tzo\":"+IntegerToString(BrTzOffset());
+   bool   calSending=false;
+   string calHashSent=g_calHash;
+   if(StringLen(g_calHash)>0)
+     {
+      calPart+=",\"calv\":\""+g_calHash+"\"";
+      if(g_calHash!=g_calSent || g_calNeed) { calPart+=",\"cal\":"+g_calJson; calSending=true; }
+     }
+   string body="{\"login\":\""+IntegerToString((long)AccountInfoInteger(ACCOUNT_LOGIN))+"\",\"srv\":\""+JEsc(AccountInfoString(ACCOUNT_SERVER))+"\",\"fresh\":"+(g_brFresh?"true":"false")+",\"reset\":"+(InpBrResetPw?"true":"false")+",\"cv\":"+IntegerToString(g_brCv)+calPart+",\"state\":"+BrStateJson()+",\"ack\":[";
    for(int i=0;i<ArraySize(g_brAck);i++) body+=(i>0?",":"")+"\""+g_brAck[i]+"\"";
    body+="]}";
    string url=InpBrUrl;
@@ -5395,7 +5551,11 @@ void BridgeSync()
    int n=StringToCharArray(body,data,0,WHOLE_ARRAY,CP_UTF8);
    if(n>0) ArrayResize(data,n-1);
    ResetLastError();
-   int code=WebRequest("POST",url,"Content-Type: application/json\r\nX-EA-Secret: "+BrKeyEff()+"\r\n",3000,data,res,rh);
+   string hdr="Content-Type: application/json\r\nX-EA-Secret: "+BrKeyEff()+"\r\n";
+   string pairCode=InpBrPairCode;
+   StringTrimLeft(pairCode); StringTrimRight(pairCode);
+   if(g_brPairNeed && StringLen(pairCode)>0) hdr+="X-EA-Pair: "+pairCode+"\r\n";   // sent ONLY until the Worker confirmed the pairing (and again if it ever asks for it)
+   int code=WebRequest("POST",url,hdr,3000,data,res,rh);
    if(code==-1)
      {
       int e=GetLastError();
@@ -5412,17 +5572,42 @@ void BridgeSync()
    if(code!=200 || StringFind(resp,"\"ok\":true")<0)
      {
       g_brOk=false;
+      string werr=JStr(resp,"\"error\":\"");
+      if(werr=="secret" || werr=="pair_required") g_brPairNeed=true;       // the Worker does not know this EA's secret: present the pairing code on the next sync
       if(TimeLocal()-g_brErrLog>=60)
         {
          g_brErrLog=TimeLocal();
-         YLog("Mini App bridge: HTTP "+IntegerToString(code)+" (Worker URL wrong, or this account is already bound to another EA install)");
+         if(werr=="pair_required")     YLog("Mini App bridge: this MT5 account is NOT PAIRED yet - set the input InpBrPairCode to the Worker secret PAIR_CODE (or the app password if PAIR_CODE is not set).");
+         else if(werr=="pair_bad")     YLog("Mini App bridge: pairing code REJECTED - InpBrPairCode must equal the Worker secret PAIR_CODE (or APP_PASSWORD when PAIR_CODE is not set).");
+         else if(werr=="pair_locked")  YLog("Mini App bridge: too many wrong pairing codes - pairing is locked for a few minutes.");
+         else if(werr=="secret")       YLog(StringLen(pairCode)>0?"Mini App bridge: this account is bound to another EA install - re-pairing with InpBrPairCode.":"Mini App bridge: this account is bound to another EA install (or the EA settings file was lost) - set InpBrPairCode to re-pair.");
+         else YLog("Mini App bridge: HTTP "+IntegerToString(code)+" (Worker URL wrong, or Worker error)");
         }
       return;
      }
    if(!g_brOk) YLog("Mini App bridge: connected.");
    g_brOk=true;
+   //--- v2.21 pairing: the Worker mints the EA secret (CSPRNG) when the pairing code is accepted; store it and stop sending the code
+   string mintedSecret=JStr(resp,"\"es\":\"");
+   if(StringLen(mintedSecret)>=32)
+     {
+      g_brSec=mintedSecret;
+      CfgSet("brsec",mintedSecret);
+      CfgSet("brpaired","1");
+      CfgSaveFile();
+      g_brPairNeed=false;
+      YLog("Mini App bridge: account PAIRED - a private secret issued by the Worker is stored (the pairing code is no longer sent).");
+     }
+   else if(g_brPairNeed && StringFind(resp,"\"paired\":true")>=0)
+     {
+      CfgSet("brpaired","1");
+      CfgSaveFile();
+      g_brPairNeed=false;
+     }
    g_brFresh=false;
    ArrayResize(g_brAck,0);              // the acks in this request were delivered
+   if(calSending) { g_calSent=calHashSent; g_calNeed=false; }
+   if(StringFind(resp,"\"calNeed\":true")>=0) g_calNeed=true;   // the Worker lost / never had the table: send it on the next sync
 
    //--- v2.19b: Telegram Bot Token / Chat IDs pushed by the Worker (no manual entry, survives restarts)
    int fpos=StringFind(resp,"\"cfg\":{");
@@ -5569,6 +5754,8 @@ int OnInit()
       if(MQLInfoInteger(MQL_TESTER)) YLog("Telegram disabled in the Strategy Tester.");
       else if(StringLen(g_tgTok)==0 || ArraySize(g_tgIds)==0) YLog("Telegram Connection Error: Bot Token or Authorized ID missing - Telegram inactive.");
      }
+   YLog("After-SL policy: "+(InpBreachPolicy==BREACH_MARKET?"MARKET (advanced / opt-in - reverses at market when the level was already crossed)":"WAIT (literal philosophy - pending Stop at the SL level)")+
+        " | Protection emergency-close: "+(InpProtectCloseSec>0?IntegerToString(InpProtectCloseSec)+" s":"OFF (alert + retry only)"));
    if(InpBrEnable && !MQLInfoInteger(MQL_TESTER))
      {
       if(StringLen(InpBrUrl)<12 || StringLen(BrKeyEff())<8)
@@ -5577,6 +5764,8 @@ int OnInit()
          YLog("Mini App bridge: INACTIVE - InpBrUrl must start with https://");
       else
          YLog("Mini App bridge: enabled | "+InpBrUrl+" | the URL must be listed in Allowed URLs (error 4014 otherwise).");
+      if(CfgGet("brpaired","0")!="1" && StringLen(InpBrPairCode)==0)
+         YLog("Mini App bridge: InpBrPairCode is empty - an account that is not yet bound to this Worker will be refused until you enter the pairing code (accounts bound by v2.20 keep working).");
      }
    g_connected=(bool)TerminalInfoInteger(TERMINAL_CONNECTED);
    if(g_stateRecovered) YLog("State Recovered: "+StateText()+" | Risk "+D2(g_curRisk)+" | Acc.Loss "+D2(g_accLoss)+" | Seq "+IntegerToString(g_seq)+" | Last Trade #"+TNo(g_tradeNo));

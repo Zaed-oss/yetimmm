@@ -1,5 +1,8 @@
 node_modules/
+.wrangler/
 .dev.vars
 .env
 *.log
-.wrangler/
+.DS_Store
+# MT5 compiled output
+*.ex5
