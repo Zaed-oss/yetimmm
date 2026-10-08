@@ -52,7 +52,7 @@ ver ? ok("EA version " + ver[1]) : fail("EA version not found");
 
 // 8) v4.6 policy lints — the audit findings must never come back silently
 const eaSrc = read("ea/Yetimmm.mq5"), wk = read("worker/worker.js");
-/input\s+ENUM_YT_BREACH\s+InpBreachPolicy\s*=\s*BREACH_WAIT\b/.test(eaSrc) ? ok("EA default after-SL policy is BREACH_WAIT (literal philosophy)") : fail("EA InpBreachPolicy default is not BREACH_WAIT");
+/input\s+ENUM_YT_BREACH\s+InpBreachPolicy\s*=\s*BREACH_MARKET\b/.test(eaSrc) ? ok("EA default after-SL policy is BREACH_MARKET (v2.22: immediate reversal)") : fail("EA InpBreachPolicy default is not BREACH_MARKET");
 /price\s*\*\s*0\.001/.test(wk) ? fail("worker.js matches orders with a % of price (0.1%) tolerance") : ok("worker.js has no %-of-price order tolerance");
 for (const need of ['\\"tick\\"', '\\"pt\\"', '\\"pid\\"', '\\"mt\\"']) eaSrc.includes(need) ? ok("EA state carries " + need.replace(/\\/g, "")) : fail("EA state is missing " + need.replace(/\\/g, ""));
 /X-EA-Pair/.test(eaSrc) && /X-EA-Pair/.test(wk) ? ok("EA and Worker both implement pairing (X-EA-Pair)") : fail("pairing header missing on the EA or the Worker side");
