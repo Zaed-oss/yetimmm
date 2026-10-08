@@ -9,6 +9,9 @@
 
 #include <Trade\Trade.mqh>
 
+//--- v2.22 (field fix): (1) InpBreachPolicy default = BREACH_MARKET: after a verified SL the opposite direction is opened AT ONCE (with WAIT the Sell Stop at the SL level
+//---   cannot exist because the price is already through it, so the whole reversal was missed). (2) ATOMIC PAIR: a lone Buy/Sell Stop is withdrawn if its partner could not be placed
+//---   together with it. (3) ZONE TOO NARROW alert. (4) InpBrPollSec 3 -> 1 (Mini App price lag).
 //--- v2.21 (audit fixes): InpBreachPolicy now defaults to BREACH_WAIT = the literal philosophy (SL of a Buy Stop -> a Sell Stop is placed at that SL level and
 //---   waits; no market reverse unless you opt in). New InpBrPairCode: explicit EA<->account PAIRING (the Worker mints the EA secret, MathRand is no longer the secret).
 //---   The state now carries tick size / point / position id (exact order-alert matching) and MT5 link diagnostics (connected / AutoTrading / account trading).
@@ -138,6 +141,12 @@ enum ENUM_YT_MISS
   };
 
 //--- after a verified SL: what if the OPPOSITE level has already been crossed (a stop order cannot be placed there)?
+enum ENUM_YT_ENTRY
+  {
+   ENTRY_PENDING=0,   // classic: a Buy Stop + a Sell Stop are placed on the server (needs Stops Level room, zone gate, both orders at once)
+   ENTRY_VIRTUAL=1    // v2.22 DEFAULT: the EA stores the zone and watches the price tick by tick; the moment the price crosses a level it opens that side AT MARKET (SL = opposite level)
+  };
+
 enum ENUM_YT_BREACH
   {
    BREACH_WAIT=0,     // DEFAULT (v2.21): the strategy's literal philosophy - pending orders only: the opposite Stop is placed at the SL level and waits for price (after a gap the move may be MISSED)
@@ -169,8 +178,9 @@ input int    InpMaxDeviation   = 30;      // Max Slippage Check (points) - check
 input ENUM_YT_DEV_ACTION InpDevAction = YT_DEV_REJECT; // Action when a fill exceeds the Max Slippage Check
 input int    InpWarnSpread     = 60;      // Spread Alert (points) - ALERT ONLY, trading is never blocked
 input double InpMinLevelGap    = 0.0;     // Minimum gap between Buy/Sell levels ($)
+input ENUM_YT_ENTRY InpEntryMode = ENTRY_VIRTUAL; // v2.22: VIRTUAL = stored zone + tick trigger + market execution (no pending orders, no zone gate, no lone order). PENDING = classic Stop orders
 input bool   InpZoneGate     = true;    // v2.18 ZONE GATE: when BOTH Buy Stop and Sell Stop are missing, place them TOGETHER only when the price is inside the zone (no lone order in a trending market)
-input ENUM_YT_BREACH InpBreachPolicy = BREACH_WAIT; // After an SL: WAIT (default, literal philosophy: pending Stop at the SL level) or MARKET (advanced: reverse at market when the level was already crossed)
+input ENUM_YT_BREACH InpBreachPolicy = BREACH_MARKET; // After an SL: MARKET (DEFAULT v2.22: the opposite direction is opened AT ONCE - the Stop at the SL level can never exist once the price is through it) or WAIT (pending Stop only: the reversal is MISSED after the SL)
 input bool   InpPriceFallback  = false;   // Classify SL/TP by exit price ONLY when the deal reason is unknown (never for manual / stop-out / EA closes; off = strict: DEAL_REASON only)
 input bool   InpCombinedMargin  = true;    // Place a missing Buy Stop / Sell Stop pair only when the margin of BOTH missing orders is available (off = each order is checked alone)
 input int    InpProtectCloseSec = 20;     // Position WITHOUT SL/TP: emergency-close after N seconds of failed protection. TRADING DECISION: 20 = "never stay unprotected" (a transient connection problem can close the trade at a loss larger than the planned risk); 0 = never force-close (alert + retry only; the position may stay unprotected)
@@ -198,7 +208,7 @@ input bool   InpBrEnable       = true;    // Enable Mini App bridge
 input string InpBrUrl      = "https://yetimmm-bridge.sayfhazeem078.workers.dev"; // Worker URL (pre-filled) - must also be listed in Tools > Options > Expert Advisors > Allowed URLs (MT5 does not allow an EA to add it itself)
 input string InpBrPairCode   = "";      // PAIRING CODE = the Worker secret PAIR_CODE (or APP_PASSWORD when PAIR_CODE is not set). Needed ONCE per account: without it a NEW account is refused. Visible in this EA's inputs - use a dedicated PAIR_CODE, not your trading password
 input bool   InpBrResetPw    = false;   // Set TRUE once (then back to FALSE) to sign every device out of this account (a normal EA restart does NOT sign anyone out since v4.1)
-input int    InpBrPollSec      = 3;       // Bridge sync interval (sec)
+input int    InpBrPollSec      = 1;       // Bridge sync interval (sec) - v2.22: 1 s (was 3) so the Mini App price follows the broker closely
 
 //+------------------------------------------------------------------+
 //| Constants                                                        |
@@ -266,6 +276,7 @@ bool          g_reqBusy[2]={false,false};   // a server request for this side is
 ulong         g_retryMs[2]={0,0};           // earliest time a failed / unconfirmed request may be repeated
 int           g_failCnt[2]={0,0};
 double        g_failLvl[2]={0.0,0.0};       // desired level of the last failed request (a NEW level bypasses the back-off)
+bool          g_vArmed=false;               // v2.22 virtual entry: the price has been INSIDE the zone since arming (edge trigger, like a real Stop order)
 bool          g_zoneGate=false;             // v2.18: both orders are held back until the price is inside the zone
 bool          g_unconf[2]={false,false};    // server accepted the modify but the order does not show the new values yet
 ulong         g_nextDelMs=0;
@@ -3279,16 +3290,16 @@ void RevEnterError(const string why)
    g_dirty=true;
   }
 
-bool TryMarketReverse()
+bool TryMarketReverse(const int force=0)   // force: 0 = reversal after an SL, 1 = virtual-entry BUY, 2 = virtual-entry SELL
   {
-   if(g_lastSLSide!=1 && g_lastSLSide!=2) return false;
-   bool revBuy=(g_lastSLSide==2);                 // a Sell was stopped -> Buy next; a Buy was stopped -> Sell next
+   if(force==0 && g_lastSLSide!=1 && g_lastSLSide!=2) return false;
+   bool revBuy=(force!=0)?(force==1):(g_lastSLSide==2);                 // a Sell was stopped -> Buy next; a Buy was stopped -> Sell next
    double lvl=revBuy?g_buyLevel:g_sellLevel;      // the level that would have been the stop-order entry
    double slLvl=revBuy?g_sellLevel:g_buyLevel;    // SL of the new trade = the opposite level
    if(lvl<=0.0 || slLvl<=0.0 || g_buyLevel<=g_sellLevel) return false;
    MqlTick tk;
    if(!SymbolInfoTick(g_sym,tk) || tk.ask<=0.0 || tk.bid<=0.0) return false;
-   bool breached=revBuy?(tk.ask>=lvl):(tk.bid<=lvl);
+   bool breached=(force!=0)?true:(revBuy?(tk.ask>=lvl):(tk.bid<=lvl));
    if(!breached) { g_revHard=0; return false; }   // level still ahead of the price: a normal pending order is used
    ulong nowMs=GetTickCount64();
    if(nowMs<g_nextRevMs) return true;
@@ -3368,6 +3379,62 @@ bool TryMarketReverse()
   }
 
 //+------------------------------------------------------------------+
+//| v2.22 VIRTUAL ENTRY: the zone is stored in the EA; no pending     |
+//| order exists. Edge trigger like a real Stop order: the price must |
+//| first be INSIDE the zone, then crossing the upper level = BUY and |
+//| crossing the lower level = SELL, executed at market with the SL   |
+//| at the opposite level. Both levels are always honoured, so there  |
+//| is no zone gate, no Stops-Level window and no lone order.         |
+//+------------------------------------------------------------------+
+bool VirtualInside()
+  {
+   MqlTick tk;
+   if(!SymbolInfoTick(g_sym,tk) || tk.ask<=0.0 || tk.bid<=0.0 || g_buyLevel<=g_sellLevel) return false;
+   return (tk.bid>g_sellLevel && tk.ask<g_buyLevel);
+  }
+
+bool VirtualWake()
+  {
+   if(InpEntryMode!=ENTRY_VIRTUAL) return false;
+   if(g_state!=YT_ARMED && g_state!=YT_WAITING_REENTRY) return false;
+   if(g_mode!=YM_BOTH || g_buyLevel<=0.0 || g_sellLevel<=0.0 || g_buyLevel<=g_sellLevel) return false;
+   MqlTick tk;
+   if(!SymbolInfoTick(g_sym,tk) || tk.ask<=0.0 || tk.bid<=0.0) return false;
+   if(!g_vArmed) return (tk.bid>g_sellLevel && tk.ask<g_buyLevel);
+   return (tk.ask>=g_buyLevel || tk.bid<=g_sellLevel);
+  }
+
+void VirtualEntryPass()
+  {
+   g_zoneGate=false; g_trig[0]=0.0; g_trig[1]=0.0;
+   //--- no pending order is wanted in this mode (leftovers of PENDING mode are removed)
+   ulong od[];
+   int no=OwnOrders(od);
+   if(no>0 && GetTickCount64()>=g_nextDelMs)
+      for(int i=0;i<no;i++)
+         if(!DeleteOrder(od[i],"Virtual entry mode: no pending order is wanted")) g_nextDelMs=GetTickCount64()+2000;
+   string vt=g_vArmed?"Virtual trigger armed: BUY when Ask >= "+PX(g_buyLevel)+" | SELL when Bid <= "+PX(g_sellLevel)
+                     :"Waiting for the price to enter the zone ("+PX(g_sellLevel)+" - "+PX(g_buyLevel)+")";
+   g_waitReason=vt;
+   SetSync(true, YS_WAITING,vt);
+   SetSync(false,YS_WAITING,vt);
+   MqlTick tk;
+   if(!SymbolInfoTick(g_sym,tk) || tk.ask<=0.0 || tk.bid<=0.0) return;
+   if(!g_vArmed)
+     {
+      if(tk.bid>g_sellLevel && tk.ask<g_buyLevel)
+        {
+         g_vArmed=true;
+         if(g_state==YT_WAITING_REENTRY) { g_state=YT_ARMED; SaveState(); }
+         YLog("Virtual entry armed: the price is inside the zone ("+PX(g_sellLevel)+" - "+PX(g_buyLevel)+")");
+        }
+      return;
+     }
+   if(tk.ask>=g_buyLevel)       TryMarketReverse(1);
+   else if(tk.bid<=g_sellLevel) TryMarketReverse(2);
+  }
+
+//+------------------------------------------------------------------+
 //| Reconcile: keep real account state == bot state (idempotent)     |
 //+------------------------------------------------------------------+
 void Reconcile()
@@ -3377,6 +3444,7 @@ void Reconcile()
    int np=OwnPositions(pos);
    if(np>0)
      {
+      g_vArmed=false;
       g_activeNoPosSince=0;
       if(g_state!=YT_STOPPED)
         {
@@ -3479,7 +3547,8 @@ void Reconcile()
    if((needBuy && g_buyLevel<=0.0) || (needSell && g_sellLevel<=0.0)) return;
 
    //--- v2.00: optional market reversal when the stop-out already crossed the opposite level
-   if(g_state==YT_WAITING_REENTRY && InpBreachPolicy==BREACH_MARKET && TryMarketReverse()) return;
+   if(g_state==YT_WAITING_REENTRY && (InpBreachPolicy==BREACH_MARKET || InpEntryMode==ENTRY_VIRTUAL) && TryMarketReverse()) return;
+   if(InpEntryMode==ENTRY_VIRTUAL && needBuy && needSell && g_buyLevel>g_sellLevel) { VirtualEntryPass(); return; }
 
    //--- 0) manual changes in MT5 are DETECTED first (moved / deleted / SL-TP edited), then handled by the explicit policy
    bool held[2]={false,false};
@@ -3570,6 +3639,14 @@ void Reconcile()
          g_trig[0]=WaitTrigger(true, g_buyLevel);
          g_trig[1]=WaitTrigger(false,g_sellLevel);
          string zt="Zone gate: waiting for the price to enter the zone (Sell "+PX(g_sellLevel)+" - Buy "+PX(g_buyLevel)+"); both orders are placed together";
+         //--- v2.22: the zone must be wider than both broker gaps + the spread, otherwise both orders can NEVER exist together
+         double zNeed=WaitGap(true)+WaitGap(false)+(double)SymbolInfoInteger(g_sym,SYMBOL_SPREAD)*g_point;
+         if(g_buyLevel-g_sellLevel<zNeed)
+           {
+            zt="⚠️ ZONE TOO NARROW: width "+PX(g_buyLevel-g_sellLevel)+" < minimum "+PX(zNeed)+" (Stops Level x2 + spread). Both orders can never be placed together - widen the zone.";
+            RaiseAlert("ZONENARROW",zt,true,true);
+           }
+         else ClearAlert("ZONENARROW");
          g_waitReason=zt;
          SetSync(true, YS_WAITING,(zB==1)?WaitText(true, g_buyLevel):zt);
          SetSync(false,YS_WAITING,(zS==1)?WaitText(false,g_sellLevel):zt);
@@ -3583,6 +3660,29 @@ void Reconcile()
      {
       if(needBuy  && !held[0] && !(cmHold && keepT[0]==0)) ReconcileSide(true, g_buyLevel, expBuy, okB,keepT[0]);
       if(needSell && !held[1] && !(cmHold && keepT[1]==0)) ReconcileSide(false,g_sellLevel,expSell,okS,keepT[1]);
+      //--- v2.22 ATOMIC PAIR: the two stop orders are one unit. If this pass started with BOTH missing and ended with only ONE on the server because the
+      //--- other side is still only WAITING for the market (price moved while sending), the lone order is withdrawn and the zone gate holds both again.
+      //--- (before: a lone Sell Stop / Buy Stop stayed alone while the other side waited for a price that had already left the zone)
+      if(InpZoneGate && !cmHold && needBuy && needSell && keepT[0]==0 && keepT[1]==0 && !held[0] && !held[1] && GetTickCount64()>=g_nextDelMs)
+        {
+         ulong ro[];
+         if(OwnOrders(ro)==1 && OrderSelect(ro[0]))
+           {
+            bool haveBuy=(OrderGetInteger(ORDER_TYPE)==ORDER_TYPE_BUY_STOP);
+            if(g_sync[SideIdx(!haveBuy)]==YS_WAITING)
+              {
+               string rbWhy=string(haveBuy?"Sell":"Buy")+" Stop could not be placed together with it";
+               if(DeleteOrder(ro[0],"Pair rollback: "+rbWhy))
+                 {
+                  SetSync(haveBuy,YS_WAITING,"Pair rollback: both orders are placed together when the price is inside the zone");
+                  g_nextPlaceMs=GetTickCount64()+400;
+                  g_dirty=true;
+                  YLog("Atomic pair: lone "+SideName(haveBuy)+" withdrawn ("+rbWhy+"); both orders wait for the zone again");
+                 }
+               else g_nextDelMs=GetTickCount64()+2000;
+              }
+           }
+        }
      }
   }
 
@@ -5819,6 +5919,7 @@ void OnTick()
            }
         }
      }
+   if(!crossed && now-g_lastSyncMs>=50 && VirtualWake()) crossed=true;   // v2.22: virtual entry reacts on the tick the price crosses
    if(crossed || g_dirty || now-g_lastSyncMs>=300)
      {
       g_dirty=false;
