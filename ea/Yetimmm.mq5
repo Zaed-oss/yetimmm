@@ -1762,13 +1762,14 @@ string WaitsJson()
       ulong tk; double ap;
       if(SideActual(b,tk,ap)) continue;
       string why;
-      if(PlacementState(b,lv,why)!=1) continue;
+      int ps=PlacementState(b,lv,why);
+      if(ps==2) continue;   // v4.12.1: only a level that can NEVER be placed is hidden; ps==0 (placeable, order not created yet) stays visible as "placing" - no flicker
       double trig=WaitTrigger(b,lv);
       double now=b?t.ask:t.bid;
       double dist=b?(now-trig):(trig-now);
       if(c>0) out+=",";
       out+="{\"side\":\""+(b?"BUY":"SELL")+"\",\"level\":"+DoubleToString(lv,g_digits)+",\"trig\":"+DoubleToString(trig,g_digits)+
-           ",\"now\":"+DoubleToString(now,g_digits)+",\"dist\":"+DoubleToString(MathMax(dist,0.0),g_digits)+"}";
+           ",\"now\":"+DoubleToString(now,g_digits)+",\"dist\":"+DoubleToString(MathMax(dist,0.0),g_digits)+(ps==0?",\"placing\":true":"")+"}";
       c++;
      }
    return out+"]";
