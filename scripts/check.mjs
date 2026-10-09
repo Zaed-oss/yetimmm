@@ -52,14 +52,19 @@ ver ? ok("EA version " + ver[1]) : fail("EA version not found");
 
 // 8) v4.6 policy lints — the audit findings must never come back silently
 const eaSrc = read("ea/Yetimmm.mq5"), wk = read("worker/worker.js");
-/input\s+ENUM_YT_BREACH\s+InpBreachPolicy\s*=\s*BREACH_MARKET\b/.test(eaSrc) ? ok("EA default after-SL policy is BREACH_MARKET (v2.22: immediate reversal)") : fail("EA InpBreachPolicy default is not BREACH_MARKET");
+/input\s+ENUM_YT_BREACH\s+InpBreachPolicy\s*=\s*BREACH_WAIT\b/.test(eaSrc) ? ok("EA default after-SL policy is BREACH_WAIT (v2.23: pending pair re-armed, Market Reversal OFF)") : fail("EA InpBreachPolicy default is not BREACH_WAIT");
+/input\s+ENUM_YT_ENTRY\s+InpEntryMode\s*=\s*ENTRY_PENDING\b/.test(eaSrc) ? ok("EA default entry mode is ENTRY_PENDING (real Buy Stop / Sell Stop)") : fail("EA InpEntryMode default is not ENTRY_PENDING");
+/input\s+ENUM_YT_RISKPOL\s+InpRiskPolicy\s*=\s*YT_RISK_STRICT\b/.test(eaSrc) ? ok("EA default risk policy is STRICT (never exceeds the requested risk)") : fail("EA InpRiskPolicy default is not STRICT");
+/input\s+bool\s+InpTgViaWorker\s*=\s*true/.test(eaSrc) && /input\s+bool\s+InpOrderCheck\s*=\s*true/.test(eaSrc) ? ok("EA defaults: notifications via Worker, OrderCheck ON") : fail("EA defaults InpTgViaWorker / InpOrderCheck must be true");
 /price\s*\*\s*0\.001/.test(wk) ? fail("worker.js matches orders with a % of price (0.1%) tolerance") : ok("worker.js has no %-of-price order tolerance");
 for (const need of ['\\"tick\\"', '\\"pt\\"', '\\"pid\\"', '\\"mt\\"']) eaSrc.includes(need) ? ok("EA state carries " + need.replace(/\\/g, "")) : fail("EA state is missing " + need.replace(/\\/g, ""));
 /X-EA-Pair/.test(eaSrc) && /X-EA-Pair/.test(wk) ? ok("EA and Worker both implement pairing (X-EA-Pair)") : fail("pairing header missing on the EA or the Worker side");
 const stW = Number((wk.match(/EA_STALE_SEC:\s*(\d+)/) || [])[1]), stA = Number((html.match(/staleSec:\s*(\d+)/) || [])[1]);
 stW && stW === stA && /eaStaleSec/.test(html) && /eaStaleSec/.test(wk) ? ok("offline timeout: one source (server " + stW + " s, app fallback identical)") : fail("offline timeout differs between Worker (" + stW + ") and app (" + stA + ") or the app ignores eaStaleSec");
-const eaVer = (eaSrc.match(/#property version\s+"([\d.]+)"/) || [])[1], stVer = (eaSrc.match(/\\"ver\\":\\"([\d.]+)\\"/) || [])[1];
-eaVer && eaVer === stVer ? ok("EA #property version matches the version it reports (" + eaVer + ")") : fail("EA version " + eaVer + " != reported state version " + stVer);
+const eaVer = (eaSrc.match(/#property version\s+"([\d.]+)"/) || [])[1], defVer = (eaSrc.match(/#define\s+YT_VER\s+"([\d.]+)"/) || [])[1];
+eaVer && eaVer === defVer ? ok("EA #property version == YT_VER (" + eaVer + ")") : fail("EA #property version " + eaVer + " != #define YT_VER " + defVer);
+/"ver\\":\\""\s*\+\s*YT_VER/.test(eaSrc) && !/\\"ver\\":\\"[\d.]+\\"/.test(eaSrc) ? ok("EA reports YT_VER in its state (no hard-coded version string)") : fail("EA state still carries a hard-coded version");
+!/v2\.18 loaded/.test(eaSrc) ? ok("EA OnInit prints the real version") : fail("EA OnInit still prints the old v2.18 message");
 /^\s*ALLOWED_ORIGIN\s*=\s*"\*"/m.test(toml) ? fail("wrangler.toml opens CORS to *")
   : /^\s*ALLOWED_ORIGIN\s*=\s*"https:\/\/[^\/"]+"/m.test(toml) ? ok("CORS is restricted to your web app (ALLOWED_ORIGIN, domain only)")
   : fail("ALLOWED_ORIGIN is not set (or has a path / is not https) in wrangler.toml [vars] -> production gate");
@@ -85,6 +90,38 @@ techOf(wk) && techOf(wk) === techOf(html) ? ok("technical-text rule is identical
 /"newcycle"/.test(wk) && /newCycleUI/.test(html) ? ok("guarded cycle reset exists (Worker + Mini App)") : fail("guarded cycle reset missing");
 /admin\/diag/.test(html) ? fail("Mini App references the admin diagnostics endpoint") : ok("Mini App never calls /admin/diag");
 
+// 11) v4.8 — one version everywhere + audit regressions (Broker / Risk engine)
+const pkgV = JSON.parse(read("package.json")).version, readme = read("README.md"), chg = read("CHANGELOG.md");
+const wV = (wk.match(/VERSION\s*=\s*"([\d.]+)"/) || [])[1], wP = (wk.match(/EA_PROTOCOL\s*=\s*"([\d.]+)"/) || [])[1];
+wV === pkgV ? ok("worker VERSION == package.json (" + pkgV + ")") : fail("worker VERSION " + wV + " != package.json " + pkgV);
+wP && wP === eaVer ? ok("worker EA_PROTOCOL == EA version (" + wP + ")") : fail("worker EA_PROTOCOL " + wP + " != EA version " + eaVer);
+new RegExp("^# Yetimmm v" + pkgV.replace(/\./g, "\\.")).test(readme) ? ok("README title = v" + pkgV) : fail("README title is not v" + pkgV);
+chg.split("\n").find((l) => l.startsWith("## v")).includes("v" + pkgV) ? ok("CHANGELOG top entry = v" + pkgV) : fail("CHANGELOG top entry is not v" + pkgV);
+const tests = (read("tests/worker.test.mjs").match(/^test\(/gm) || []).length;
+new RegExp("(^|\\D)" + tests + "\\s+(اختبار|tests)").test(readme) ? ok("README test count matches (" + tests + " Worker tests)") : fail("README test count != " + tests);
+const uiNoLive = html.replace(/\/\*RISK-CORE-BEGIN\*\/[\s\S]*?\/\*RISK-CORE-END\*\//, "");
+!/\bconst\s+C\s*=\s*100\b|\bSTEP\s*=\s*\.01|\bVMIN\s*=|\bVMAX\s*=/.test(uiNoLive) ? ok("Mini App: no hard-coded contract / step / min / max (BrokerSpec or an explicit simulation profile)") : fail("Mini App still hard-codes C / STEP / VMIN / VMAX");
+!/toFixed\(2\)/.test(uiNoLive.slice(uiNoLive.indexOf("function fillMkt"), uiNoLive.indexOf("function applyLevels"))) ? ok("Mini App: level filling is tick-aware (no toFixed(2))") : fail("Mini App fillMkt still uses toFixed(2)");
+/S\.bs/.test(html) && /S\.rk/.test(html) ? ok("Mini App reads BrokerSpec (S.bs) and RiskResult (S.rk) from the EA") : fail("Mini App does not use S.bs / S.rk");
+for (const need of ["OrderCheck(", "SYMBOL_VOLUME_LIMIT", "SYMBOL_EXPIRATION_MODE", "RiskCompute(", "BsJson()", "EvEmit(", "EvAckFrom(", "PairMinWidth()", "PAIR_NOT_EXECUTABLE", "WAITING_VOLUME", "InpCmdTtlSec", "InpTpResetNetOnly", "RecoveryGuardBlocks(", "InpMaxSeqLosses", "InpMaxRiskPctBal", "PrintRecoveryPlan("]) eaSrc.includes(need) ? ok("EA contains " + need) : fail("EA is missing " + need);
+!/return\s*\(\s*from\s*!=\s*0\s*\)/.test(eaSrc) ? ok("EA: Telegram is no longer PUBLIC (TgAuthorized checks registered ids)") : fail("EA TgAuthorized is public again");
+!/TgAddId\(chat\)/.test(eaSrc) ? ok("EA never auto-registers unknown Telegram users") : fail("EA auto-registers unknown Telegram users");
+!/ORDER_TIME_GTC,0/.test(eaSrc) ? ok("EA: order expiration is chosen from SYMBOL_EXPIRATION_MODE (no fixed GTC)") : fail("EA sends a fixed ORDER_TIME_GTC");
+!/MANUAL ACTION/.test(eaSrc.replace(/\/\/.*$/gm, "")) ? ok("EA: no fatal MANUAL ACTION state for solvable conditions") : fail("EA still contains a MANUAL ACTION fatal path");
+const eaBraces = (s) => { const t = s.replace(/"(\\.|[^"\\])*"/g, '""').replace(/\/\/.*$/gm, ""); return [(t.match(/\{/g) || []).length, (t.match(/\}/g) || []).length, (t.match(/\(/g) || []).length, (t.match(/\)/g) || []).length]; };
+const bb = eaBraces(eaSrc); bb[0] === bb[1] && bb[2] === bb[3] ? ok("EA braces/parentheses are balanced (this is NOT a compile)") : fail("EA braces/parentheses unbalanced " + bb.join("/"));
+
+// 12) v4.11 — Telegram default keyboard is opt-in; /menu and every command stay; logo/robot hooks intact
+/input\s+bool\s+InpTgMenu\s*=\s*false/.test(eaSrc) ? ok("EA: InpTgMenu exists and defaults to false (no default keyboard on bot messages)") : fail("EA InpTgMenu missing or not false");
+/string\s+MenuMarkup\(\)\s*\{\s*return\s+InpTgMenu\s*\?\s*MenuKeyboard\(\)\s*:\s*""/.test(eaSrc) ? ok("EA: MenuMarkup() is gated by InpTgMenu") : fail("EA MenuMarkup() is not gated");
+/cmd==\"\/menu\"[^\n]*MenuKeyboard\(\)/.test(eaSrc) ? ok("EA: /menu still shows the keyboard on demand") : fail("EA /menu no longer shows the keyboard");
+for (const c of ["/start", "/stop", "/status", "/history", "/stats", "/settings", "/help"]) eaSrc.includes('cmd=="' + c + '"') ? ok("EA keeps command " + c) : fail("EA lost command " + c);
+eaSrc.includes('"CMD:') || eaSrc.includes("CMD:") ? ok("EA keeps the callback handler for older keyboards") : fail("EA lost CMD: callback handling");
+const animJs = read("anim/yt-anim.js"), animCss = read("anim/yt-anim.css");
+for (const k of ['class="bulb"', 'class="eyes"', 'class="m m-s"', 'class="rg"', 'class="lb1"', 'class="lln"']) animJs.includes(k) ? ok("anim keeps hook " + k) : fail("anim lost hook " + k);
+/prefers-reduced-motion/.test(animCss) ? ok("anim honours prefers-reduced-motion") : fail("anim ignores prefers-reduced-motion");
+
 console.log(bad ? "\n" + bad + " problem(s)" : "\nAll checks passed");
 console.log("\nNOTE: these checks verify STRUCTURE and known audit regressions only. They do NOT prove that the EA compiles (press F7 in MetaEditor)\nnor that the trading strategy is correct (run the Strategy Tester / a demo account). `npm test` covers the Worker, not the EA.");
 process.exit(bad ? 1 : 0);
+

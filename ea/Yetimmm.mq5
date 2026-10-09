@@ -4,7 +4,7 @@
 //|  MetaTrader 5 | Telegram control | State recovery | Trade log    |
 //+------------------------------------------------------------------+
 #property copyright "Yetimmm"
-#property version   "2.21"
+#property version   "2.25"
 #property description "Yetimmm | XAUUSD | Two-level Stop Buy / Stop Sell switch + risk sequence | Telegram integration"
 
 #include <Trade\Trade.mqh>
@@ -153,6 +153,15 @@ enum ENUM_YT_BREACH
    BREACH_MARKET=1    // ADVANCED / opt-in: open the opposite direction at market right after the SL when the price already crossed the level (pre-flighted, lot from the real price)
   };
 
+//--- v2.23 Risk policy when the broker minimum volume risks MORE than the requested risk
+enum ENUM_YT_RISKPOL
+  {
+   YT_RISK_STRICT=0,     // DEFAULT: never exceed the requested risk. No legal volume -> WAITING_VOLUME (no order, no error, no stop, no spam)
+   YT_RISK_CLAMP_MIN=1   // use the broker minimum volume and SAY SO: Requested Risk / Effective Risk are both shown and logged
+  };
+
+#define YT_VER "2.25"
+
 //--- which pending orders the bot must keep alive
 #define YM_NONE 0
 #define YM_BOTH 1
@@ -173,14 +182,26 @@ input double InpTargetProfit   = 20.0;    // Recovery Target ($) - extra profit 
 input double InpRiskReward     = 20.0;    // Risk/Reward (TP = SL distance x this)
 input bool   InpResetRiskOnStart = true;  // Reset risk sequence when started after STOP
 
+input group "=== Risk / Broker engine (v2.23) ==="
+input ENUM_YT_RISKPOL InpRiskPolicy = YT_RISK_STRICT; // STRICT = never exceed the requested risk (WAITING_VOLUME when the broker minimum lot risks more) | CLAMP_TO_MIN = use the broker minimum lot and report the Effective Risk
+input bool   InpOrderCheck     = true;    // Run OrderCheck (server pre-flight) before every pending OrderSend
+input int    InpMaxSpread      = 0;       // Max Spread to ARM (points, live Ask-Bid). 0 = off. Above it NEW orders wait (WAITING_SPREAD); open trades are never touched
+input double InpMaxRevGap      = 0.0;     // Max Reversal Distance ($, BREACH_MARKET/VIRTUAL only): market entry farther than this from the level is skipped. 0 = off
+input bool   InpTpResetNetOnly = true;    // A TP resets the risk sequence only when its NET result (after commission/swap) repaid the accumulated loss; otherwise the remaining debt is kept
+
+input group "=== Recovery Plan Guard (v2.24) ==="
+input int    InpMaxSeqLosses   = 0;       // Max consecutive losses in one recovery cycle. 0 = off. When reached, NEW orders wait (WAITING_SEQCAP); open trades are never touched. Resume: New Cycle / Reset, or raise the cap. Report recommendation: 15-20
+input double InpMaxRiskPctBal  = 0.0;     // Max risk of ONE trade as % of the account balance. 0 = off. If the next planned risk is above it, NEW orders wait (WAITING_RISKCAP). Report recommendation: 2-3
+input bool   InpPlanLog        = true;    // Print the exact recovery plan (risk / target / cumulative loss / balance needed) in the Experts log at start
+
 input group "=== Execution ==="
 input int    InpMaxDeviation   = 30;      // Max Slippage Check (points) - checked AFTER every fill (stop orders cannot be capped by MT5); a market reversal also sends it as a price guard
 input ENUM_YT_DEV_ACTION InpDevAction = YT_DEV_REJECT; // Action when a fill exceeds the Max Slippage Check
 input int    InpWarnSpread     = 60;      // Spread Alert (points) - ALERT ONLY, trading is never blocked
 input double InpMinLevelGap    = 0.0;     // Minimum gap between Buy/Sell levels ($)
-input ENUM_YT_ENTRY InpEntryMode = ENTRY_VIRTUAL; // v2.22: VIRTUAL = stored zone + tick trigger + market execution (no pending orders, no zone gate, no lone order). PENDING = classic Stop orders
+input ENUM_YT_ENTRY InpEntryMode = ENTRY_PENDING; // v2.23 DEFAULT = PENDING (real Buy Stop + Sell Stop on the server = the strategy). VIRTUAL = stored zone + tick trigger + market execution (advanced, opt-in)
 input bool   InpZoneGate     = true;    // v2.18 ZONE GATE: when BOTH Buy Stop and Sell Stop are missing, place them TOGETHER only when the price is inside the zone (no lone order in a trending market)
-input ENUM_YT_BREACH InpBreachPolicy = BREACH_MARKET; // After an SL: MARKET (DEFAULT v2.22: the opposite direction is opened AT ONCE - the Stop at the SL level can never exist once the price is through it) or WAIT (pending Stop only: the reversal is MISSED after the SL)
+input ENUM_YT_BREACH InpBreachPolicy = BREACH_WAIT; // After an SL: WAIT (DEFAULT v2.23: pending pair re-armed, WAITING_REENTRY until both Stops are placeable - Market Reversal OFF) or MARKET (advanced: opens the opposite side at market; a different strategy with a different SL distance)
 input bool   InpPriceFallback  = false;   // Classify SL/TP by exit price ONLY when the deal reason is unknown (never for manual / stop-out / EA closes; off = strict: DEAL_REASON only)
 input bool   InpCombinedMargin  = true;    // Place a missing Buy Stop / Sell Stop pair only when the margin of BOTH missing orders is available (off = each order is checked alone)
 input int    InpProtectCloseSec = 20;     // Position WITHOUT SL/TP: emergency-close after N seconds of failed protection. TRADING DECISION: 20 = "never stay unprotected" (a transient connection problem can close the trade at a loss larger than the planned risk); 0 = never force-close (alert + retry only; the position may stay unprotected)
@@ -200,6 +221,8 @@ input bool   InpTgEnable       = true;    // Enable Telegram
 input bool   InpTgNotify       = true;    // Telegram Notifications
 input bool   InpTgControl      = true;    // Telegram Control Enabled
 input int    InpTgPollSec      = 2;       // (deprecated - replaced by Telegram fast polling below)
+input bool   InpTgViaWorker    = true;    // v2.23: notifications go EA -> Worker (unique event id) -> Telegram. The Bot Token is NEVER sent to / stored in MT5 and the EA never polls Telegram
+input bool   InpTgMenu         = false;   // v2.25: attach the START/STOP/CANCEL/STATUS... inline keyboard to every bot message. Default OFF (clean messages). Typing /menu always shows it on demand; every /command and callback keeps working
 input bool   InpTgAutoHeal     = true;    // Self-heal: single poller per token, auto-clear webhook on 409, auto-pause polling if another instance owns the token
 input int    InpTgPollMs       = 1000;     // Telegram fast polling interval (ms, 100..2000). Lower = faster commands but more HTTP calls
 
@@ -208,6 +231,7 @@ input bool   InpBrEnable       = true;    // Enable Mini App bridge
 input string InpBrUrl      = "https://yetimmm-bridge.sayfhazeem078.workers.dev"; // Worker URL (pre-filled) - must also be listed in Tools > Options > Expert Advisors > Allowed URLs (MT5 does not allow an EA to add it itself)
 input string InpBrPairCode   = "";      // PAIRING CODE = the Worker secret PAIR_CODE (or APP_PASSWORD when PAIR_CODE is not set). Needed ONCE per account: without it a NEW account is refused. Visible in this EA's inputs - use a dedicated PAIR_CODE, not your trading password
 input bool   InpBrResetPw    = false;   // Set TRUE once (then back to FALSE) to sign every device out of this account (a normal EA restart does NOT sign anyone out since v4.1)
+input int    InpCmdTtlSec      = 30;      // v2.23: a Mini App command older than this when it reaches the EA is EXPIRED (acked, never executed)
 input int    InpBrPollSec      = 1;       // Bridge sync interval (sec) - v2.22: 1 s (was 3) so the Mini App price follows the broker closely
 
 //+------------------------------------------------------------------+
@@ -239,6 +263,12 @@ string        g_sym;
 long          g_magic=0;
 int           g_digits=2;
 int           g_lotDigits=2;
+string        g_riskCode="";            // v2.23: code of the LAST risk computation (RISK_BELOW_MIN_VOLUME ...)
+string        g_riskAlertKey="";        // alert key raised for the current risk condition (cleared when it resolves)
+string        g_wcode="";               // v2.23: machine-readable WAITING_* code shown to the Mini App
+string        g_evId[], g_evK[], g_evT[], g_evB[];   // v2.23 event outbox (EA -> Worker -> Telegram), acked by the Worker
+long          g_evSeq=0;
+string        g_bsSig="";               // last broker-spec signature (change detection)
 double        g_point=0.01;
 double        g_tick=0.01;
 
@@ -562,7 +592,7 @@ void CfgPutAll()
    CfgSet("tgen",g_tgEn?"1":"0");
    CfgSet("tgnot",g_tgNot?"1":"0");
    CfgSet("tgctl",g_tgCtl?"1":"0");
-   CfgSet("tgtok",g_tgTok);
+   CfgSet("tgtok",InpTgViaWorker?"":g_tgTok);
    CfgSet("tgauth",g_tgAuth);
    CfgSet("tgpub",g_tgPub);
   }
@@ -577,7 +607,7 @@ void CfgInit()
    g_tgEn=CfgB("tgen",InpTgEnable);
    g_tgNot=CfgB("tgnot",InpTgNotify);
    g_tgCtl=CfgB("tgctl",InpTgControl);
-   g_tgTok=CfgS("tgtok","");
+   g_tgTok=InpTgViaWorker?"":CfgS("tgtok","");
    g_tgAuth=CfgS("tgauth","");
    g_tgPub=CfgS("tgpub","");
    //--- a corrupted/edited config file must never produce unusable parameters
@@ -905,28 +935,249 @@ double PerLotLoss(const bool buy,const double entry)
    return PerLotLossSL(buy,entry,SLPrice(buy,entry));
   }
 
+
+//+------------------------------------------------------------------+
+//| v2.23 BROKER / RISK ENGINE                                       |
+//| BrokerSpec (live) -> RiskCompute -> (OrderCheck) -> OrderSend.   |
+//| The EA is the authority; the Mini App only displays the result.  |
+//+------------------------------------------------------------------+
+struct SRiskResult
+  {
+   bool   valid;
+   bool   clamped;
+   string code;       // OK | RISK_BELOW_MIN_VOLUME | RISK_ABOVE_MAX_VOLUME | RISK_ABOVE_VOLUME_LIMIT | RISK_NO_MARGIN | RISK_NO_SPEC
+   string text;
+   string policy;
+   bool   buy;
+   double entry, sl;
+   double requested, perLot, rawVol, vol, minVol, maxVol, step, limit;
+   double effective, minRisk, maxRisk, margin;
+  };
+
+SRiskResult g_rk;
+
+string AccCcy() { return AccountInfoString(ACCOUNT_CURRENCY); }
+
+//--- volume already open + pending on the symbol in ONE direction (own pending orders are excluded: they are the ones being (re)placed).
+//--- only called when the broker sets SYMBOL_VOLUME_LIMIT > 0
+double DirVolume(const bool buy)
+  {
+   double v=0.0;
+   for(int i=PositionsTotal()-1;i>=0;i--)
+     {
+      ulong t=PositionGetTicket(i);
+      if(t==0) continue;
+      if(PositionGetString(POSITION_SYMBOL)!=g_sym) continue;
+      bool pb=(PositionGetInteger(POSITION_TYPE)==POSITION_TYPE_BUY);
+      if(pb==buy) v+=PositionGetDouble(POSITION_VOLUME);
+     }
+   for(int i=OrdersTotal()-1;i>=0;i--)
+     {
+      ulong t=OrderGetTicket(i);
+      if(t==0) continue;
+      if(OrderGetString(ORDER_SYMBOL)!=g_sym) continue;
+      if(OrderGetInteger(ORDER_MAGIC)==g_magic) continue;
+      long ty=OrderGetInteger(ORDER_TYPE);
+      bool ob=(ty==ORDER_TYPE_BUY || ty==ORDER_TYPE_BUY_STOP || ty==ORDER_TYPE_BUY_LIMIT || ty==ORDER_TYPE_BUY_STOP_LIMIT);
+      bool os=(ty==ORDER_TYPE_SELL || ty==ORDER_TYPE_SELL_STOP || ty==ORDER_TYPE_SELL_LIMIT || ty==ORDER_TYPE_SELL_STOP_LIMIT);
+      if((ob && buy) || (os && !buy)) v+=OrderGetDouble(ORDER_VOLUME_CURRENT);
+     }
+   return v;
+  }
+
+//--- Requested Risk -> executable volume, with the explicit policy. Never throws a "fatal": it explains WHY no volume exists.
+bool RiskCompute(const double risk,const bool buy,const double entry,const double sl,SRiskResult &r)
+  {
+   r.valid=false; r.clamped=false; r.code="OK"; r.text=""; r.buy=buy; r.entry=entry; r.sl=sl;
+   r.policy=(InpRiskPolicy==YT_RISK_CLAMP_MIN)?"CLAMP_TO_MIN":"STRICT";
+   r.requested=risk; r.perLot=0.0; r.rawVol=0.0; r.vol=0.0; r.effective=0.0; r.minRisk=0.0; r.maxRisk=0.0; r.margin=0.0;
+   double vmin=SymbolInfoDouble(g_sym,SYMBOL_VOLUME_MIN);
+   double vmax=SymbolInfoDouble(g_sym,SYMBOL_VOLUME_MAX);
+   double step=SymbolInfoDouble(g_sym,SYMBOL_VOLUME_STEP);
+   double lim =SymbolInfoDouble(g_sym,SYMBOL_VOLUME_LIMIT);
+   if(step<=0.0) step=(vmin>0.0)?vmin:0.01;
+   if(vmin<=0.0) vmin=step;
+   r.minVol=vmin; r.maxVol=vmax; r.step=step; r.limit=lim;
+   string ccy=AccCcy();
+   double perLot=PerLotLossSL(buy,entry,sl);
+   if(perLot<=0.0) { r.code="RISK_NO_SPEC"; r.text="Cannot determine the loss per lot from the broker specifications."; return false; }
+   r.perLot=perLot; r.minRisk=vmin*perLot; r.maxRisk=vmax*perLot;
+   double raw=risk/perLot;
+   r.rawVol=raw;
+   double lot;
+   if(raw<vmin-1e-9)
+     {
+      if(InpRiskPolicy==YT_RISK_CLAMP_MIN) { lot=vmin; r.clamped=true; }
+      else
+        {
+         r.code="RISK_BELOW_MIN_VOLUME";
+         r.text="Requested risk "+D2(risk)+" "+ccy+" is below the minimum executable risk "+D2(r.minRisk)+" "+ccy+" (min lot "+DoubleToString(vmin,g_lotDigits)+"). WAITING_VOLUME: raise the Risk, widen the levels or enable CLAMP_TO_MIN.";
+         return false;
+        }
+     }
+   else lot=vmin+MathFloor((raw-vmin)/step+1e-7)*step;           // rounded DOWN to the step: real risk <= requested
+   lot=NormalizeDouble(lot,g_lotDigits);
+   if(lot>vmax+1e-9)
+     {
+      r.code="RISK_ABOVE_MAX_VOLUME";
+      r.text="Required volume "+DoubleToString(lot,g_lotDigits)+" exceeds the broker maximum "+DoubleToString(vmax,g_lotDigits)+". WAITING_VOLUME.";
+      return false;
+     }
+   if(lim>0.0)
+     {
+      double ex=DirVolume(buy);
+      if(ex+lot>lim+1e-9)
+        {
+         r.code="RISK_ABOVE_VOLUME_LIMIT";
+         r.text="Volume limit: open+pending "+DoubleToString(ex,g_lotDigits)+" + new "+DoubleToString(lot,g_lotDigits)+" > broker limit "+DoubleToString(lim,g_lotDigits)+". WAITING_VOLUME.";
+         return false;
+        }
+     }
+   r.vol=lot;
+   r.effective=lot*perLot;
+   double margin=0.0;
+   ENUM_ORDER_TYPE ot=buy?ORDER_TYPE_BUY:ORDER_TYPE_SELL;
+   if(OrderCalcMargin(ot,g_sym,lot,entry,margin))
+     {
+      r.margin=margin;
+      if(margin>AccountInfoDouble(ACCOUNT_MARGIN_FREE))
+        {
+         r.code="RISK_NO_MARGIN";
+         r.text="Not enough free margin: required "+D2(margin)+" "+ccy+", free "+D2(AccountInfoDouble(ACCOUNT_MARGIN_FREE))+" "+ccy+". WAITING_MARGIN.";
+         return false;
+        }
+     }
+   r.valid=true;
+   if(r.clamped)
+      r.text="Minimum lot used: Requested Risk "+D2(risk)+" "+ccy+" -> Effective Risk "+D2(r.effective)+" "+ccy+" (lot "+DoubleToString(lot,g_lotDigits)+")";
+   return true;
+  }
+
+//--- machine code -> WAITING_* state shown to the user (a volume/margin condition is a WAIT, never a fatal error)
+string WaitCodeOf(const string rc)
+  {
+   if(rc=="RISK_BELOW_MIN_VOLUME" || rc=="RISK_ABOVE_MAX_VOLUME" || rc=="RISK_ABOVE_VOLUME_LIMIT") return "WAITING_VOLUME";
+   if(rc=="RISK_NO_MARGIN") return "WAITING_MARGIN";
+   if(rc=="RISK_NO_SPEC") return "WAITING_BROKER";
+   return "";
+  }
+
+//--- live spread (Ask-Bid), not the possibly stale SYMBOL_SPREAD field
+double LiveSpread()
+  {
+   MqlTick t;
+   if(SymbolInfoTick(g_sym,t) && t.ask>0.0 && t.bid>0.0 && t.ask>=t.bid) return t.ask-t.bid;
+   return (double)SymbolInfoInteger(g_sym,SYMBOL_SPREAD)*g_point;
+  }
+
+bool SpreadTooWide(string &why)
+  {
+   why="";
+   if(InpMaxSpread<=0) return false;
+   double sp=LiveSpread()/g_point;
+   if(sp>(double)InpMaxSpread) { why="WAITING_SPREAD: spread "+DoubleToString(sp,0)+" pts > Max Spread "+IntegerToString(InpMaxSpread)+" pts (new orders wait; open trades are untouched)"; return true; }
+   return false;
+  }
+
+//--- v2.24 Recovery Plan Guard: caps the risk-multiplication cycle (report recommendations 3 and 4).
+//    It blocks ONLY the placement of NEW orders / a new market reversal. An open trade is never touched or closed.
+bool RecoveryGuardBlocks(string &why,string &code)
+  {
+   why=""; code="";
+   if(InpMaxSeqLosses>0 && g_accLoss>1e-9 && g_seq>=InpMaxSeqLosses)
+     {
+      code="WAITING_SEQCAP";
+      why="WAITING_SEQCAP: "+IntegerToString(g_seq)+" consecutive losses reached the cap ("+IntegerToString(InpMaxSeqLosses)+"). Accumulated loss "+D2(g_accLoss)+" "+AccCcy()+". New orders are paused - start a New Cycle or raise the cap.";
+      return true;
+     }
+   if(InpMaxRiskPctBal>0.0)
+     {
+      double bal=AccountInfoDouble(ACCOUNT_BALANCE);
+      double cap=(bal>0.0)?bal*InpMaxRiskPctBal/100.0:0.0;
+      if(g_curRisk>cap+1e-9)
+        {
+         code="WAITING_RISKCAP";
+         why="WAITING_RISKCAP: the next planned risk "+D2(g_curRisk)+" "+AccCcy()+" is above "+DoubleToString(InpMaxRiskPctBal,2)+"% of the balance ("+D2(cap)+" "+AccCcy()+"). New orders are paused - start a New Cycle, raise the cap or add funds.";
+         return true;
+        }
+     }
+   return false;
+  }
+
+//--- exact plan (same recurrence as NextRiskFor: risk = (accLoss + target) / RR; with target = RR = 20 the growth is exactly 5% per loss)
+void PrintRecoveryPlan()
+  {
+   if(!InpPlanLog) return;
+   double L=0.0;
+   string ccy=AccCcy();
+   YLog("Recovery plan | start risk "+D2(g_initRisk)+" | target "+D2(g_target)+" | RR "+D2(g_rr)+" | cap seq "+(InpMaxSeqLosses>0?IntegerToString(InpMaxSeqLosses):"off")+" | cap risk% "+(InpMaxRiskPctBal>0.0?DoubleToString(InpMaxRiskPctBal,2):"off")+" | balance "+D2(AccountInfoDouble(ACCOUNT_BALANCE))+" "+ccy);
+   int last=(InpMaxSeqLosses>0)?InpMaxSeqLosses:20;
+   for(int n=1;n<=last;n++)
+     {
+      double r=(n==1)?g_initRisk:NextRiskFor(L);
+      L+=r;
+      if(n<=5 || n==10 || n==15 || n==20 || n==last)
+         YLog("  loss #"+IntegerToString(n)+": risk "+D2(r)+" | TP profit if it wins "+D2(r*g_rr)+" | cumulative loss "+D2(L));
+     }
+   YLog("  balance needed to survive "+IntegerToString(last)+" consecutive losses: >= "+D2(L)+" "+ccy+" (before spread/commission/margin).");
+  }
+
+//--- minimum width of a Buy Stop / Sell Stop PAIR at the live market: both must sit outside their Stops Level
+double PairMinWidth()
+  {
+   double sl=(double)SymbolInfoInteger(g_sym,SYMBOL_TRADE_STOPS_LEVEL)*g_point;
+   return 2.0*sl+LiveSpread();
+  }
+
+//--- pending order lifetime allowed by the symbol (GTC when permitted)
+ENUM_ORDER_TYPE_TIME PendingTimeType(datetime &expir)
+  {
+   expir=0;
+   long m=SymbolInfoInteger(g_sym,SYMBOL_EXPIRATION_MODE);
+   if((m&SYMBOL_EXPIRATION_GTC)!=0) return ORDER_TIME_GTC;
+   if((m&SYMBOL_EXPIRATION_DAY)!=0) return ORDER_TIME_DAY;
+   if((m&SYMBOL_EXPIRATION_SPECIFIED)!=0) { expir=TimeCurrent()+7*86400; return ORDER_TIME_SPECIFIED; }
+   if((m&SYMBOL_EXPIRATION_SPECIFIED_DAY)!=0) { expir=TimeCurrent()+7*86400; return ORDER_TIME_SPECIFIED_DAY; }
+   return ORDER_TIME_GTC;
+  }
+
+//--- server pre-flight of a pending order. Returns true = send it. Only well-understood refusals stop the send (everything else is left to OrderSend).
+//--- out: code = WAITING_* , why = text, coolMs = retry delay
+bool PendingOrderCheck(const bool buy,const double lot,const double level,const double slp,const double tpp,string &code,string &why,ulong &coolMs)
+  {
+   code=""; why=""; coolMs=0;
+   if(!InpOrderCheck || MQLInfoInteger(MQL_TESTER)) return true;
+   MqlTradeRequest rq; MqlTradeCheckResult ck;
+   ZeroMemory(rq); ZeroMemory(ck);
+   datetime ex; ENUM_ORDER_TYPE_TIME tt=PendingTimeType(ex);
+   rq.action=TRADE_ACTION_PENDING; rq.symbol=g_sym; rq.volume=lot;
+   rq.type=buy?ORDER_TYPE_BUY_STOP:ORDER_TYPE_SELL_STOP;
+   rq.price=level; rq.sl=slp; rq.tp=tpp; rq.type_time=tt; rq.expiration=ex;
+   rq.type_filling=ORDER_FILLING_RETURN; rq.magic=(ulong)g_magic; rq.comment="Yetimmm"; rq.deviation=(ulong)g_maxDev;
+   ResetLastError();
+   bool okc=OrderCheck(rq,ck);
+   uint rc=ck.retcode;
+   if(okc && (rc==0 || rc==TRADE_RETCODE_DONE || rc==TRADE_RETCODE_PLACED)) return true;
+   YLog("OrderCheck "+(buy?"BUY STOP":"SELL STOP")+" "+PX(level)+" lot "+DoubleToString(lot,g_lotDigits)+" -> retcode "+IntegerToString((int)rc)+" ("+ck.comment+")");
+   if(rc==TRADE_RETCODE_INVALID_VOLUME) { code="WAITING_VOLUME"; why="The broker refuses this volume right now (min "+DoubleToString(SymbolInfoDouble(g_sym,SYMBOL_VOLUME_MIN),g_lotDigits)+", step "+DoubleToString(SymbolInfoDouble(g_sym,SYMBOL_VOLUME_STEP),g_lotDigits)+")."; coolMs=30000; return false; }
+   if(rc==TRADE_RETCODE_NO_MONEY) { code="WAITING_MARGIN"; why="Not enough margin according to the server."; coolMs=15000; return false; }
+   if(rc==TRADE_RETCODE_MARKET_CLOSED) { code="WAITING_MARKET"; why="Market is closed."; coolMs=30000; return false; }
+   if(rc==TRADE_RETCODE_TRADE_DISABLED) { code="WAITING_BROKER"; why="Trading is currently disabled by the server."; coolMs=30000; return false; }
+   if(rc==TRADE_RETCODE_INVALID_STOPS || rc==TRADE_RETCODE_INVALID_PRICE) { code="WAITING_PRICE"; why="The server refuses the price/stops at this moment - waiting for the market."; coolMs=3000; return false; }
+   return true;     // unknown / filling-mode / transport code: the real OrderSend decides
+  }
+
 //--- Risk Amount -> Lot, using real broker specifications (explicit entry AND explicit SL)
 bool CalcLotSL(const double risk,const bool buy,const double entry,const double sl,double &lot,double &estLoss,string &err)
   {
    lot=0.0; estLoss=0.0; err="";
-   double perLot=PerLotLossSL(buy,entry,sl);
-   if(perLot<=0.0) { err="Cannot determine loss per lot from broker specifications."; return false; }
-   double step=SymbolInfoDouble(g_sym,SYMBOL_VOLUME_STEP);
-   double vmin=SymbolInfoDouble(g_sym,SYMBOL_VOLUME_MIN);
-   double vmax=SymbolInfoDouble(g_sym,SYMBOL_VOLUME_MAX);
-   if(step<=0.0) step=vmin>0.0?vmin:0.01;
-   double raw=risk/perLot;
-   double fl=MathFloor(raw/step+1e-7)*step;
-   fl=NormalizeDouble(fl,g_lotDigits);
-   if(fl<vmin-1e-9) { err="Required lot is below broker minimum volume."; return false; }
-   if(fl>vmax+1e-9) { err="Required lot exceeds broker maximum volume."; return false; }
-   lot=fl;
-   estLoss=fl*perLot;
-   double margin=0.0;
-   ENUM_ORDER_TYPE ot=buy?ORDER_TYPE_BUY:ORDER_TYPE_SELL;
-   if(OrderCalcMargin(ot,g_sym,fl,entry,margin))
-      if(margin>AccountInfoDouble(ACCOUNT_MARGIN_FREE))
-        { err="Insufficient margin for required risk."; return false; }
+   SRiskResult r;
+   bool ok=RiskCompute(risk,buy,entry,sl,r);
+   g_rk=r;
+   g_riskCode=r.code;
+   if(!ok) { err=r.text; return false; }
+   lot=r.vol;
+   estLoss=r.effective;
    return true;
   }
 
@@ -989,6 +1240,12 @@ string ValidateLevels(const double buy,const double sell)
    if(tm==SYMBOL_TRADE_MODE_DISABLED || tm==SYMBOL_TRADE_MODE_CLOSEONLY) return "Trading is disabled for this symbol.";
    double stopsLvl=(double)SymbolInfoInteger(g_sym,SYMBOL_TRADE_STOPS_LEVEL)*g_point;
    if(buy-sell<stopsLvl-1e-9) return "Distance between the levels (= Stop Loss) is below the broker minimum stops level.";
+   if(InpEntryMode==ENTRY_PENDING)
+     {
+      double need=PairMinWidth();
+      if(buy-sell<need-1e-9)
+         return "PAIR_NOT_EXECUTABLE: a Buy Stop and a Sell Stop can never exist together at this width. Minimum width now = "+DoubleToString(need,g_digits)+" (2 x Stops Level + live spread).";
+     }
    return "";
   }
 
@@ -1439,7 +1696,7 @@ string CheckApplicableCore(const double buy,const double sell,const double risk)
         }
       else if(g_state!=YT_WAITING_REENTRY && PlacementState(b,nl,why)==2) return SideName(b)+" "+PX(nl)+" cannot be placed: "+why;
       double lot,est; string le;
-      if(!CalcLot(rk,b,nl,lot,est,le)) return SideName(b)+": "+le;
+      if(!CalcLot(rk,b,nl,lot,est,le) && WaitCodeOf(g_riskCode)=="") return SideName(b)+": "+le;   // v2.23: a volume/margin condition is accepted and shown as WAITING_*
      }
    return "";
   }
@@ -1601,7 +1858,9 @@ bool ModifySide(const bool buy,const ulong ticket,const double level,const doubl
    SetSync(buy,YS_UPDATING,"Modify "+PX(aP)+" -> "+PX(level));
    UpdatePanel();                                    // the panel shows UPDATING while the server works
    g_trade.SetDeviationInPoints(g_maxDev);
-   bool r=g_trade.OrderModify(ticket,level,dSL,dTP,ORDER_TIME_GTC,0);
+   datetime mdExp=0;
+   ENUM_ORDER_TYPE_TIME mdTT=PendingTimeType(mdExp);
+   bool r=g_trade.OrderModify(ticket,level,dSL,dTP,mdTT,mdExp);
    uint rc=g_trade.ResultRetcode();
    string desc=g_trade.ResultRetcodeDescription();
    g_reqBusy[s]=false;
@@ -2022,7 +2281,10 @@ void ParseIds()
 //--- PUBLIC MODE (owner decision): any Telegram user who messages the bot may control it and receives its notifications
 bool TgAuthorized(const long from)
   {
-   return (from!=0);
+   //--- v2.23: NO public mode. Only chat ids registered through the Worker (Telegram-verified identity) may control the EA.
+   if(from==0) return false;
+   for(int i=0;i<ArraySize(g_tgIds);i++) if(g_tgIds[i]==from) return true;
+   return false;
   }
 
 void TgAddId(const long id)
@@ -2080,9 +2342,66 @@ void TgPop()
   }
 
 //--- chat==0 -> broadcast to every authorized id (requires Notifications enabled)
+string JEsc(const string s);   // defined with the Mini App bridge
+
+//--- v2.23 EVENT OUTBOX: every notification gets a unique id (login:magic:sequence). The Worker de-duplicates by id and acks it;
+//--- unacked events are re-sent with the next sync (same id = never delivered twice). The sequence survives MT5 restarts.
+void EvEmit(const string text)
+  {
+   if(StringLen(text)==0) return;
+   if(g_evSeq==0) g_evSeq=(long)GV("EVSEQ",0.0);
+   g_evSeq++;
+   GS("EVSEQ",(double)g_evSeq);
+   string title=text, body="";
+   int nl=StringFind(text,"\n");
+   if(nl>0) { title=StringSubstr(text,0,nl); body=StringSubstr(text,nl+1); }
+   if(StringLen(title)>110) title=StringSubstr(title,0,110);
+   if(StringLen(body)>550) body=StringSubstr(body,0,550);
+   string kind=(StringFind(text,"ACTIVATED")>=0)?"act":"ev";
+   string id=IntegerToString((long)AccountInfoInteger(ACCOUNT_LOGIN))+":"+IntegerToString((long)g_magic)+":"+IntegerToString(g_evSeq);
+   int n=ArraySize(g_evId);
+   if(n>=40)
+     {
+      for(int i=1;i<n;i++) { g_evId[i-1]=g_evId[i]; g_evK[i-1]=g_evK[i]; g_evT[i-1]=g_evT[i]; g_evB[i-1]=g_evB[i]; }
+      n--;
+     }
+   ArrayResize(g_evId,n+1); ArrayResize(g_evK,n+1); ArrayResize(g_evT,n+1); ArrayResize(g_evB,n+1);
+   g_evId[n]=id; g_evK[n]=kind; g_evT[n]=title; g_evB[n]=body;
+  }
+
+void EvAckFrom(const string resp)
+  {
+   int p=StringFind(resp,"\"evack\":[");
+   if(p<0) return;
+   int e=StringFind(resp,"]",p);
+   if(e<0) return;
+   string sec=StringSubstr(resp,p,e-p);
+   for(int i=ArraySize(g_evId)-1;i>=0;i--)
+     {
+      if(StringFind(sec,"\""+g_evId[i]+"\"")<0) continue;
+      int n=ArraySize(g_evId);
+      for(int j=i+1;j<n;j++) { g_evId[j-1]=g_evId[j]; g_evK[j-1]=g_evK[j]; g_evT[j-1]=g_evT[j]; g_evB[j-1]=g_evB[j]; }
+      ArrayResize(g_evId,n-1); ArrayResize(g_evK,n-1); ArrayResize(g_evT,n-1); ArrayResize(g_evB,n-1);
+     }
+  }
+
+string EvJson()
+  {
+   string j="[";
+   for(int i=0;i<ArraySize(g_evId);i++)
+      j+=(i>0?",":"")+"{\"id\":\""+JEsc(g_evId[i])+"\",\"k\":\""+g_evK[i]+"\",\"t\":\""+JEsc(g_evT[i])+"\",\"b\":\""+JEsc(g_evB[i])+"\"}";
+   return j+"]";
+  }
+
 void TgQueue(const string text,const long chat=0,const string markup="")
   {
    if(!g_tgEn) return;
+   if(chat==0 && InpTgViaWorker)
+     {
+      //--- v2.23: ONE notification channel: EA -> Worker (unique event id, de-duplicated) -> Telegram. No token in MT5.
+      if(g_tgNot && InpBrEnable) EvEmit(text);
+      return;
+     }
    if(chat==0)
      {
       if(!g_tgNot) return;
@@ -2172,12 +2491,18 @@ void TgFlush()
      }
   }
 
-string MenuMarkup()
+string MenuKeyboard()
   {
    return "{\"inline_keyboard\":[[{\"text\":\"▶️ START\",\"callback_data\":\"CMD:start\"},{\"text\":\"⏹ STOP\",\"callback_data\":\"CMD:stop\"}],"
           "[{\"text\":\"❌ CANCEL\",\"callback_data\":\"CMD:cancel\"},{\"text\":\"📊 STATUS\",\"callback_data\":\"CMD:status\"}],"
           "[{\"text\":\"📜 HISTORY\",\"callback_data\":\"CMD:history\"},{\"text\":\"📈 STATS\",\"callback_data\":\"CMD:stats\"}],"
           "[{\"text\":\"⚙️ SETTINGS\",\"callback_data\":\"CMD:settings\"},{\"text\":\"❓ HELP\",\"callback_data\":\"CMD:help\"}]]}";
+  }
+
+// v2.25: the default keyboard is attached only when InpTgMenu=true; /menu still shows it explicitly (MenuKeyboard)
+string MenuMarkup()
+  {
+   return InpTgMenu ? MenuKeyboard() : "";
   }
 
 string ConfirmMarkup(const string nonce,const string yes,const string no)
@@ -2823,7 +3148,16 @@ bool ProcessClosedPosition(const ulong pid)
         }
       else if(isTP)
         {
-         ResetRisk();
+         if(InpTpResetNetOnly && g_accLoss>1e-9 && net<g_accLoss-1e-6)
+           {
+            //--- v2.23: the TP did NOT repay the cycle's accumulated loss after commission/swap/slippage: the remaining debt is kept
+            double rem=g_accLoss-MathMax(net,0.0);
+            YLog("TP net "+D2(net)+" < accumulated loss "+D2(g_accLoss)+": cycle NOT recovered - remaining debt "+D2(rem)+" carried into the next risk");
+            g_accLoss=rem;
+            g_curRisk=NextRiskFor(g_accLoss);
+            RaiseAlert("TPPART"+IntegerToString((int)g_tradeNo),"TP closed with net "+D2(net)+" "+AccCcy()+" - the accumulated loss is not fully repaid yet (remaining "+D2(rem)+"). Risk sequence continues.",false,true);
+           }
+         else ResetRisk();
          g_lastSLSide=0;
          g_mode=YM_NONE;
          if(g_fresh) { PromotePending(); g_state=YT_ARMED; g_mode=YM_BOTH; g_fresh=false; }
@@ -3021,12 +3355,15 @@ void RecoverHistory()
 //+------------------------------------------------------------------+
 void HandleLotError(const string err)
   {
-   g_blockReason=err;
+   //--- v2.23: a volume / margin condition is a WAIT (WAITING_VOLUME / WAITING_MARGIN ...), never a fatal error and never a stop
+   string wc=WaitCodeOf(g_riskCode);
+   if(wc=="") wc="WAITING_BROKER";
+   g_wcode=wc;
+   g_waitReason=err;
    g_nextPlaceMs=GetTickCount64()+30000;
-   YLog("Execution blocked: "+err);
-   string key="LOT";
-   if(StringFind(err,"margin")>=0) { key="MARGIN"; YLog("Insufficient Margin"); }
-   RaiseAlert(key+err,err,true,true);
+   YLog(wc+": "+err);
+   g_riskAlertKey="RISK"+g_riskCode;
+   RaiseAlert(g_riskAlertKey,err,false,true);        // one alert per re-arm window (throttled), no pop-up
   }
 
 //--- true when every pending order wanted by the current mode really exists on the server
@@ -3099,17 +3436,41 @@ bool TryPlace(const bool buy,const double level)
       return false;
      }
    double lot=0,est=0; string err="";
-   if(!CalcLot(g_curRisk,buy,level,lot,est,err)) { HandleLotError(err); SetSync(buy,YS_FAILED,err); return false; }
+   string spw="";
+   if(SpreadTooWide(spw)) { g_wcode="WAITING_SPREAD"; g_waitReason=spw; g_nextPlaceMs=nowMs+2000; SetSync(buy,YS_WAITING,spw); return false; }
+   string rgw="",rgc="";
+   if(RecoveryGuardBlocks(rgw,rgc))
+     {
+      g_wcode=rgc; g_waitReason=rgw; g_nextPlaceMs=nowMs+5000;
+      SetSync(buy,YS_WAITING,rgw);
+      RaiseAlert("RPGUARD"+rgc,rgw,false,true);
+      return false;
+     }
+   ClearAlert("RPGUARDWAITING_SEQCAP"); ClearAlert("RPGUARDWAITING_RISKCAP");
+   if(!CalcLot(g_curRisk,buy,level,lot,est,err)) { HandleLotError(err); SetSync(buy,YS_WAITING,err); return false; }
    g_blockReason="";
-   ClearAlert("MARGIN"+err);
+   g_wcode="";
+   if(StringLen(g_riskAlertKey)>0) { ClearAlert(g_riskAlertKey); g_riskAlertKey=""; }
    ClearAlert("AUTOTR");
+   if(g_rk.clamped) YLog("CLAMP_TO_MIN: "+g_rk.text);
 
    double slp=SLPrice(buy,level), tpp=TPPrice(buy,level);
    SetSync(buy,YS_CREATING,"Placing "+PX(level));
    UpdatePanel();                                    // the panel shows PLACING while the server works
    g_trade.SetDeviationInPoints(g_maxDev);
-   bool r=buy?g_trade.BuyStop(lot,level,g_sym,slp,tpp,ORDER_TIME_GTC,0,"Yetimmm")
-             :g_trade.SellStop(lot,level,g_sym,slp,tpp,ORDER_TIME_GTC,0,"Yetimmm");
+   {
+    string ocCode="", ocWhy=""; ulong ocCool=0;
+    if(!PendingOrderCheck(buy,lot,level,slp,tpp,ocCode,ocWhy,ocCool))
+      {
+       g_wcode=ocCode; g_waitReason=ocWhy; g_nextPlaceMs=GetTickCount64()+ocCool;
+       SetSync(buy,YS_WAITING,ocWhy);
+       return false;
+      }
+   }
+   datetime pxExp=0;
+   ENUM_ORDER_TYPE_TIME pxTT=PendingTimeType(pxExp);
+   bool r=buy?g_trade.BuyStop(lot,level,g_sym,slp,tpp,pxTT,pxExp,"Yetimmm")
+             :g_trade.SellStop(lot,level,g_sym,slp,tpp,pxTT,pxExp,"Yetimmm");
    uint rc=g_trade.ResultRetcode();
    bool ok=(r && (rc==TRADE_RETCODE_DONE || rc==TRADE_RETCODE_PLACED || rc==TRADE_RETCODE_DONE_PARTIAL));
    long otype=buy?(long)ORDER_TYPE_BUY_STOP:(long)ORDER_TYPE_SELL_STOP;
@@ -3278,15 +3639,13 @@ bool RevRetcodePermanent(const uint rc)
 //--- the reversal cannot be executed: stop retrying, ERROR / MANUAL ACTION (resumed by /start or by new levels)
 void RevEnterError(const string why)
   {
-   g_state=YT_ERROR;
-   g_mode=YM_NONE;
-   g_revFails=0; g_revHard=0; g_nextRevMs=0;
-   g_waitReason="";
-   g_blockReason="MANUAL ACTION: market reversal cannot be executed - "+why;
-   GS("REVERR",1.0);                              // remembers that /start or new levels must resume the REVERSAL (not a plain re-arm)
-   SaveState();
-   YLog("ERROR state: "+g_blockReason);
-   RaiseAlert("REVERROR","🛑 ERROR - MANUAL ACTION REQUIRED: the market reversal failed ("+why+"). The opposite trade is NOT open and the bot stopped retrying. Fix the cause, then send /start or enter new levels to resume.",true,true);
+   //--- v2.23: a reversal that cannot be executed is a WAIT, not a fatal state: no ERROR, no MANUAL ACTION. Retry slowly.
+   g_revFails=0; g_revHard=0;
+   g_nextRevMs=GetTickCount64()+60000;
+   g_wcode="WAITING_REENTRY";
+   g_waitReason="Market reversal paused ("+why+") - retrying every 60 s";
+   YLog("WAITING_REENTRY: "+g_waitReason);
+   RaiseAlert("REVWAIT","Market reversal is waiting: "+why+". The bot keeps retrying by itself (no action required).",false,true);
    g_dirty=true;
   }
 
@@ -3312,6 +3671,14 @@ bool TryMarketReverse(const int force=0)   // force: 0 = reversal after an SL, 1
    double slp=RoundTick(slLvl);
    double realDist=MathAbs(entry-slp);
    double tpp=RoundTick(revBuy?entry+realDist*g_rr:entry-realDist*g_rr);
+   //--- v2.23 MAX REVERSAL DISTANCE: a market entry far beyond the level is a different trade (different SL distance / lot): do not take it
+   if(force==0 && InpMaxRevGap>0.0 && MathAbs(entry-lvl)>InpMaxRevGap)
+     {
+      g_wcode="WAITING_REENTRY";
+      g_waitReason="Market reversal skipped: price is "+PX(MathAbs(entry-lvl))+" beyond the level (Max Reversal Gap "+PX(InpMaxRevGap)+") - waiting for the pending pair";
+      g_nextRevMs=nowMs+2000;
+      return false;
+     }
 
    //--- 2) PRE-FLIGHT against the real market: SL/TP on the correct side and outside the Stops Level
    if(!MarketPreflight(revBuy,slp,tpp,why))
@@ -3329,12 +3696,18 @@ bool TryMarketReverse(const int force=0)   // force: 0 = reversal after an SL, 1
 
    //--- 3) lot from the REAL entry to the SL (a gap makes the SL farther -> a smaller lot; the risk stays = requested risk)
    double lot=0,est=0; string err="";
+   string rgw="",rgc="";
+   if(RecoveryGuardBlocks(rgw,rgc))
+     {
+      g_wcode=rgc; g_waitReason=rgw; g_nextRevMs=nowMs+5000;
+      RaiseAlert("RPGUARD"+rgc,rgw,false,true);
+      return true;
+     }
    if(!CalcLotSL(g_curRisk,revBuy,entry,slp,lot,est,err))
      {
+      //--- v2.23: no legal volume at THIS price is a WAIT (the price may move to a better entry), never a hard failure
       HandleLotError(err);
       g_nextRevMs=nowMs+5000;
-      g_revHard++;
-      if(g_revHard>=YT_REV_MAX_HARD) RevEnterError(err);
       return true;
      }
 
@@ -3640,7 +4013,7 @@ void Reconcile()
          g_trig[1]=WaitTrigger(false,g_sellLevel);
          string zt="Zone gate: waiting for the price to enter the zone (Sell "+PX(g_sellLevel)+" - Buy "+PX(g_buyLevel)+"); both orders are placed together";
          //--- v2.22: the zone must be wider than both broker gaps + the spread, otherwise both orders can NEVER exist together
-         double zNeed=WaitGap(true)+WaitGap(false)+(double)SymbolInfoInteger(g_sym,SYMBOL_SPREAD)*g_point;
+         double zNeed=WaitGap(true)+WaitGap(false)+LiveSpread();
          if(g_buyLevel-g_sellLevel<zNeed)
            {
             zt="⚠️ ZONE TOO NARROW: width "+PX(g_buyLevel-g_sellLevel)+" < minimum "+PX(zNeed)+" (Stops Level x2 + spread). Both orders can never be placed together - widen the zone.";
@@ -4114,7 +4487,7 @@ void TgCommand(const string text,const long chat,const long from)
    else if(cmd=="/stats")    TgQueue(StatsText(),chat);
    else if(cmd=="/risk")     TgQueue(RiskText(),chat);
    else if(cmd=="/settings") TgQueue(SettingsText(),chat);
-   else if(cmd=="/menu")     TgQueue("🤖 Yetimmm\nStatus: "+RunStatus(),chat,MenuMarkup());
+   else if(cmd=="/menu")     TgQueue("🤖 Yetimmm\nStatus: "+RunStatus(),chat,MenuKeyboard());
    else if(cmd=="/help")     TgQueue(HelpText(),chat,MenuMarkup());
    else TgQueue("Unknown command. Send /help",chat);
   }
@@ -4256,7 +4629,6 @@ void TgPoll()
             long from=JNum(seg,"\"from\":{\"id\":",f1);
             long chat=JNum(seg,"\"chat\":{\"id\":",f2);
             if(!f2) chat=from;
-            if(f1) TgAddId(chat);
             if(!f1 || !TgAuthorized(from))
               {
                string uText=isCb?JStr(seg,"\"data\":\""):JStr(seg,"\"text\":\"");
@@ -5414,6 +5786,57 @@ double BrOpenVolume(int &cnt)
    return v;
   }
 
+//--- v2.23 live BrokerSpec -> Mini App (the EA is the authority; the Mini App never assumes contract / step / min / max / digits)
+string JNum8(const double v) { return DoubleToString(v,8); }
+
+string BsJson()
+  {
+   MqlTick t;
+   double bid=0.0, ask=0.0;
+   if(SymbolInfoTick(g_sym,t)) { bid=t.bid; ask=t.ask; }
+   double tvl=SymbolInfoDouble(g_sym,SYMBOL_TRADE_TICK_VALUE_LOSS), tvp=SymbolInfoDouble(g_sym,SYMBOL_TRADE_TICK_VALUE_PROFIT);
+   double vmin=SymbolInfoDouble(g_sym,SYMBOL_VOLUME_MIN), vmax=SymbolInfoDouble(g_sym,SYMBOL_VOLUME_MAX), vst=SymbolInfoDouble(g_sym,SYMBOL_VOLUME_STEP), vlm=SymbolInfoDouble(g_sym,SYMBOL_VOLUME_LIMIT);
+   long stops=SymbolInfoInteger(g_sym,SYMBOL_TRADE_STOPS_LEVEL), frz=SymbolInfoInteger(g_sym,SYMBOL_TRADE_FREEZE_LEVEL);
+   long exe=SymbolInfoInteger(g_sym,SYMBOL_TRADE_EXEMODE), fil=SymbolInfoInteger(g_sym,SYMBOL_FILLING_MODE), exm=SymbolInfoInteger(g_sym,SYMBOL_EXPIRATION_MODE), tm=SymbolInfoInteger(g_sym,SYMBOL_TRADE_MODE);
+   double contract=SymbolInfoDouble(g_sym,SYMBOL_TRADE_CONTRACT_SIZE);
+   //--- change detection: brokers may change these (news, session switch) - log it once, the next calculation already uses the new values
+   string sig=JNum8(vmin)+"|"+JNum8(vmax)+"|"+JNum8(vst)+"|"+JNum8(vlm)+"|"+IntegerToString((int)stops)+"|"+IntegerToString((int)frz)+"|"+JNum8(tvl)+"|"+JNum8(contract)+"|"+IntegerToString((int)exe)+"|"+IntegerToString((int)exm)+"|"+IntegerToString((int)tm);
+   if(sig!=g_bsSig)
+     {
+      if(StringLen(g_bsSig)>0) YLog("BrokerSpec changed: now "+sig+" | was "+g_bsSig);
+      g_bsSig=sig;
+     }
+   string j="{\"vmin\":"+JNum8(vmin)+",\"vmax\":"+JNum8(vmax)+",\"vstep\":"+JNum8(vst)+",\"vlimit\":"+JNum8(vlm)+",\"vdig\":"+IntegerToString(g_lotDigits);
+   j+=",\"contract\":"+JNum8(contract)+",\"tick\":"+JNum8(g_tick)+",\"tvl\":"+JNum8(tvl)+",\"tvp\":"+JNum8(tvp)+",\"point\":"+JNum8(g_point)+",\"digits\":"+IntegerToString(g_digits);
+   j+=",\"stops\":"+IntegerToString((int)stops)+",\"freeze\":"+IntegerToString((int)frz)+",\"exe\":"+IntegerToString((int)exe)+",\"fill\":"+IntegerToString((int)fil)+",\"expm\":"+IntegerToString((int)exm)+",\"tmode\":"+IntegerToString((int)tm);
+   j+=",\"ccy\":\""+JEsc(AccCcy())+"\",\"pccy\":\""+JEsc(SymbolInfoString(g_sym,SYMBOL_CURRENCY_PROFIT))+"\",\"hedge\":"+(AccountInfoInteger(ACCOUNT_MARGIN_MODE)==ACCOUNT_MARGIN_MODE_RETAIL_HEDGING?"true":"false");
+   j+=",\"bid\":"+DoubleToString(bid,g_digits)+",\"ask\":"+DoubleToString(ask,g_digits)+",\"spr\":"+DoubleToString((ask>=bid&&bid>0.0)?ask-bid:0.0,g_digits)+",\"maxSpr\":"+IntegerToString(InpMaxSpread)+"}";
+   return j;
+  }
+
+//--- the risk decision for the level the bot would trade next (Requested vs Effective risk, min risk, policy, status)
+string RkJson()
+  {
+   if(g_buyLevel<=0.0 || g_sellLevel<=0.0 || g_buyLevel<=g_sellLevel) return "null";
+   bool b=(g_mode!=YM_SELL);
+   double lvl=b?g_buyLevel:g_sellLevel;
+   SRiskResult r;
+   RiskCompute(g_curRisk,b,lvl,SLPrice(b,lvl),r);
+   string st="OK";
+   if(!r.valid)
+     {
+      if(r.code=="RISK_BELOW_MIN_VOLUME") st="BELOW_MIN";
+      else if(r.code=="RISK_ABOVE_MAX_VOLUME") st="ABOVE_MAX";
+      else if(r.code=="RISK_ABOVE_VOLUME_LIMIT") st="ABOVE_LIMIT";
+      else if(r.code=="RISK_NO_MARGIN") st="NO_MARGIN";
+      else st="NO_SPEC";
+     }
+   else if(r.clamped) st="CLAMPED";
+   string j="{\"side\":\""+(b?"BUY":"SELL")+"\",\"req\":"+D2(r.requested)+",\"raw\":"+JNum8(r.rawVol)+",\"vol\":"+JNum8(r.vol)+",\"vmin\":"+JNum8(r.minVol)+",\"eff\":"+D2(r.effective)+",\"minRisk\":"+D2(r.minRisk)+",\"perLot\":"+D2(r.perLot);
+   j+=",\"margin\":"+D2(r.margin)+",\"policy\":\""+r.policy+"\",\"status\":\""+st+"\",\"clamped\":"+(r.clamped?"true":"false")+",\"ccy\":\""+JEsc(AccCcy())+"\"}";
+   return j;
+  }
+
 string BrStateJson()
   {
    string s="{";
@@ -5428,7 +5851,7 @@ string BrStateJson()
    string msg=g_blockReason;
    if(StringLen(msg)==0) msg=WaitNote();
    s+=",\"msg\":\""+JEsc(msg)+"\"";
-   s+=",\"ver\":\"2.21\",\"sym\":\""+JEsc(g_sym)+"\",\"waits\":"+WaitsJson();
+   s+=",\"ver\":\""+YT_VER+"\",\"proto\":2,\"evp\":1,\"sym\":\""+JEsc(g_sym)+"\",\"waits\":"+WaitsJson();
    s+=",\"tick\":"+DoubleToString(g_tick,g_digits)+",\"pt\":"+DoubleToString(g_point,g_digits);   // symbol precision: the Worker matches order alerts with 3 ticks / Max Deviation, never a % of price
    s+=",\"mt\":{\"conn\":"+(TerminalInfoInteger(TERMINAL_CONNECTED)?"true":"false")+",\"auto\":"+(TerminalInfoInteger(TERMINAL_TRADE_ALLOWED)?"true":"false")+
       ",\"exp\":"+(MQLInfoInteger(MQL_TRADE_ALLOWED)?"true":"false")+",\"acc\":"+(AccountInfoInteger(ACCOUNT_TRADE_ALLOWED)?"true":"false")+
@@ -5439,7 +5862,8 @@ string BrStateJson()
    s+=",\"seq\":"+IntegerToString(g_seq)+",\"no\":"+IntegerToString(g_tradeNo);
    s+=",\"target\":"+D2(g_target)+",\"rr\":"+DoubleToString(g_rr,2);
    s+=",\"maxDev\":"+IntegerToString(g_maxDev)+",\"warn\":"+IntegerToString(g_warn);
-   s+=",\"breach\":\""+(InpBreachPolicy==BREACH_MARKET?"MARKET":"WAIT")+"\"";
+   s+=",\"breach\":\""+(InpBreachPolicy==BREACH_MARKET?"MARKET":"WAIT")+"\",\"entry\":\""+(InpEntryMode==ENTRY_PENDING?"PENDING":"VIRTUAL")+"\"";
+   s+=",\"wcode\":\""+(frz?"":g_wcode)+"\",\"bs\":"+BsJson()+",\"rk\":"+RkJson();
    s+=",\"spread\":"+IntegerToString((int)SymbolInfoInteger(g_sym,SYMBOL_SPREAD));
    if(g_fresh && g_pendBuy>0.0 && g_pendSell>0.0)
       s+=",\"pend\":{\"buy\":"+DoubleToString(g_pendBuy,g_digits)+",\"sell\":"+DoubleToString(g_pendSell,g_digits)+",\"risk\":"+D2(g_initRisk)+",\"target\":"+D2(g_target)+",\"rr\":"+DoubleToString(g_rr,2)+"}";
@@ -5447,7 +5871,7 @@ string BrStateJson()
    ulong tk,pid; bool buy; double vol,entry,sl,tp,pr;
    if(OwnPosInfo(tk,pid,buy,vol,entry,sl,tp,pr))
       s+=",\"pos\":{\"pid\":"+IntegerToString((long)pid)+",\"side\":\""+(buy?"BUY":"SELL")+"\",\"entry\":"+DoubleToString(entry,g_digits)+",\"sl\":"+DoubleToString(sl,g_digits)+",\"tp\":"+DoubleToString(tp,g_digits)+
-         ",\"lot\":"+DoubleToString(vol,2)+",\"est\":"+D2(vol*MathAbs(entry-sl)*g_contract)+",\"risk\":"+D2(PGV(pid,"R",g_curRisk))+
+         ",\"lot\":"+DoubleToString(vol,g_lotDigits)+",\"est\":"+D2(vol*PerLotLossSL(buy,entry,sl))+",\"risk\":"+D2(PGV(pid,"R",g_curRisk))+
          ",\"no\":"+IntegerToString((long)PGV(pid,"N",0))+",\"profit\":"+D2(pr)+"}";
    else s+=",\"pos\":null";
    s+=",\"hist\":"+BrHistJson();
@@ -5457,13 +5881,13 @@ string BrStateJson()
    s+=",\"stats\":{\"total\":"+IntegerToString((int)g_st.total)+",\"wins\":"+IntegerToString((int)g_st.wins)+",\"losses\":"+IntegerToString((int)g_st.losses)+",\"net\":"+D2(g_st.net)+
       ",\"buys\":"+IntegerToString((int)g_st.buys)+",\"sells\":"+IntegerToString((int)g_st.sells)+",\"gp\":"+D2(g_st.totProfit)+",\"gl\":"+D2(g_st.totLoss)+
       ",\"avgW\":"+D2(g_st.avgProfit)+",\"avgL\":"+D2(g_st.avgLoss)+",\"maxW\":"+D2(g_st.maxProfit)+",\"maxL\":"+D2(g_st.maxLoss)+",\"pf\":"+D2(pf)+
-      ",\"streak\":"+IntegerToString((int)g_st.streak)+",\"comm\":"+D2(g_st.commission)+",\"swap\":"+D2(g_st.swap)+",\"vol\":"+DoubleToString(g_st.volume,2)+
-      ",\"hiRisk\":"+D2(g_st.highRisk)+",\"hiLot\":"+DoubleToString(g_st.highLot,2)+"}";
+      ",\"streak\":"+IntegerToString((int)g_st.streak)+",\"comm\":"+D2(g_st.commission)+",\"swap\":"+D2(g_st.swap)+",\"vol\":"+DoubleToString(g_st.volume,g_lotDigits)+
+      ",\"hiRisk\":"+D2(g_st.highRisk)+",\"hiLot\":"+DoubleToString(g_st.highLot,g_lotDigits)+"}";
    s+=",\"acct\":{\"bal\":"+D2(AccountInfoDouble(ACCOUNT_BALANCE))+",\"eq\":"+D2(AccountInfoDouble(ACCOUNT_EQUITY))+",\"mg\":"+D2(AccountInfoDouble(ACCOUNT_MARGIN))+
       ",\"fm\":"+D2(AccountInfoDouble(ACCOUNT_MARGIN_FREE))+",\"fl\":"+D2(AccountInfoDouble(ACCOUNT_PROFIT))+",\"lev\":"+IntegerToString((int)AccountInfoInteger(ACCOUNT_LEVERAGE))+
       ",\"cur\":\""+JEsc(AccountInfoString(ACCOUNT_CURRENCY))+"\",\"login\":"+IntegerToString((long)AccountInfoInteger(ACCOUNT_LOGIN))+",\"srv\":\""+JEsc(AccountInfoString(ACCOUNT_SERVER))+"\"";
    int npos=0; double ovol=BrOpenVolume(npos);
-   s+=",\"ovol\":"+DoubleToString(ovol,2)+",\"np\":"+IntegerToString(npos)+",\"ml\":"+D2(AccountInfoDouble(ACCOUNT_MARGIN_LEVEL))+"}";
+   s+=",\"ovol\":"+DoubleToString(ovol,g_lotDigits)+",\"np\":"+IntegerToString(npos)+",\"ml\":"+D2(AccountInfoDouble(ACCOUNT_MARGIN_LEVEL))+"}";
    if(StringLen(g_brLastId)>0)
       s+=",\"lastCmd\":{\"id\":\""+JEsc(g_brLastId)+"\",\"ok\":"+(g_brLastOk?"true":"false")+",\"text\":\""+JEsc(g_brLastText)+"\"}";
    s+="}";
@@ -5622,7 +6046,7 @@ void BridgeSync()
      }
    string body="{\"login\":\""+IntegerToString((long)AccountInfoInteger(ACCOUNT_LOGIN))+"\",\"srv\":\""+JEsc(AccountInfoString(ACCOUNT_SERVER))+"\",\"fresh\":"+(g_brFresh?"true":"false")+",\"reset\":"+(InpBrResetPw?"true":"false")+",\"cv\":"+IntegerToString(g_brCv)+calPart+",\"state\":"+BrStateJson()+",\"ack\":[";
    for(int i=0;i<ArraySize(g_brAck);i++) body+=(i>0?",":"")+"\""+g_brAck[i]+"\"";
-   body+="]}";
+   body+="],\"ev\":"+EvJson()+"}";
    string url=InpBrUrl;
    while(StringLen(url)>0 && StringSubstr(url,StringLen(url)-1,1)=="/") url=StringSubstr(url,0,StringLen(url)-1);
    url+="/api/ea/sync";
@@ -5687,6 +6111,7 @@ void BridgeSync()
      }
    g_brFresh=false;
    ArrayResize(g_brAck,0);              // the acks in this request were delivered
+   EvAckFrom(resp);                     // v2.23: events the Worker accepted (or already had) leave the outbox
    if(calSending) { g_calSent=calHashSent; g_calNeed=false; }
    if(StringFind(resp,"\"calNeed\":true")>=0) g_calNeed=true;   // the Worker lost / never had the table: send it on the next sync
 
@@ -5703,7 +6128,7 @@ void BridgeSync()
       if(nV>0 && nV!=g_brCv)
         {
          bool tokChanged=(nTok!=g_tgTok);
-         g_tgTok=nTok;
+         g_tgTok=InpTgViaWorker?"":nTok;
          g_tgAuth=nAuth;
          ParseIds();
          if(tokChanged)
@@ -5712,7 +6137,7 @@ void BridgeSync()
             g_tgOk=false;
            }
          g_brCv=nV;
-         if(StringLen(nTok)>0) { g_brShared=true; g_brSharedLoaded=true; CfgSet("brshared","1"); }
+         if(StringLen(nTok)>0 || InpTgViaWorker) { g_brShared=true; g_brSharedLoaded=true; CfgSet("brshared","1"); }
          CfgPutAll();
          CfgSet("brcv",IntegerToString(nV));
          CfgSaveFile();
@@ -5746,6 +6171,16 @@ void BridgeSync()
          continue;
         }
       BrRemember(id);
+      double cage=0.0;
+      if(InpCmdTtlSec>0 && JDbl(seg,"age",cage) && cage>(double)InpCmdTtlSec)
+        {
+         //--- v2.23 COMMAND TTL: an old command is EXPIRED - acked, never executed, and the app is told
+         YLog("Mini App Command EXPIRED (age "+DoubleToString(cage,0)+" s > "+IntegerToString(InpCmdTtlSec)+" s): "+cmd);
+         g_brLastId=id; g_brLastOk=false; g_brLastText="Command expired - not executed. Please try again.";
+         BrCmdAdd(id,cmd,"","⌛ EXPIRED (age "+DoubleToString(cage,0)+" s) - not executed",false);
+         BrAckAdd(id);
+         continue;
+        }
       string sigNow=cmd+"|"+BrCmdDetail(cmd,seg);
       if((cmd=="apply" || cmd=="modify" || cmd=="place" || cmd=="delete" || cmd=="settings") && sigNow==g_brSig && GetTickCount64()-g_brSigMs<3000)
         {
@@ -5774,7 +6209,7 @@ void BridgeSync()
 
 int OnInit()
   {
-   Print("[Yetimmm] v2.18 loaded - SMART WAITING + ZONE GATE active");
+   Print("[Yetimmm] v"+YT_VER+" loaded - Broker/Risk engine | entry "+(InpEntryMode==ENTRY_PENDING?"PENDING":"VIRTUAL")+" | risk policy "+(InpRiskPolicy==YT_RISK_CLAMP_MIN?"CLAMP_TO_MIN":"STRICT"));
    g_sym=_Symbol;
    g_magic=InpMagic;
    string up=g_sym;
@@ -5850,6 +6285,7 @@ int OnInit()
      }
    g_connected=(bool)TerminalInfoInteger(TERMINAL_CONNECTED);
    if(g_stateRecovered) YLog("State Recovered: "+StateText()+" | Risk "+D2(g_curRisk)+" | Acc.Loss "+D2(g_accLoss)+" | Seq "+IntegerToString(g_seq)+" | Last Trade #"+TNo(g_tradeNo));
+   PrintRecoveryPlan();
 
    //--- input levels: applied only when new (or changed) so old inputs never re-arm the bot after TP
    bool haveIn=(InpBuyStop>0.0 && InpSellStop>0.0);

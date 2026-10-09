@@ -27,7 +27,7 @@ new_sqlite_classes = ["Notify"]
 # ── Secrets (never put these in this file) ──────────────────────────────
 #   wrangler secret put BOT_TOKEN      REQUIRED  Telegram bot token (also used to verify Telegram identity)
 #   wrangler secret put APP_PASSWORD   REQUIRED  the app password. Login is refused until it exists.
-#   wrangler secret put PAIR_CODE      RECOMMENDED  the EA <-> account PAIRING code (type the same value in the EA input InpBrPairCode). Falls back to APP_PASSWORD when unset.
+#   wrangler secret put PAIR_CODE      REQUIRED (v4.8)  the EA <-> account PAIRING code (type the same value in the EA input InpBrPairCode). Falls back to APP_PASSWORD when unset.
 #   wrangler secret put ADMIN_KEY     optional  enables GET /admin/diag (internal diagnostics: raw EA command log, technical failures, archive summary). Unset = the endpoint does not exist. Never shown in the Mini App.
 #   wrangler secret put TE_KEY         optional  Trading Economics key (only used when no EA is online)
 #
@@ -35,7 +35,7 @@ new_sqlite_classes = ["Notify"]
 [vars]
 # PRODUCTION: CORS is restricted to YOUR web app. The Origin is the DOMAIN ONLY (no /repo path). Several origins: comma separated.
 # Not set / empty = no browser origin is allowed (fail-closed). "*" = open, local testing only (GET / then reports corsOpen:true).
-ALLOWED_ORIGIN = "https://zaed-oss.github.io"
+ALLOWED_ORIGIN = "https://spreadsupposed-jpg.github.io"
 # LOCK_SECONDS   = "120"      # lock length after too many wrong passwords
 # MAX_ATTEMPTS   = "8"        # wrong passwords before the lock
 # SESSION_DAYS   = "30"       # sliding session lifetime (any authenticated request extends it)

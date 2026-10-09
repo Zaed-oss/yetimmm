@@ -1,4 +1,4 @@
-// Yetimmm bridge v4.7.0 — ONE bot, ONE link, login by MT5 account number + ONE app password.
+// Yetimmm bridge v4.11.0 — ONE bot, ONE link, login by MT5 account number + ONE app password.
 //   EA  -> POST /api/ea/sync  (headers X-EA-Secret [+ X-EA-Pair while pairing])  body {login, srv, fresh, reset, cv, state, ack}
 //   App -> POST /login        body {login, pw, init}                -> {ok, sess}
 //   App -> POST /verify       headers X-Login + X-Session, body {init} -> {ok, hard, checks:{session,account,telegram,bot}}
@@ -17,6 +17,7 @@
 //    • SESSION_EPOCH bumped -> everybody is signed out instantly (panic button)
 // ═════════════════════════════════════════════════════════════════════════
 import { Notify } from "./news.js";
+export const VERSION = "4.11.0", EA_PROTOCOL = "2.25";   // v4.8: the ONE place the release number lives (package.json / README / CHANGELOG / EA must match: npm run check enforces it)
 export { Notify };
 
 const CONFIG = {
@@ -48,7 +49,8 @@ function cfg(env) {
     requireTg: String(env.REQUIRE_TG !== undefined ? env.REQUIRE_TG : CONFIG.REQUIRE_TG ? "1" : "0") !== "0",
     salt: String(env.BOT_TOKEN || ""),
     origins: String(env.ALLOWED_ORIGIN || CONFIG.ALLOWED_ORIGIN || "").split(",").map((x) => x.trim().replace(/\/+$/, "")).filter(Boolean),   // comma separated; "*" = open (testing only)
-    pairKey: String(env.PAIR_CODE || env.APP_PASSWORD || CONFIG.PASSWORD),
+    // v4.8: PAIR_CODE is MANDATORY and separate from APP_PASSWORD (a leaked app password must not pair a rogue EA). ALLOW_PAIR_FALLBACK="1" restores the old fallback (not recommended).
+  pairKey: String(env.PAIR_CODE || (String(env.ALLOW_PAIR_FALLBACK || "") === "1" ? (env.APP_PASSWORD || CONFIG.PASSWORD) : "")),
     pairMax: Math.max(1, Math.floor(num(env.PAIR_MAX_FAILS, CONFIG.PAIR_MAX_FAILS))),
     pairLockMs: num(env.PAIR_LOCK_SEC, CONFIG.PAIR_LOCK_SEC) * 1000,
     touchMs: num(env.SESSION_TOUCH_SEC, CONFIG.SESSION_TOUCH_SEC) * 1000,
@@ -139,7 +141,7 @@ function publicOf(st) {
 const weekMon = (daySrv) => daySrv - ((daySrv + 3) % 7);                       // epoch day 0 was a Thursday
 function weekWin(tzo, nowMs) { const day = Math.floor(((nowMs === undefined ? Date.now() : nowMs) / 1000 + (Number(tzo) || 0)) / 86400), mon = weekMon(day); return { key: mon, from: mon * 86400, to: mon * 86400 + 7 * 86400 - 1 }; }
 const weekOfTs = (ts) => weekMon(Math.floor(Number(ts) / 86400));
-const r2n = (x) => Math.round(x * 100) / 100;
+const r2n = (x) => Math.round(x * 1e6) / 1e6;   // v4.8: keep the real precision (lots 0.001, 3-decimal currencies); the UI formats for display
 function weekStats(L) {
   const n = L.length, sum = (a) => a.reduce((s, x) => s + x, 0), win = L.filter((x) => x.pnl > 0), los = L.filter((x) => x.pnl < 0), gw = sum(win.map((x) => x.pnl)), gl = -sum(los.map((x) => x.pnl));
   const byTs = [...L].sort((a, b) => b.ts - a.ts); let streak = 0;
@@ -155,7 +157,7 @@ export default {
     if (req.method === "OPTIONS") return new Response(null, { status: 204, headers: ch });
     const done = (res) => { const h = new Headers(res.headers); for (const [k, v] of Object.entries(ch)) h.set(k, v); return new Response(res.body, { status: res.status, headers: h }); };
     const P = url.pathname;
-    if (P === "/") return done(json({ ok: true, service: "yetimmm-bridge", v: 4.6, corsOpen: c.origins.includes("*"), corsConfigured: c.origins.length > 0 }));
+    if (P === "/") return done(json({ ok: true, service: "yetimmm-bridge", v: VERSION, release: VERSION, ea_protocol: EA_PROTOCOL, pairConfigured: !!c.pairKey, corsOpen: c.origins.includes("*"), corsConfigured: c.origins.length > 0 }));
     try {
       let login = "", body = "";
       if (P === "/api/ea/sync" || P === "/login") {
@@ -170,7 +172,7 @@ export default {
       if (!/^\d{3,12}$/.test(login)) return done(json({ ok: false, error: "login" }, P === "/login" ? 400 : 401));
       const hub = env.HUB.get(env.HUB.idFromName("acc-" + login));
       const call = (path, extra) => hub.fetch("https://hub" + path, { method: "POST", body: JSON.stringify(extra) });
-      if (P === "/api/ea/sync") return done(await call("/sync", { secret: (req.headers.get("X-EA-Secret") || "").trim(), pair: (req.headers.get("X-EA-Pair") || "").trim().slice(0, 256), body, tok: env.BOT_TOKEN || "" }));
+      if (P === "/api/ea/sync") return done(await call("/sync", { secret: (req.headers.get("X-EA-Secret") || "").trim(), pair: (req.headers.get("X-EA-Pair") || "").trim().slice(0, 256), body, tok: env.BOT_TOKEN || "", login }));
       if (P === "/login") {
         const b = JSON.parse(body);
         const tg = await tgUser(String(b.init || ""), env.BOT_TOKEN || "");
@@ -353,6 +355,7 @@ export class Hub {
     // and are upgraded the first time the EA presents the code. A stranger who syncs first can no longer take the account: without the code he is refused (403).
     let ok = matched, issued = "", paired = false, dirty = false;
     const pair = String(m.pair || "");
+    if (pair && !matched && !this.c.pairKey) return json({ ok: false, error: "pair_not_configured" }, 503);   // v4.8: no PAIR_CODE secret = pairing refused (never falls back to the app password)
     if (pair) {
       const locked = !!(a.pf && a.pf.until && now0 < a.pf.until);
       if (locked && !matched) return json({ ok: false, error: "pair_locked", retry: Math.ceil((a.pf.until - now0) / 1000) }, 429);
@@ -379,6 +382,8 @@ export class Hub {
     if (a.tsig !== tsig) { a.tsig = tsig; a.cfgv = (a.cfgv || 0) + 1; dirty = true; }
     if (dirty) await this.ctx.storage.put("acc", a);
     if (body.state && typeof body.state === "object") { this.st = body.state; this.ts = Date.now(); try { await this.watch(a); } catch (e) { /* alerts must never break the EA sync */ } try { await this.archive(body.state, a); await this.diagFrom(body.state); } catch (e) { /* the internal archive / diagnostics must never break the EA sync */ } }
+    let evack = [];
+    if (Array.isArray(body.ev) && body.ev.length) { try { evack = await this.events(body.ev, a, String(m.login || "")); } catch (e) { /* notifications must never break the EA sync */ } }
     let calNeed = false;
     try { calNeed = await this.feed(body); } catch (e) { /* the news feed must never break the EA sync */ }
     let q = (await this.ctx.storage.get("cmds")) || [];
@@ -386,14 +391,33 @@ export class Hub {
     const now = Date.now();
     const next = q.filter((x) => !ack.includes(x.c.id) && now - x.t < 120000);
     if (next.length !== q.length) await this.ctx.storage.put("cmds", next);
-    const out = { ok: true, commands: next.map((x) => x.c), staleSec: this.c.staleSec };
+    const out = { ok: true, commands: next.map((x) => ({ ...x.c, age: Math.max(0, Math.round((now - x.t) / 1000)) })), staleSec: this.c.staleSec };   // v4.8: age lets the EA expire stale commands
+    if (evack.length) out.evack = evack;
     if (issued) out.es = issued;
     if (paired) out.paired = true;
     if (calNeed) out.calNeed = true;
-    if (String(a.cfgv) !== String(body.cv !== undefined ? body.cv : 0)) out.cfg = { v: String(a.cfgv), tok: m.tok || "", auth: a.tg.join(",") };
+    if (String(a.cfgv) !== String(body.cv !== undefined ? body.cv : 0)) out.cfg = { v: String(a.cfgv), tok: (body.state && body.state.evp) ? "" : (m.tok || ""), auth: a.tg.join(",") };   // v4.8: an EA that routes notifications through the Worker never receives the Bot Token
     return json(out);
   }
 
+  // ---- v4.8 EA notification events: ONE engine (Notify.emit) with a unique event id from the EA -> never delivered twice (even after EA / Worker / app restarts) ----
+  async events(list, a, login) {
+    const ack = [], o = await this.loadOa(), now = Date.now();
+    const userAlert = Object.values(o).some((r) => r && r.enabled && (r.status === "armed" || (r.status === "fired" && now - (r.fired_at || 0) < 120000)));
+    const nt = await notifyStub(this.env, this.c, a.srv);
+    for (const e of list.slice(0, 40)) {
+      if (!e || typeof e !== "object") continue;
+      const id = String(e.id || "");
+      if (!/^\d{3,12}:\d{1,12}:\d{1,12}$/.test(id)) continue;
+      const k = e.k === "act" ? "act" : "ev";
+      if (k === "act" && userAlert) { ack.push(id); continue; }   // the user's own Order Alert is the single source for the activation message
+      const title = String(e.t || "").slice(0, 120), body = String(e.b || "").slice(0, 600);
+      if (!title) { ack.push(id); continue; }
+      const r = await nt.fetch("https://n/emit", { method: "POST", body: JSON.stringify({ uid: "ea" + (login || id.split(":")[0]), account_id: login || id.split(":")[0], type: "ea", event_id: id, alert_type: k, title, body }) });
+      if (r.ok) ack.push(id);                                   // not acked on failure -> the EA re-sends the same id (emit is idempotent)
+    }
+    return ack;
+  }
   // ---- App side ----
   async login(m) {
     const a = await this.S();

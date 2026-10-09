@@ -156,6 +156,56 @@ body.loading .pr,body.loading .kv b{color:transparent;border-radius:8px;backgrou
 .chk{width:64px;height:64px;margin:0 auto 12px}.chk circle{fill:none;stroke:var(--up);stroke-width:3;stroke-dasharray:151;stroke-dashoffset:151;animation:dr .6s ease forwards}
 .chk path{fill:none;stroke:var(--up);stroke-width:4;stroke-linecap:round;stroke-linejoin:round;stroke-dasharray:40;stroke-dashoffset:40;animation:dr .4s .5s ease forwards}
 @keyframes dr{to{stroke-dashoffset:0}}
+
+/* v4.10 · command states, spinner, logout dialog */
+.spn2{display:inline-block;width:14px;height:14px;border-radius:50%;border:2px solid color-mix(in srgb,var(--gold) 30%,transparent);border-top-color:var(--gold);animation:spn2 .8s linear infinite;vertical-align:-2px;margin-inline-end:6px}
+.ib .spn2{margin:0}
+@keyframes spn2{to{transform:rotate(360deg)}}
+.hi.busy{opacity:.78;border-inline-start-color:var(--gold)}
+.opw{display:block;color:var(--gold2);font-size:11px;margin-top:3px}
+.btn:disabled,.ib:disabled{cursor:not-allowed}
+.btn:focus-visible,.ib:focus-visible,#lg input:focus-visible,#lg button:focus-visible{outline:2px solid var(--gold);outline-offset:2px}
+.lgo-ic{width:56px;height:56px;margin:0 auto 12px;display:grid;place-items:center}.lgo-ic svg{width:26px;height:26px;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+.lgo-t,.lgo-p{display:block;text-align:center}
+@media(prefers-reduced-motion:reduce){.spn2{animation-duration:2.4s}}
+
+/* v4.10 · login redesign + unified controls (tokens only: dark/light follow the theme) */
+#lg .box{position:relative;overflow:hidden;border-radius:26px;padding:30px 22px 24px;animation:lgIn .45s cubic-bezier(.2,.8,.2,1)}
+#lg .box::before{content:"";position:absolute;inset:0 0 auto 0;height:3px;background:linear-gradient(90deg,transparent,var(--gold),transparent);opacity:.8}
+.lgb{position:relative;width:76px;height:76px;margin:0 auto 6px;border-radius:24px;display:grid;place-items:center;background:linear-gradient(150deg,var(--surf2),var(--surf));border:1px solid color-mix(in srgb,var(--gold) 28%,var(--line));box-shadow:0 10px 28px var(--glow)}
+.lgb svg{width:46px;height:46px}.lgb i{position:absolute;inset:-6px;border-radius:30px;border:1px solid color-mix(in srgb,var(--gold) 40%,transparent);animation:lgPulse 3.2s ease-in-out infinite}
+.lgn{font-weight:800;letter-spacing:.14em;font-size:13px;color:var(--gold2);text-transform:uppercase;margin-bottom:2px}
+#lg h2{margin:8px 0 4px;font-size:22px}
+#lg .box .bot{display:block;margin:0 auto 2px!important}
+#lg input{min-height:50px;transition:border-color .2s,box-shadow .2s,background-color .2s}
+#lg input:hover{border-color:color-mix(in srgb,var(--gold) 35%,var(--line))}
+#lg input:focus{outline:none;border-color:var(--gold);box-shadow:0 0 0 3px color-mix(in srgb,var(--gold) 24%,transparent);background:var(--surf)}
+#lg .pw input{padding-inline-end:76px}
+#lg .pw button{border-radius:9px;font-weight:700;color:var(--gold2);min-height:36px;min-width:56px}
+#lg .pw button:hover{background:var(--surf)}
+#lg .go{min-height:52px;box-shadow:0 8px 22px var(--glow);transition:transform .12s,filter .2s,box-shadow .2s}
+#lg .go:hover:not(:disabled){filter:brightness(1.07)}#lg .go:active:not(:disabled){transform:scale(.98)}
+#lg .go:disabled{cursor:not-allowed;filter:grayscale(.3)}
+#lg .er.okm:not(:empty){color:var(--up);background:color-mix(in srgb,var(--up) 11%,transparent);border-color:color-mix(in srgb,var(--up) 30%,transparent);animation:none}
+#lg .er:not(:empty){padding:9px 12px;border-radius:12px;background:color-mix(in srgb,var(--dn) 11%,transparent);border:1px solid color-mix(in srgb,var(--dn) 30%,transparent);animation:lgShake .4s}
+#lg .hint{line-height:1.6}
+@keyframes lgIn{from{opacity:0;transform:translateY(14px) scale(.98)}to{opacity:1;transform:none}}
+@keyframes lgPulse{0%,100%{opacity:.25;transform:scale(1)}50%{opacity:.7;transform:scale(1.05)}}
+@keyframes lgShake{20%{transform:translateX(-5px)}40%{transform:translateX(5px)}60%{transform:translateX(-3px)}80%{transform:translateX(3px)}}
+@media(max-height:560px){.lgb{width:54px;height:54px;border-radius:18px}.lgb svg{width:32px;height:32px}#lg .box{padding-top:18px}}
+/* unified states: buttons, cards, sheets */
+.btn{transition:transform .12s,filter .2s,box-shadow .2s,border-color .2s}
+.btn:hover:not(:disabled){border-color:color-mix(in srgb,var(--gold) 40%,var(--line))}
+.btn:disabled{opacity:.45;filter:grayscale(.25)}
+.btn.go:active,.btn.dg:active{box-shadow:none}
+.inp:hover{border-color:color-mix(in srgb,var(--gold) 30%,var(--line))}.inp:focus{outline:none;border-color:var(--gold)}
+.sheet{border:1px solid var(--line);border-bottom:0}
+.sheet .btns{margin-top:14px}
+.sheet .btn{min-height:50px}
+.toast,#toast{box-shadow:var(--sh)}
+:where(a,button,input,select,[tabindex]):focus-visible{outline:2px solid var(--gold);outline-offset:2px}
+:where(a,button):focus:not(:focus-visible){outline:none}
+@media(prefers-reduced-motion:reduce){#lg .box,#lg .er:not(:empty){animation:none!important}.btn,.card,.hi{transition:none}}
 </style>
 <link rel="stylesheet" href="anim/yt-anim.css">
 <link rel="stylesheet" href="news/yt-news.css">
@@ -173,9 +223,9 @@ body.loading .pr,body.loading .kv b{color:transparent;border-radius:8px;backgrou
 <button class="alt" id="vfAlt" type="button" data-t="vf_alt"></button>
 </div></div>
 <div id="lg" hidden><div class="box">
-<div class="fm"><h2 data-t="lg_t"></h2><p data-t="lg_s"></p>
-<label data-t="lg_acc"></label><input id="lgA" inputmode="numeric" autocomplete="username" maxlength="12">
-<label data-t="lg_pw"></label><div class="pw"><input id="lgP" type="password" autocomplete="current-password" maxlength="64"><button id="lgE" type="button" data-t="lg_show"></button></div>
+<div class="fm"><div class="lgn">Yetimmm</div><h2 data-t="lg_t"></h2><p data-t="lg_s"></p>
+<label data-t="lg_acc"></label><input id="lgA" inputmode="numeric" autocomplete="username" maxlength="12" enterkeyhint="next" autocapitalize="off" spellcheck="false">
+<label data-t="lg_pw"></label><div class="pw"><input id="lgP" type="password" autocomplete="current-password" maxlength="64" enterkeyhint="go" autocapitalize="off" spellcheck="false"><button id="lgE" type="button" data-t="lg_show" aria-controls="lgP"></button></div>
 <button class="go" id="lgGo" data-t="lg_go"></button><div class="er" id="lgEr" role="alert"></div><div class="hint" data-t="lg_hint"></div></div>
 <div class="st sw"><div class="spn"></div><b data-t="lg_wait"></b><p data-t="lg_waitS"></p></div>
 <div class="st so"><svg class="chk" viewBox="0 0 52 52"><circle cx="26" cy="26" r="24"/><path d="M15 27l8 8 14-16"/></svg><b data-t="lg_ok"></b></div>
@@ -312,6 +362,19 @@ sxT:["إحصائيات مفصلة","Detailed statistics"],sPf:["معامل ال�
 stM:["البوت متوقف","Bot stopped"],stMB:["تم تجميد السعر عند {0} · لا أوامر ولا صفقات ولا تحديثات حتى تعيد التشغيل","Price frozen at {0} · no orders, trades or updates until you restart"],rst:["إعادة التشغيل","Restart"],vw:["عرض فقط","View only"],frzL:["السعر مجمّد","Price frozen"],q_delW:["سيتم حذف مستوى {0} عند {1} (ما زال بانتظار السعر ولم يُوضع في MT5) ولن يُنشأ لاحقاً.","The {0} level at {1} (still waiting for price, not in MT5 yet) will be deleted and never created later."]
 };
 let LG=0;                                             // 0 = Arabic, 1 = English
+Object.assign(D,{
+op_ing:["جارٍ الحذف…","Deleting…"],
+op_busy:["العملية قيد التنفيذ، انتظر نتيجتها","An operation is already in progress, wait for its result"],
+op_delOk:["تم حذف الأمر من MT5 وتأكد اختفاؤه","Order deleted from MT5 and verified"],
+op_delFail:["لم يُحذف الأمر: {0}","The order was not deleted: {0}"],
+op_filled:["لم يُحذف الأمر لأنه نُفّذ فعلاً وصار صفقة","Not deleted: the order was already filled and is now a trade"],
+op_unver:["لم يتأكد الحذف خلال المهلة. الأمر معروض كما يظهر في MT5 الآن","Delete not confirmed in time. The order is shown as MT5 reports it now"],
+op_unverG:["لم يصل تأكيد العملية من البوت. تحقق من الحالة ثم أعد المحاولة","No confirmation from the bot. Check the status, then retry"],
+op_wait:["بانتظار تنفيذ MT5…","Waiting for MT5…"],
+out_ing:["جارٍ الخروج…","Signing out…"],
+out_ic:["ستُنهى الجلسة على هذا الجهاز ويُطلب إبطالها من الخادم.","This device's session will be ended and revoked on the server."],
+lg_busy:["جارٍ التحقق…","Verifying…"]
+});
 const t=(k,...a)=>(D[k]?D[k][LG]:String(k).replace(/^(r|st|sx)_/,"")).replace(/\{(\d)\}/g,(_,i)=>a[i]);
 
 /* ═════════════ 3) STATE + helpers ═════════════ */
@@ -336,11 +399,45 @@ rrHi:["⚠️ نسبة عالية 1:{0} — الهدف TP يبعد {0} ضعف م
 aVol:["حجم الصفقات المفتوحة","Open volume"],aNp:["الصفقات المفتوحة","Open positions"],aMl:["مستوى الهامش","Margin level"],aSrv:["السيرفر","Server"],aLot:["لوت","lots"]});
 const $=i=>document.getElementById(i);
 const ic=n=>`<svg class="ic i3 i-${n}"><use href="#i-${n}"/></svg>`;
-const C=100,STEP=.01,VMIN=.01,VMAX=100;
 const f=(v,d=2)=>Number(v).toLocaleString("en-US",{minimumFractionDigits:d,maximumFractionDigits:d});
 const sg=v=>(v>=0?"+":"−")+f(Math.abs(v)),cl=v=>v>=0?"up":"dn",r2=v=>Math.round(v*100)/100;
 const num=v=>{const n=parseFloat(String(v).replace(",","."));return isNaN(n)?0:n};
+const fp=v=>f(v,pd()),fv=v=>f(v,vd());
 let S={price:4137.5,run:false,state:"STOPPED",msg:"",buy:4138,sell:4137,risk:1,cur:1,acc:0,seq:0,no:0,pend:null,pos:null,hist:[],target:20,rr:20,maxDev:30,warn:60,breach:"WAIT",orders:[],cmds:[]},prev,T,tab=0,UI={};
+/*RISK-CORE-BEGIN*/
+/* v4.8: the UI NEVER assumes contract / step / min / max / digits / currency. Live mode reads the BrokerSpec the EA publishes (S.bs) and shows the EA's own RiskResult (S.rk).
+   The same arithmetic is used here ONLY for the preview and for the simulation, against an explicit, selectable broker profile. */
+const SIM_PROFILES={
+  "XAU-100-0.01":{contract:100,tick:.01,tvl:1,vmin:.01,vstep:.01,vmax:100,vlimit:0,vdig:2,digits:2,ccy:"USD",stops:0,point:.01,spr:0},
+  "XAU-1-0.001":{contract:1,tick:.01,tvl:.01,vmin:.001,vstep:.001,vmax:100,vlimit:0,vdig:3,digits:2,ccy:"USD",stops:0,point:.01,spr:0},
+  "XAU-100-0.1":{contract:100,tick:.01,tvl:1,vmin:.1,vstep:.1,vmax:1000,vlimit:0,vdig:1,digits:2,ccy:"USD",stops:0,point:.01,spr:0},
+  "XAU-100-EUR":{contract:100,tick:.01,tvl:.92,vmin:.01,vstep:.01,vmax:100,vlimit:0,vdig:2,digits:2,ccy:"EUR",stops:0,point:.01,spr:0},
+  "XAU-100-LIMIT1":{contract:100,tick:.01,tvl:1,vmin:.01,vstep:.01,vmax:100,vlimit:1,vdig:2,digits:2,ccy:"USD",stops:0,point:.01,spr:0}
+};
+let SIMP="XAU-100-0.01";
+function perLotLoss(bs,d){return bs.tvl>0&&bs.tick>0?d/bs.tick*bs.tvl:d*bs.contract}
+function calcRisk(bs,risk,entry,sl,policy){
+  const d=Math.abs(entry-sl),o={ok:false,status:"NO_SPEC",req:risk,raw:0,vol:0,vmin:bs.vmin,eff:0,minRisk:0,perLot:0,clamped:false,policy:policy==="CLAMP_TO_MIN"?"CLAMP_TO_MIN":"STRICT",ccy:bs.ccy||"USD"};
+  if(!(d>1e-12)||!(bs.vstep>0)||!(bs.vmin>0))return o;
+  const pl=perLotLoss(bs,d);if(!(pl>0))return o;
+  o.perLot=pl;o.minRisk=bs.vmin*pl;o.raw=risk/pl;
+  let lot;
+  if(o.raw<bs.vmin-1e-9){if(o.policy==="CLAMP_TO_MIN"){lot=bs.vmin;o.clamped=true}else{o.status="BELOW_MIN";return o}}
+  else lot=bs.vmin+Math.floor((o.raw-bs.vmin)/bs.vstep+1e-7)*bs.vstep;
+  lot=Number(lot.toFixed(bs.vdig==null?8:bs.vdig));
+  if(lot>bs.vmax+1e-9){o.status="ABOVE_MAX";return o}
+  if(bs.vlimit>0&&lot>bs.vlimit+1e-9){o.status="ABOVE_LIMIT";return o}
+  o.vol=lot;o.eff=lot*pl;o.ok=true;o.status=o.clamped?"CLAMPED":"OK";return o;
+}
+/*RISK-CORE-END*/
+const spec=()=>live()?(S.bs||null):SIM_PROFILES[SIMP];
+const ccyL=()=>{const b=spec();return(b&&b.ccy)||(S.acct&&S.acct.cur)||"USD"};
+const cs=()=>ccyL()==="USD"?"$":ccyL()+" ";
+const pd=()=>{const b=spec();return b&&b.digits!=null?b.digits:2};
+const vd=()=>{const b=spec();return b&&b.vdig!=null?b.vdig:2};
+const tickSz=()=>{const b=spec();return b&&b.tick>0?b.tick:.01};
+const CS=()=>{const b=spec();return b&&b.contract>0?b.contract:100};
+(function(){try{const q=new URLSearchParams(location.search).get("profile");if(q&&SIM_PROFILES[q])SIMP=q}catch(e){}})();
 if(CONFIG.mode!=="live"){try{const r=localStorage.getItem("ytPro");if(r)Object.assign(S,JSON.parse(r))}catch(e){}}else{S.price=0;S.hist=[];S.state="STOPPED"}
 try{UI=JSON.parse(localStorage.getItem("ytUI"))||{}}catch(e){}
 prev=S.price;const SP=S.price?[S.price]:[];
@@ -372,33 +469,75 @@ const SES=(()=>{const st=()=>{try{return CONFIG.sessionStore==="session"?session
   clr(){try{ls().removeItem("ytS")}catch(e){}try{sessionStorage.removeItem("ytS")}catch(e){}}}})();
 const KEY=SES.s;
 const live=()=>CONFIG.mode==="live"&&!!CONFIG.api.baseUrl;
-const Bridge={ok:null,auth:false,at:0,init:false,lc:"",dirty:false,applyId:null,busy:false,pend:[],
+/* ═════ v4.10 · command lifecycle (Ops) ═════
+   sent → accepted (EA ack) → VERIFIED (state really changed) | failed | unverified (timeout).
+   The UI never claims success before the live state confirms it; a row being deleted is shown as "deleting…", never silently removed. */
+const Ops={m:new Map(),dids:new Set(),log:[],TO:{delete:15000,_:12000},
+  key(c,p){p=p||{};return c==="delete"?"delete:"+(p.ticket>0?"t"+p.ticket:"s"+(p.side||"")):c},
+  add(c,p){const k=this.key(c,p);if(this.m.has(k))return null;const o={k,c,p:p||{},at:Date.now(),id:null,rid:"o"+Date.now().toString(36)+Math.random().toString(36).slice(2,5)};this.m.set(k,o);this.note(o,"sent");return o},
+  note(o,ev,why){this.log.unshift({t:new Date().toISOString(),op:o.rid,cmd:o.c,ev,id:o.id,ticket:(o.p&&o.p.ticket)||null,side:(o.p&&o.p.side)||null,why:why||""});if(this.log.length>120)this.log.length=120},
+  end(o,ev,why){this.m.delete(o.k);this.note(o,ev,why)},
+  active(){return this.m.size>0},
+  delTk(tk){return this.m.has("delete:t"+tk)},
+  delSd(sd){return this.m.has("delete:s"+sd)},
+  byId(id){for(const o of this.m.values())if(o.id&&o.id===id)return o;return null},
+  /* an EA acknowledgement (lastCmd) arrived */
+  ack(lc){const o=this.byId(lc.id);if(!o)return false;o.ack=true;o.ok=!!lc.ok;o.cat=lc.cat||"";o.text=lc.text||"";this.note(o,lc.ok?"ea_ok":"ea_fail",lc.cat==="tech"?"technical":o.text);return true},
+  /* evaluate every open operation against the freshest state */
+  settle(){
+    const now=Date.now();let changed=false;
+    for(const o of [...this.m.values()]){
+      const to=this.TO[o.c]||this.TO._,age=now-o.at;
+      if(o.c==="delete"){
+        const tk=o.p.ticket,gone=tk>0?!(S.orders||[]).some(x=>x.ticket==tk):!(S.waits||[]).some(w=>w.side===o.p.side);
+        if(o.ack&&!o.ok){this.end(o,"failed",o.text);toast("❌ "+(o.cat==="tech"?t("e_generic"):t("op_delFail",trEA(o.text)||t("e_generic"))));changed=true;continue}
+        if(gone&&o.id&&(o.ack||age>1500)){
+          if(tk>0&&(S.pos&&String(S.pos.ticket||S.pos.id||"")===String(tk)||(S.pos&&!o.ack))){this.end(o,"filled_instead");toast("❌ "+t("op_filled"));changed=true;continue}
+          this.end(o,"verified");toast(t("op_delOk"));changed=true;continue}
+        if(age>to){this.end(o,"unverified");toast("❌ "+t("op_unver"));changed=true}
+      }else{
+        if(o.ack){this.end(o,o.ok?"verified":"failed",o.text);changed=true;continue}
+        if(age>to){this.end(o,"unverified");toast("❌ "+t("op_unverG"));changed=true}
+      }
+    }
+    return changed},
+  snapshot(){return{open:[...this.m.values()].map(o=>({cmd:o.c,id:o.id,ageMs:Date.now()-o.at})),log:this.log.slice(0,60)}}
+};
+const Bridge={ok:null,auth:false,at:0,init:false,lc:"",mine:new Set(),dirty:false,applyId:null,busy:false,again:false,pend:[],
   async req(path,opt){
     const r=await fetch(CONFIG.api.baseUrl+path,{...opt,headers:{"Content-Type":"application/json","X-Login":SES.l,"X-Session":SES.s,...CONFIG.api.headers}});
     if(r.status===401){let w="";try{w=(await r.clone().json()).why||""}catch(e){}Login.out(false,w==="pw"||w==="revoked"?"e_pw_changed":w==="expired"?"e_expired":w==="acct"?"e_acct":"e_relogin")}
     if(!r.ok){const e=new Error(r.status);e.status=r.status;try{e.why=(await r.clone().json()).why||""}catch(x){}throw e}
     return r.json()},
   async pull(){
-    if(this.busy)return;this.busy=true;
+    if(this.busy){this.again=true;return}this.busy=true;
     try{
       const d=await this.req("/state");
       prev=S.price||d.price;Object.assign(S,d);this.pend=this.pend.filter(p=>Date.now()-p.at<900000);this.ok=true;this.auth=false;this.at=Date.now();
       const lc=d.lastCmd;
       if(!this.init){this.init=true;this.lc=lc?lc.id:"";fillInputs(true)}
-      else if(lc&&lc.id!==this.lc){this.lc=lc.id;toast(lc.cat==="tech"?"❌ "+t("e_generic"):(lc.ok?"":"❌ ")+trEA(String(lc.text||"").replace(/^[\u274C\u2705\u2139\u26A0\uFE0F\s]+/,"")));if(lc.ok&&lc.id===this.applyId)this.dirty=false}
+      else if(lc&&lc.id!==this.lc){this.lc=lc.id;Ops.ack(lc);if(this.mine.has(lc.id)&&!Ops.dids.has(lc.id))toast(lc.cat==="tech"?"❌ "+t("e_generic"):(lc.ok?"":"❌ ")+trEA(String(lc.text||"").replace(/^[\u274C\u2705\u2139\u26A0\uFE0F\s]+/,"")));if(lc.ok&&lc.id===this.applyId)this.dirty=false}
       if(!this.dirty)fillInputs();else prevCalc();
       feed();
     }catch(e){this.ok=false;this.auth=(e.status===401||e.status===403||!SES.s)}
-    this.busy=false;setMode();render();
+    Ops.settle();this.busy=false;setMode();render();
+    if(this.again){this.again=false;setTimeout(()=>this.pull(),120)}
   },
+  /* fast polling only while an operation is open (500 ms), so the result shows up as soon as MT5 reports it */
+  fast(){if(this.fl)return;this.fl=true;const loop=async()=>{if(!Ops.active()){this.fl=false;render();return}await this.pull();setTimeout(loop,500)};setTimeout(loop,300)},
   async cmd(c,p){
-    const lk=c+JSON.stringify(p||{});this.lk=this.lk||{};if(Date.now()-(this.lk[lk]||0)<2500)return;this.lk[lk]=Date.now();
+    const o=Ops.add(c,p);
+    if(!o){toast(t("op_busy"));return}            /* same operation already in flight: visible feedback, never a silent swallow */
+    render();                                       /* the row switches to "deleting…" immediately, from the very first tap */
     try{
       const r=await this.req("/command",{method:"POST",body:JSON.stringify({cmd:c,...p})});
-      if(c==="apply")this.applyId=r.id;trackCmd(r&&r.id,c,p,"sent");
-      toast(t(c==="newcycle"?"cyc_ok":"t_sent"));
-      [800,2000,3500,5500,8000].forEach(ms=>setTimeout(()=>this.pull(),ms));
+      o.id=(r&&r.id)||null;if(c==="delete"&&o.id)Ops.dids.add(o.id);Ops.note(o,"worker_accepted");
+      if(r&&r.id)this.mine.add(r.id);if(c==="apply")this.applyId=r.id;trackCmd(r&&r.id,c,p,"sent");
+      if(c!=="delete")toast(t(c==="newcycle"?"cyc_ok":"t_sent"));
+      if(c==="newcycle")Ops.end(o,"sent");        /* newcycle is a two-step server command with its own guard */
+      this.fast();
     }catch(e){
+      Ops.end(o,"rejected","http "+(e.status||"network"));render();
       trackCmd(null,c,p,"fail",e.status===503?t("noLink"):t("l_srv"));
       if(c==="newcycle"&&e.status===409){toast("❌ "+t(e.why==="pending"?"cyc_pnd":"cyc_blk"));return}
       if(e.status===503)toast("❌ "+t("noLink"));
@@ -437,20 +576,29 @@ function cmdRow(x){
 }
 
 /* ═════════════ 7) TRADING RULES + ENGINE (sim mode) ═════════════ */
+const rkText=r=>r.status==="BELOW_MIN"?t("rk_BELOW_MIN",cs()+f(r.req),cs()+f(r.minRisk),fv(r.vmin)):r.status==="ABOVE_MAX"?t("rk_ABOVE_MAX"):r.status==="ABOVE_LIMIT"?t("rk_ABOVE_LIMIT"):r.status==="CLAMPED"?t("rk_CLAMPED",cs()+f(r.req),cs()+f(r.eff)):"";
 function lotFor(risk,entry,sl){
   const d=Math.abs(entry-sl);if(d<1e-9)return{e:t("e_lot0")};
-  const lot=r2(Math.floor(risk/(d*C)/STEP+1e-7)*STEP);
-  if(lot<VMIN-1e-9)return{e:t("e_lotMin",VMIN)};
-  if(lot>VMAX)return{e:t("e_lotMax")};
-  return{lot,est:lot*d*C};
+  const bs=spec();
+  if(!bs)return{pending:true};                       /* live, no BrokerSpec yet (old EA / first sync): the EA decides, the UI never guesses */
+  const r=calcRisk(bs,risk,entry,sl,(S.rk&&S.rk.policy==="CLAMP_TO_MIN")?"CLAMP_TO_MIN":"STRICT");
+  if(live())return{lot:r.vol,est:r.eff,r,warn:r.ok&&!r.clamped?"":rkText(r)};   /* a volume condition is a WAIT shown as a note, never a blocking error */
+  if(!r.ok)return{e:r.status==="BELOW_MIN"?t("e_lotMin",fv(bs.vmin)):t("e_lotMax"),r};
+  return{lot:r.vol,est:r.eff,r};
 }
+function rkRows(k){
+  const r=live()?S.rk:null;if(!r)return"";
+  const bad=r.status!=="OK"&&r.status!=="CLAMPED",mn=cs()+f(r.minRisk);
+  return `<div class="kv" style="margin-top:8px">${k(t("rkReq"),cs()+f(r.req))}${k(t("rkMin"),r.minRisk>0?mn:"—")}${k(t("rkEff"),r.vol>0?cs()+f(r.eff):"—",r.clamped?"dn":"")}${k(t("rkPol"),r.policy)}</div>`+(bad||r.clamped?`<div class="note${bad?"":" er"}" style="margin-top:8px">${bad?"⏳ ":"⚠️ "}${esc(rkText({status:r.status,req:r.req,minRisk:r.minRisk,vmin:r.vmin,eff:r.eff}))}</div>`:"");
+}
+function pairErr(b,s){const x=spec();if(!live()||!x||S.entry==="VIRTUAL"||!(b>s))return"";const need=2*(x.stops||0)*(x.point||0)+(x.spr||0);return b-s<need-1e-9?t("e_pair",fp(need)):""}
 function vLevels(b,s){if(!(b>0&&s>0))return t("e_pos");if(b<=s)return t("e_ord");return""}
-const r2c=x=>Math.round(x*100)/100;
+const r2c=x=>{const k=tickSz();return Number((Math.round(x/k)*k).toFixed(pd()))};
 const mkLive=()=>live()&&link()==="ok"&&S.price>0&&!S.pos&&S.state!=="BUY_ACTIVE"&&S.state!=="SELL_ACTIVE"&&S.state!=="WAITING_REENTRY";
 const sameOrd=(buy,p)=>(S.orders||[]).some(o=>isB(o.side)===buy&&Math.abs(o.price-p)<1e-9);
 function mktNote(b,s){
   if(!mkLive())return"";
-  const bid=S.price,ask=S.ask>0?S.ask:bid,md=Math.max(S.minDist||0,0.01),n=[];
+  const bid=S.price,ask=S.ask>0?S.ask:bid,md=Math.max(S.minDist||0,tickSz()),n=[];
   if(!(b>=r2c(ask+md)-1e-9)&&!sameOrd(true,b))n.push(t("mkB",f(b),f(ask),f(r2c(b-md))));
   if(!(s<=r2c(bid-md)+1e-9)&&!sameOrd(false,s))n.push(t("mkS",f(s),f(bid),f(r2c(s+md))));
   return n.join("\n");
@@ -470,7 +618,7 @@ function trEA(x){x=String(x==null?"":x);if(LG)return x;if(x.indexOf(" | ")>0&&/w
   if(TECH.test(x))return t("e_generic");
   return x.replace(/^Invalid Price Configuration:\s*/i,"")}
 const nextRisk=L=>r2((L+S.target)/S.rr);
-const floating=()=>{const x=S.pos;return x?(isB(x.side)?S.price-x.entry:x.entry-S.price)*x.lot*C:0};
+const floating=()=>{const x=S.pos;if(!x)return 0;if(live()&&x.profit!=null)return x.profit;return(isB(x.side)?S.price-x.entry:x.entry-S.price)*x.lot*CS()};
 function openPos(side,entry){
   const b=side==="BUY",sl=b?S.sell:S.buy,d=Math.abs(entry-sl),L=lotFor(S.cur,entry,sl);
   if(L.e){S.state="ERROR";S.msg=L.e;return}
@@ -479,7 +627,7 @@ function openPos(side,entry){
 }
 function closeTrade(reason,exit){
   const p=S.pos;if(!p)return 0;
-  const pnl=(p.side==="BUY"?exit-p.entry:p.entry-exit)*p.lot*C;
+  const pnl=(p.side==="BUY"?exit-p.entry:p.entry-exit)*p.lot*CS();
   S.hist.unshift({no:p.no,side:p.side,entry:p.entry,exit:r2(exit),lot:p.lot,pnl,reason,t:new Date().toLocaleTimeString("en-GB"),ts:Math.floor(Date.now()/1000)});
   S.hist=S.hist.slice(0,100);S.pos=null;Bus.emit("close",S.hist[0]);return pnl;
 }
@@ -522,11 +670,15 @@ function run(c,p={}){
 
 /* ═════════════ 9) UI LAYER ═════════════ */
 function ask(ti,b,y,fn){$("sheet").innerHTML=`<b>${ti}</b><p>${b}</p><div class="btns"><button class="btn" id="no">${t("back")}</button><button class="btn dg" id="yes">${y}</button></div>`;$("no").onclick=shut;$("yes").onclick=()=>{shut();fn()};$("ov").classList.add("show")}
-const shut=()=>$("ov").classList.remove("show");$("ov").onclick=e=>{if(e.target.id==="ov")shut()};
+const shut=()=>$("ov").classList.remove("show");$("ov").onclick=e=>{if(e.target.id==="ov"&&!Login.outing)shut()};
+(function(){const bb=()=>TG&&TG.wa&&TG.wa.BackButton,ov=$("ov");
+  const sync=()=>{const on=ov.classList.contains("show"),b=bb();if(!b)return;try{if(on){b.onClick(shut);b.show()}else{b.offClick(shut);b.hide()}}catch(e){}};
+  try{new MutationObserver(sync).observe(ov,{attributes:true,attributeFilter:["class"]})}catch(e){}
+  document.addEventListener("keydown",e=>{if(e.key==="Escape"&&ov.classList.contains("show")&&!Login.outing)shut()})})();
 const stIc={STOPPED:"pause",IDLE:"clock",TP_RESET:"target",ARMED:"bolt",BUY_ACTIVE:"up",SELL_ACTIVE:"dn",WAITING_REENTRY:"clock",ERROR:"alert"};
 const stDot={STOPPED:"gd",IDLE:"gd",TP_RESET:"gd",ARMED:"up",BUY_ACTIVE:"up",SELL_ACTIVE:"dn",WAITING_REENTRY:"gd",ERROR:"dn"};
 
-function start(){const e=vLevels(S.buy,S.sell)||(live()?"":placeErr(S.buy,S.sell))||lotFor(S.risk,S.buy,S.sell).e;if(e)return toast(t("t_startF",e));window.YT&&YT.pend();run("start")}
+function start(){const e=vLevels(S.buy,S.sell)||(live()?"":placeErr(S.buy,S.sell))||(live()?"":lotFor(S.risk,S.buy,S.sell).e);if(e)return toast(t("t_startF",e));window.YT&&YT.pend();run("start")}
 function stop(){S.pos?ask(t("q_open"),t("q_openB",sg(floating())),t("q_openY"),()=>run("stop")):run("stop")}
 function closePos(){ask(t("q_close"),t("q_closeB",sg(floating())),t("q_close"),()=>run("close"))}
 function delOrder(tk){
@@ -560,20 +712,25 @@ function acctCard(k){
   return `<div class="card acc${off?" stale":""}"><div class="top"><div><h3 style="margin:0"><span class="hl">${ic("dollar")}${t("acT")}</span></h3><small class="num">#${esc(lg)} · ${esc(c)}${a.srv?" · "+esc(a.srv):""}</small></div>${live()?out:""}</div><div class="kv">${body}</div></div>`
 }
 const LOGOUT_IC='<svg class="ic" viewBox="0 0 24 24"><path d="M9 4H5v16h4M16 8l4 4-4 4M20 12H9"/></svg>';
-function logoutAsk(){ask(t("q_out"),t("q_outB"),t("q_outY"),()=>Login.out(true))}
+function logoutAsk(){
+  if(Login.outing)return;
+  $("sheet").innerHTML=`<div class="sico dn lgo-ic">${LOGOUT_IC}</div><b class="lgo-t">${t("q_out")}</b><p class="lgo-p">${t("q_outB")}</p><div class="btns"><button class="btn" id="no">${t("back")}</button><button class="btn dg" id="yes">${t("q_outY")}</button></div>`;
+  $("no").onclick=shut;
+  $("yes").onclick=()=>{const y=$("yes"),n=$("no");if(y.disabled)return;y.disabled=true;n.disabled=true;y.innerHTML='<i class="spn2"></i>'+t("out_ing");Login.out(true)};
+  $("ov").classList.add("show")}
 function statsCard(){const x=S.stats;if(!x||x.pf==null)return"";const k=(l,v,c="")=>`<div><small>${l}</small><b class="num ${c}">${v}</b></div>`;return `<div class="card"><h3><span class="hl">${ic("chart")}${t("sxT")}</span></h3><div class="kv">${k(t("sPf"),f(x.pf))}${k(t("sAw"),"+"+f(x.avgW),"up")}${k(t("sAl"),"−"+f(x.avgL),"dn")}${k(t("sMw"),"+"+f(x.maxW),"up")}${k(t("sMl"),"−"+f(x.maxL),"dn")}${k(t("sBs"),x.buys+" / "+x.sells)}${k(t("sSt"),x.streak>0?"+"+x.streak:x.streak)}${k(t("sVol"),f(x.vol))}${k(t("sCm"),f(x.comm+x.swap))}</div></div>`}
 function fillMkt(silent){
   if(!(S.price>0)){if(!silent)toast("❌ "+t("fillE"));return}
-  const bid=S.price,ask=S.ask>0?S.ask:bid,md=Math.max(S.minDist||0,0.01),sp=ask-bid,need=sp+2*md+0.3;
+  const tk=tickSz(),dg=pd(),bid=S.price,ask=S.ask>0?S.ask:bid,md=Math.max(S.minDist||0,tk),sp=ask-bid,need=sp+2*md+10*tk;
   let gap=num($("in_b").value)-num($("in_s").value);if(!(gap>0&&gap<=50))gap=1;
   gap=Math.max(gap,need);const mid=(bid+ask)/2;
-  $("in_b").value=(Math.ceil((mid+gap/2)*100)/100).toFixed(2);
-  $("in_s").value=(Math.floor((mid-gap/2)*100)/100).toFixed(2);
+  $("in_b").value=(Math.ceil((mid+gap/2)/tk-1e-9)*tk).toFixed(dg);
+  $("in_s").value=(Math.floor((mid-gap/2)/tk+1e-9)*tk).toFixed(dg);
   Bridge.dirty=true;prevCalc();if(silent)toast(t("fillA"));
 }
 function applyLevels(){
   const b=num($("in_b").value),s=num($("in_s").value),r=num($("in_r").value),tg=num($("in_t").value),rr=num($("in_rr").value);
-  let e=vLevels(b,s)||(r>0?"":t("e_risk"))||(tg<0?t("e_tneg"):"")||(rr>0?"":t("e_rr"))||lotFor(r,b,s).e||"";
+  let e=vLevels(b,s)||pairErr(b,s)||(r>0?"":t("e_risk"))||(tg<0?t("e_tneg"):"")||(rr>0?"":t("e_rr"))||(live()?"":lotFor(r,b,s).e)||"";
   if(!e&&!live()&&S.state==="ARMED"&&!S.pos)e=placeErr(b,s);
   if(e)return toast("❌ "+e);
   run("apply",{buy:b,sell:s,risk:r,target:tg,rr});
@@ -595,6 +752,10 @@ function waitCard(){
   if(!(live()&&link()==="ok"&&S.run&&!S.pos&&S.buy>0&&S.sell>0&&!(S.orders||[]).length&&(S.state==="ARMED"||S.state==="WAITING_REENTRY")))return"";
   return `<div class="note"><b>${ic("clock")} ${t("wfT")}</b><br>Buy Stop: <b class="num">${f(S.buy)}</b> · Sell Stop: <b class="num">${f(S.sell)}</b><br>${t("wfR")}: ${t((S.waits||[]).length?"wfR1":"wfR2")}</div>`;
 }
+let _dashH="",_tch=0,_late=false;
+function setDash(h){if(h===_dashH)return;if(_tch&&Date.now()-_tch<1500){_late=true;return}_dashH=h;$("dash").innerHTML=h}
+(function(){const dn=e=>{if(e.target&&e.target.closest&&e.target.closest("#dash"))_tch=Date.now()},up=()=>{if(!_tch)return;setTimeout(()=>{_tch=0;if(_late){_late=false;renderDash()}},80)};
+  document.addEventListener("pointerdown",dn,true);document.addEventListener("pointerup",up,true);document.addEventListener("pointercancel",up,true)})();
 function renderDash(){
   const dis=(live()&&link()!=="ok")?" disabled":"";
   const x=S.pos,k=(l,v,c="")=>`<div><small>${l}</small><b class="num ${c}">${v}</b></div>`;
@@ -603,6 +764,7 @@ function renderDash(){
   if(x)h+=`<button class="btn" onclick="closePos()"${dis}>${ic("xc")}${t("closeB")}</button>`;
   h+=`</div></div>`;
   if(live()&&link()==="ok"&&S.frz)h=`<div class="note er" style="display:flex;justify-content:space-between;align-items:center;gap:8px"><span>${ic("pause")} ${t("frzL")} · ${f(S.price)}</span><button class="btn go" style="padding:8px 12px" onclick="start()">${t("rst")}</button></div>`+h;
+  if(live()&&link()==="ok"&&S.wcode&&!S.frz&&D["w_"+S.wcode])h=`<div class="note"><b>⏳ ${t("w_"+S.wcode)}</b>${S.msg?`<br><small>${esc(trEA(S.msg))}</small>`:""}</div>`+h;
   if(live()&&link()==="off")h=`<div class="note er"><b>${ic("alert")} ${t("offT")}</b><br>${t("offB")}${linkRows()}</div>`+h;
   else if(live()&&link()==="srv")h=`<div class="note er"><b>${ic("alert")} ${t("l_srv")}</b><br>${t("l_srvS")}${linkRows()}</div>`+h;
   else if(live()&&link()==="ok"&&tradeWhy())h=`<div class="note er"><b>${ic("alert")} ${t("trOffT")}</b><br>${t(tradeWhy())}${linkRows()}</div>`+h;
@@ -611,18 +773,18 @@ function renderDash(){
     const bg=b?`linear-gradient(90deg,var(--dn) ${z}%,var(--up) ${z}%)`:`linear-gradient(90deg,var(--up) ${z}%,var(--dn) ${z}%)`;
     h+=`<div class="card" style="background:linear-gradient(160deg,color-mix(in srgb,var(--${cl(fl)}) 9%,var(--surf)),var(--surf))"><div class="tk"><span class="badge ${b?"up":"dn"}">${ic(b?"up":"dn")}${t(b?"buy":"sell")}</span><span class="mu num">#${x.no}</span></div><div class="mu" style="font-size:12px">${t("flt")}</div><div class="big num ${cl(fl)}">${sg(fl)}$</div>
     <div class="pb" dir="ltr" style="background:${bg}"><u style="left:${pc(S.price)}%"></u></div><div class="pl" dir="ltr"><span>${t(b?"slS":"tpS")}</span><span>${t(b?"tpS":"slS")}</span></div>
-    <div class="kv">${k(t("entry"),f(x.entry))}${k(t("slK"),f(x.sl),"dn")}${k(t("tpK"),f(x.tp),"up")}${k(t("lot"),f(x.lot))}${k(t("riskK"),"$"+f(x.risk))}${k(t("expK"),"$"+f(x.est*S.rr),"up")}</div></div>`;
+    <div class="kv">${k(t("entry"),fp(x.entry))}${k(t("slK"),fp(x.sl),"dn")}${k(t("tpK"),fp(x.tp),"up")}${k(t("lot"),fv(x.lot))}${k(t("riskK"),cs()+f(x.risk))}${k(t("expK"),cs()+f(x.est*S.rr),"up")}</div></div>`;
   }
   if(live()&&link()==="ok"&&!(parseFloat(S.ver)>=2.18))h=`<div class="note er">${t("oldEA")}</div>`+h;
   h+=waitCard();
   const WT=(S.waits||[]);
-  if(WT.length)h+=`<div class="card"><h3><span class="hl">${ic("clock")}${t("waitT")}</span></h3>`+WT.map(w=>{const b=w.side==="BUY";return `<div class="hi"><div class="hl2"><i class="hs gd">${ic("clock")}</i><div><b>${t(b?"oB":"oS")} · <span class="num">${f(w.level)}</span></b><small class="num">${t(b?"wB":"wS",f(w.now),f(w.trig),f(w.dist))}</small></div></div><span style="display:flex;gap:6px">${window.YTN?YTN.obell("w"+w.side,dis):""}<button class="ib" aria-label="${t("editB")}" onclick="modLevel('${w.side}',${w.level})"${dis}>${ic("edit")}</button><button class="ib dgb" aria-label="${t("delB")}" onclick="delLevel('${w.side}',${w.level})"${dis}>${ic("trash")}</button></span></div>`}).join("")+`</div>`;
+  if(WT.length)h+=`<div class="card"><h3><span class="hl">${ic("clock")}${t("waitT")}</span></h3>`+WT.map(w=>{const b=w.side==="BUY",dl=Ops.delSd(w.side);return `<div class="hi${dl?" busy":""}"><div class="hl2"><i class="hs gd">${ic("clock")}</i><div><b>${t(b?"oB":"oS")} · <span class="num">${f(w.level)}</span></b><small class="num">${t(b?"wB":"wS",f(w.now),f(w.trig),f(w.dist))}</small>${dl?`<small class="opw"><i class="spn2"></i>${t("op_ing")}</small>`:""}</div></div><span style="display:flex;gap:6px">${window.YTN?YTN.obell("w"+w.side,dis):""}<button class="ib" aria-label="${t("editB")}" onclick="modLevel('${w.side}',${w.level})"${dis}>${ic("edit")}</button><button class="ib dgb" aria-label="${t("delB")}" onclick="delLevel('${w.side}',${w.level})"${dis||(dl?" disabled":"")}>${dl?'<i class="spn2"></i>':ic("trash")}</button></span></div>`}).join("")+`</div>`;
   const OR=S.orders||[];
-  if(OR.length)h+=`<div class="card"><h3><span class="hl">${ic("bolt")}${t("ordsT")}</span></h3>`+OR.map(o=>{const b=isB(o.side);return `<div class="hi"><div class="hl2"><i class="hs ${b?"up":"dn"}">${ic(b?"up":"dn")}</i><div><b>${t(b?"oB":"oS")} · <span class="num">${f(o.price)}</span></b><small class="num">#${o.ticket} · ${f(o.lot)} ${t("lots")} · SL ${f(o.sl)} · TP ${f(o.tp)}</small></div></div><span style="display:flex;gap:6px">${window.YTN?YTN.obell("t"+o.ticket,dis):""}<button class="ib" aria-label="${t("editB")}" onclick="modOrder(${o.ticket})"${dis}>${ic("edit")}</button><button class="ib dgb" aria-label="${t("delB")}" onclick="delOrder(${o.ticket})"${dis}>${ic("trash")}</button></span></div>`}).join("")+`<div class="btns" style="margin-top:10px">${OR.length===1&&S.run&&!S.pos?`<button class="btn go" onclick="addOrder('${isB(OR[0].side)?"SELL":"BUY"}')"${dis}>${ic("bolt")}${t("addB",t(isB(OR[0].side)?"oS":"oB"))}</button>`:""}<button class="btn${OR.length===1&&S.run&&!S.pos?"":" w"}" onclick="cancelAll()"${dis}>${ic("xc")}${t("canB")}</button></div></div>`;
+  if(OR.length)h+=`<div class="card"><h3><span class="hl">${ic("bolt")}${t("ordsT")}</span></h3>`+OR.map(o=>{const b=isB(o.side),dl=Ops.delTk(o.ticket);return `<div class="hi${dl?" busy":""}"><div class="hl2"><i class="hs ${b?"up":"dn"}">${ic(b?"up":"dn")}</i><div><b>${t(b?"oB":"oS")} · <span class="num">${f(o.price)}</span></b><small class="num">#${o.ticket} · ${f(o.lot)} ${t("lots")} · SL ${f(o.sl)} · TP ${f(o.tp)}</small>${dl?`<small class="opw"><i class="spn2"></i>${t("op_ing")}</small>`:""}</div></div><span style="display:flex;gap:6px">${window.YTN?YTN.obell("t"+o.ticket,dis):""}<button class="ib" aria-label="${t("editB")}" onclick="modOrder(${o.ticket})"${dis||(dl?" disabled":"")}>${ic("edit")}</button><button class="ib dgb" aria-label="${t("delB")}" onclick="delOrder(${o.ticket})"${dis||(dl?" disabled":"")}>${dl?'<i class="spn2"></i>':ic("trash")}</button></span></div>`}).join("")+`<div class="btns" style="margin-top:10px">${OR.length===1&&S.run&&!S.pos?`<button class="btn go" onclick="addOrder('${isB(OR[0].side)?"SELL":"BUY"}')"${dis}>${ic("bolt")}${t("addB",t(isB(OR[0].side)?"oS":"oB"))}</button>`:""}<button class="btn${OR.length===1&&S.run&&!S.pos?"":" w"}" onclick="cancelAll()"${dis}>${ic("xc")}${t("canB")}</button></div></div>`;
   h+=acctCard(k);
   const L=lotFor(S.cur,S.buy,S.sell);
-  h+=`<div class="card"><h3><span class="hl">${ic("shield")}${t("rmT")}</span><span style="display:flex;gap:8px;align-items:center"><span class="num">${t("seq",S.seq+1)}</span><button class="ib" style="width:30px;height:30px" aria-label="${t("reset")}" onclick="resetUI()"${dis}>${ic("refresh")}</button><button class="ib" style="width:30px;height:30px" aria-label="${t("cyc_btn")}" title="${t("cyc_btn")}" onclick="newCycleUI()">${ic("xc")}</button></span></h3><div class="kv">${k(t("curR"),"$"+f(S.cur),"gd")}${k(t("accL"),"$"+f(S.acc),S.acc>0?"dn":"")}${k(t("lot"),L.e?"—":f(x?x.lot:L.lot))}</div></div>`;
-  $("dash").innerHTML=h;
+  h+=`<div class="card"><h3><span class="hl">${ic("shield")}${t("rmT")}</span><span style="display:flex;gap:8px;align-items:center"><span class="num">${t("seq",S.seq+1)}</span><button class="ib" style="width:30px;height:30px" aria-label="${t("reset")}" onclick="resetUI()"${dis}>${ic("refresh")}</button><button class="ib" style="width:30px;height:30px" aria-label="${t("cyc_btn")}" title="${t("cyc_btn")}" onclick="newCycleUI()">${ic("xc")}</button></span></h3><div class="kv">${k(t("curR"),cs()+f(S.cur),"gd")}${k(t("accL"),cs()+f(S.acc),S.acc>0?"dn":"")}${k(t("lot"),L.e||(!x&&!(L.lot>0))?"—":fv(x?x.lot:L.lot))}</div>${rkRows(k)}</div>`;
+  setDash(h);
 }
 function renderHist(){
   const H=S.hist,ST=S.stats,net=ST?ST.net:H.reduce((a,x)=>a+x.pnl,0),w=ST?ST.wins:H.filter(x=>x.pnl>0).length,n=ST?ST.total:H.length,k=(l,v,c="")=>`<div><small>${l}</small><b class="num ${c}">${v}</b></div>`;
@@ -631,8 +793,8 @@ function renderHist(){
 }
 function feed(){if(!(S.price>0)||S.frz)return;SP.push(S.price);if(SP.length>40)SP.shift()}
 function renderPrice(){
-  const d=S.frz?0:S.price-prev;$("qc").classList.toggle("frozen",!!S.frz);$("pr").textContent=S.price>0?f(S.price):"—";$("pr").className="pr num "+(d>0?"up":d<0?"dn":"");$("chg").textContent=S.price>0?sg(d):"";$("chg").className="chg num "+cl(d);
-  {const o=S.price>0&&S.buy>0&&S.sell>0;$("dB").textContent=o?f(S.buy-S.price):"—";$("dS").textContent=o?f(S.price-S.sell):"—";$("rng").textContent=S.buy>0&&S.sell>0?f(S.buy-S.sell):"—"}
+  const d=S.frz?0:S.price-prev;$("qc").classList.toggle("frozen",!!S.frz);$("pr").textContent=S.price>0?fp(S.price):"—";$("pr").className="pr num "+(d>0?"up":d<0?"dn":"");$("chg").textContent=S.price>0?sg(d):"";$("chg").className="chg num "+cl(d);
+  {const o=S.price>0&&S.buy>0&&S.sell>0;$("dB").textContent=o?fp(S.buy-(S.ask>0?S.ask:S.price)):"—";$("dS").textContent=o?fp(S.price-S.sell):"—";$("rng").textContent=S.buy>0&&S.sell>0?fp(S.buy-S.sell):"—"}
   if(SP.length>1){const mn=Math.min(...SP),mx=Math.max(...SP),sp=mx-mn||1;const pts=SP.map((v,i)=>(i*200/(SP.length-1)).toFixed(1)+","+(36-(v-mn)/sp*32).toFixed(1)).join(" ");$("spl").setAttribute("points",pts);$("spa").setAttribute("points",pts+" 200,40 0,40")}
 }
 const isB=s=>String(s).toUpperCase().startsWith("B");
@@ -693,8 +855,10 @@ function prevCalc(){
   const b=num($("in_b").value),s=num($("in_s").value),r=num($("in_r").value),e=vLevels(b,s),p=$("prev"),rr=num($("in_rr").value)||S.rr;
   autoSL(b,s,!e,rr);
   if(e){p.className="note er";p.textContent=e;return}
-  const L=lotFor(r,b,s),me=mktNote(b,s);p.className="note"+(L.e?" er":"");
-  p.textContent=L.e||t("pv",f(L.lot),f(L.est),f(L.est*rr))+(S.pos?t("pvA"):"")+(me?"\n"+me:"")+(rr>=10?"\n"+t("rrHi",f(rr,0),f(b-s),f(b+(b-s)*rr),f(s-(b-s)*rr)):"");
+  const L=lotFor(r,b,s),me=mktNote(b,s),pe=pairErr(b,s);p.className="note"+(L.e||pe?" er":"");
+  if(L.e||pe){p.textContent=L.e||pe;return}
+  if(L.pending){p.textContent=t("pvEA");return}
+  p.textContent=(L.lot>0?t("pv",fv(L.lot),cs()+f(L.est),cs()+f(L.est*rr)):"")+(L.warn?(L.lot>0?"\n":"")+"⏳ "+L.warn:"")+(S.pos?t("pvA"):"")+(me?"\n"+me:"")+(rr>=10?"\n"+t("rrHi",f(rr,0),fp(b-s),fp(b+(b-s)*rr),fp(s-(b-s)*rr)):"");
 }
 $("applyB").onclick=applyLevels;
 
@@ -727,12 +891,15 @@ $("lgB").onclick=()=>{vib();UI.lgManual=1;setLang(LG?0:1)};
 
 /* ═════════════ 10) PUBLIC API — for bots, Telegram Mini App, iframes ═════════════ */
 window.YetimmmAPI={
+  ops(){return Ops.snapshot()},      /* v4.10: command lifecycle log for diagnosis (no passwords / tokens) */
   config:CONFIG,
   on:(e,fn)=>Bus.on(e,fn),
   getState:()=>JSON.parse(JSON.stringify(S)),
   command:run,                                           // run("start") · run("apply",{buy,sell,risk}) ...
   setPrice(p){prev=S.price;S.price=+p;feed();if(!live())engine();render()},   // external price feed (MT5 / WebSocket)
   patch(o){Object.assign(S,o);render()},
+  simProfile(n){if(SIM_PROFILES[n]){SIMP=n;render();return true}return false},
+  profiles:()=>Object.keys(SIM_PROFILES),
   setLang:v=>setLang(v==="en"||v===1),
   setTheme
 };
@@ -748,10 +915,18 @@ function tick(){prev=S.price;S.price=Math.max(100,r2(S.price+(Math.random()-.5)*
 /* ═════════════ LOGIN (MT5 account number + password) ═════════════ */
 const Login={
   has(){return !!SES.s&&!!SES.l},
-  show(msg){const g=$("lg");g.className="";g.hidden=false;$("lgA").value=SES.l||$("lgA").value;$("lgP").value="";$("lgEr").textContent=msg||"";$("lgGo").disabled=false},
-  out(call,msg){
-    if(call!==false&&SES.s){try{fetch(CONFIG.api.baseUrl+"/logout",{method:"POST",keepalive:true,headers:{"X-Login":SES.l,"X-Session":SES.s}}).catch(()=>{})}catch(e){}}
-    SES.clr();try{sessionStorage.setItem("ytMsg",msg||"")}catch(e){}
+  show(msg){const g=$("lg");g.className="";g.hidden=false;$("lgA").value=SES.l||$("lgA").value;$("lgP").value="";$("lgEr").textContent=msg||"";$("lgEr").classList.toggle("okm",!!msg&&msg===t("out_ok"));$("lgGo").disabled=false},
+  async out(call,msg){
+    if(this.outing)return;this.outing=true;
+    const l=SES.l,tok=SES.s;let rk=msg||(call!==false?"out_ok":"");   /* v4.11: user-initiated logout says so; if the server could not confirm the revoke, say that honestly */
+    SES.clr();                                          /* no usable session stays on this device, whatever the network does next */
+    if(call!==false&&tok){
+      try{const ac=new AbortController(),tm=setTimeout(()=>ac.abort(),2500);
+        const r=await fetch(CONFIG.api.baseUrl+"/logout",{method:"POST",keepalive:true,signal:ac.signal,headers:{"X-Login":l,"X-Session":tok}});clearTimeout(tm);
+        if(!r.ok&&r.status!==401){rk="out_warn";Ops.note({rid:"logout",c:"logout",p:{}},"revoke_unconfirmed","http "+r.status)}}   /* 401 = already invalid, which is the goal */
+      catch(e){rk="out_warn";Ops.note({rid:"logout",c:"logout",p:{}},"revoke_unconfirmed",String(e&&e.name||e))}
+    }
+    try{sessionStorage.setItem("ytMsg",rk)}catch(e){}
     location.reload()          // everything restarts from scratch: no data of the previous account stays in memory
   },
   msg(){let m="";try{m=sessionStorage.getItem("ytMsg")||"";sessionStorage.removeItem("ytMsg")}catch(e){}return m&&D[m]?t(m):""},
@@ -761,26 +936,40 @@ const Login={
       b.disabled=true;er.textContent=t("e_lockT",Math.floor(left/60)+":"+String(left%60).padStart(2,"0"))};
     tick();this.lk=setInterval(tick,500)},
   async go(){
+    if(this.busy||$("lgGo").disabled)return;          /* Enter on the password field used to bypass the disabled button → duplicate login requests */
     const l=$("lgA").value.replace(/\D/g,""),p=$("lgP").value,er=$("lgEr");er.textContent="";
     if(!/^\d{3,12}$/.test(l)){er.textContent=t("e_login");return}
     if(!p){er.textContent=t("e_pw_empty");return}
-    const g=$("lg");g.className="w";$("lgGo").disabled=true;
+    const g=$("lg");g.className="w";$("lgGo").disabled=true;this.busy=true;let keep=false;
+    const ac=new AbortController(),tmo=setTimeout(()=>ac.abort(),15000);
     try{
       const init=(window.Telegram&&Telegram.WebApp&&Telegram.WebApp.initData)||"";
-      const r=await fetch(CONFIG.api.baseUrl+"/login",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({login:l,pw:p,init})});
+      const r=await fetch(CONFIG.api.baseUrl+"/login",{method:"POST",headers:{"Content-Type":"application/json"},signal:ac.signal,body:JSON.stringify({login:l,pw:p,init})});
       const d=await r.json().catch(()=>({}));
       if(!r.ok||!d.ok){this.show();$("lgA").value=l;
         if(d.error==="locked"){this.lock(d.retry||120);return}
         const k="e_"+(d.error||"srv");er.textContent=d.error==="bad_pw"&&d.left!=null&&d.left<=3?t("e_left",d.left):D[k]?t(k):t("e_srv");return}
-      SES.set(l,d.sess);Verify.ok=true;g.className="ok";vib&&vib();
-      setTimeout(()=>{g.hidden=true;g.className="";Bridge.init=false;Bridge.ok=null;Bridge.pull()},1100);
+      keep=true;SES.set(l,d.sess);Verify.ok=true;g.className="ok";vib&&vib();
+      setTimeout(()=>{this.busy=false;g.hidden=true;g.className="";Bridge.init=false;Bridge.ok=null;Bridge.pull()},1100);
     }catch(e){this.show();$("lgA").value=l;er.textContent=t("e_srv")}
+    finally{clearTimeout(tmo);if(!keep)this.busy=false}
   }
 };
 $("lgGo").onclick=()=>Login.go();
-$("lgP").addEventListener("keydown",e=>{if(e.key==="Enter")Login.go()});
+$("lgP").addEventListener("keydown",e=>{if(e.key==="Enter"){e.preventDefault();Login.go()}});
+$("lgA").addEventListener("keydown",e=>{if(e.key==="Enter"){e.preventDefault();$("lgP").focus()}});
 $("lgE").onclick=()=>{const p=$("lgP");p.type=p.type==="password"?"text":"password";$("lgE").textContent=t(p.type==="password"?"lg_show":"lg_hide")};
 D.lg_hide=["إخفاء","Hide"];
+D.out_ok=["تم تسجيل الخروج بنجاح.","You have been signed out."];
+D.out_warn=["تم الخروج من هذا الجهاز، لكن تعذّر تأكيد إنهاء الجلسة على الخادم. تنتهي تلقائياً بانتهاء مدتها.","Signed out on this device, but the server could not confirm ending the session. It will expire on its own."];
+Object.assign(D,{rkReq:["المخاطرة المطلوبة","Requested risk"],rkMin:["أقل مخاطرة ينفّذها الوسيط","Broker minimum risk"],rkEff:["المخاطرة الفعلية","Effective risk"],rkPol:["السياسة","Policy"],
+rk_BELOW_MIN:["المخاطرة المطلوبة {0} أقل من أقل مخاطرة يمكن للوسيط تنفيذها ({1}، أقل لوت {2}). البوت ينتظر حجماً صالحاً — ارفع المخاطرة أو وسّع المستويين أو فعّل CLAMP_TO_MIN في الـ EA.","Requested risk {0} is below the smallest risk the broker can execute ({1}, min lot {2}). The bot WAITS for a valid volume — raise the risk, widen the levels or enable CLAMP_TO_MIN in the EA."],
+rk_ABOVE_MAX:["الحجم المطلوب يتجاوز الحد الأقصى للوسيط — البوت ينتظر","The required volume exceeds the broker maximum — the bot waits"],rk_ABOVE_LIMIT:["حد الحجم الإجمالي لدى الوسيط (Volume Limit) سيُتجاوز — البوت ينتظر","The broker's Volume Limit would be exceeded — the bot waits"],
+rk_CLAMPED:["استُخدم أقل لوت للوسيط: المخاطرة المطلوبة {0} ← الفعلية {1}","Minimum lot used: requested {0} → effective {1}"],
+w_WAITING_VOLUME:["بانتظار حجم صالح","Waiting for a valid volume"],w_WAITING_MARGIN:["بانتظار هامش كافٍ","Waiting for enough margin"],w_WAITING_SPREAD:["بانتظار انخفاض السبريد","Waiting for the spread to narrow"],w_WAITING_MARKET:["السوق مغلق — بانتظار الافتتاح","Market closed — waiting for the open"],
+w_WAITING_SEQCAP:["بانتظار — بلغت الخسائر المتتالية السقف","Paused — consecutive-loss cap reached"],w_WAITING_RISKCAP:["بانتظار — المخاطرة التالية فوق سقف الرصيد","Paused — next risk is above the balance cap"],w_WAITING_BROKER:["بانتظار الوسيط","Waiting for the broker"],w_WAITING_PRICE:["بانتظار السعر","Waiting for the price"],w_WAITING_REENTRY:["بانتظار إعادة الدخول","Waiting to re-enter"],
+e_pair:["لا يمكن وضع Buy Stop و Sell Stop معاً بهذا العرض. أقل عرض الآن = {0}","A Buy Stop and a Sell Stop cannot exist together at this width. Minimum width now = {0}"],
+pvEA:["يحسب الـ EA اللوت والمخاطرة الفعلية بعد التطبيق","The EA calculates the lot and effective risk after Apply"]});
 Object.assign(D,{vf_t:["التحقق من الاتصال","Connection check"],vf_s:["فحص سريع قبل الدخول التلقائي","Quick check before automatic sign-in"],
 vf_a:["الحساب","Account"],vf_tg:["تلجرام","Telegram"],vf_b:["البوت","Bot"],vf_se:["الجلسة","Session"],vf_go:["تحقق اتصال","Check connection"],vf_alt:["تسجيل الدخول بحساب آخر","Sign in with another account"],
 vf_run:["جارٍ الفحص…","Checking…"],vf_okM:["كل شيء سليم — جارٍ الدخول","All good — signing you in"],vf_wait:["البوت مطفي. سيتم الدخول تلقائياً عند تشغيله.","The bot is off. You will be signed in automatically when it starts."],

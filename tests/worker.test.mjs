@@ -432,3 +432,96 @@ test("v4.7 recovery is not reset: reopening the app or a Worker restart never qu
   b.hubOf("123456").st = null; await b.state();
   assert.equal((await b.sync("123456")).j.commands.length, 0);
 });
+
+// ═════════ v4.8 — notification events, token isolation, mandatory pairing, command age, version ═════════
+async function withTelegramMock(fn) {
+  const sent = [], real = globalThis.fetch;
+  globalThis.fetch = async (u, init) => {
+    if (String(u).includes("api.telegram.org")) { sent.push(JSON.parse(init.body)); return new Response("{}", { status: 200 }); }
+    return real(u, init);
+  };
+  try { return await fn(sent); } finally { globalThis.fetch = real; }
+}
+async function registerChat(ctx, login, chat) {
+  const o = ctx.hubOf(login), a = (await o.ctx.storage.get("acc")); a.tg = [chat]; await o.ctx.storage.put("acc", a);
+}
+
+test("v4.8 EA event: delivered ONCE, de-duplicated by event id, acked; a re-send of the same id never reaches Telegram twice", async () => {
+  await withTelegramMock(async (sent) => {
+    const t = boot();
+    await t.sync("123456", { state: { evp: 1 } });
+    await registerChat(t, "123456", "55501234");
+    const ev = { id: "123456:20260101:1", k: "ev", t: "🔴 STOP LOSS", b: "Trade #7\nLoss: -1.45" };
+    const r1 = await t.sync("123456", { state: { evp: 1 }, ev: [ev] });
+    assert.deepEqual(r1.j.evack, [ev.id]);
+    const r2 = await t.sync("123456", { state: { evp: 1 }, ev: [ev] });            // the EA did not see the ack yet and re-sends
+    assert.deepEqual(r2.j.evack, [ev.id]);
+    assert.equal(sent.length, 1, "exactly one Telegram message for one event id");
+    assert.equal(sent[0].chat_id, "55501234");
+  });
+});
+
+test("v4.8 malformed event ids are ignored (never delivered, never acked)", async () => {
+  await withTelegramMock(async (sent) => {
+    const t = boot();
+    await t.sync("123456", { state: { evp: 1 } });
+    await registerChat(t, "123456", "55501234");
+    const r = await t.sync("123456", { state: { evp: 1 }, ev: [{ id: "x<script>", k: "ev", t: "bad", b: "" }, { id: "123456:2:3", k: "ev", t: "", b: "no title" }] });
+    assert.deepEqual(r.j.evack || [], ["123456:2:3"]);       // empty title is acked (nothing to send), the malicious id is dropped
+    assert.equal(sent.length, 0);
+  });
+});
+
+test("v4.8 an EA that routes notifications through the Worker never receives the Bot Token; a legacy EA still does", async () => {
+  const t = boot();
+  const r = await t.sync("123456", { state: { evp: 1 }, cv: 0 });
+  assert.ok(r.j.cfg, "cfg is sent on the first sync");
+  assert.equal(r.j.cfg.tok, "");
+  const t2 = boot();
+  const r2 = await t2.sync("123456", { cv: 0 });
+  assert.equal(r2.j.cfg.tok, "123:ABC");
+});
+
+test("v4.8 pairing needs a dedicated PAIR_CODE: without it the account cannot be bound (no fallback to the app password)", async () => {
+  const t = boot({ PAIR_CODE: "" });
+  const r = await t.sync("123456", {}, { pair: "S3cret-pass" });
+  assert.equal(r.s, 503); assert.equal(r.j.error, "pair_not_configured");
+  const t2 = boot({ PAIR_CODE: "", ALLOW_PAIR_FALLBACK: "1" });
+  assert.equal((await t2.sync("123456", {}, { pair: "S3cret-pass" })).j.ok, true);
+});
+
+test("v4.8 commands reach the EA with their age so the EA can expire stale ones", async () => {
+  const t = boot();
+  await t.sync("123456");
+  const l = await t.signIn(); const h = t.auth("123456", l.j.sess);
+  await t.call("/command", { headers: h, body: { cmd: "stop" } });
+  const q = await t.sync("123456");
+  assert.equal(q.j.commands.length, 1);
+  assert.ok(Number.isFinite(q.j.commands[0].age) && q.j.commands[0].age >= 0);
+});
+
+test("v4.8 root endpoint reports ONE release + EA protocol and whether pairing is configured", async () => {
+  const t = boot();
+  const r = await t.call("/", { method: "GET" });
+  assert.equal(r.j.release, W.VERSION); assert.equal(r.j.v, W.VERSION); assert.equal(r.j.ea_protocol, W.EA_PROTOCOL); assert.equal(r.j.pairConfigured, true);
+});
+
+test("v4.8 login brute-force lock is per Telegram user / IP (one stranger cannot lock the owner out)", async () => {
+  const t = boot();
+  await t.sync("123456");
+  for (let i = 0; i < 9; i++) await t.call("/login", { body: { login: "123456", pw: "wrong" }, headers: { "CF-Connecting-IP": "9.9.9.9" } });
+  const locked = await t.call("/login", { body: { login: "123456", pw: "S3cret-pass" }, headers: { "CF-Connecting-IP": "9.9.9.9" } });
+  assert.equal(locked.s, 429);
+  const owner = await t.call("/login", { body: { login: "123456", pw: "S3cret-pass" }, headers: { "CF-Connecting-IP": "1.2.3.4" } });
+  assert.equal(owner.s, 200);
+});
+
+test("v4.8 the public state forwards the BrokerSpec / RiskResult / waiting code untouched and keeps real numeric precision", async () => {
+  const t = boot();
+  const bs = { vmin: 0.001, vstep: 0.001, vmax: 50, vdig: 3, contract: 100, tick: 0.01, ccy: "EUR" };
+  const rk = { req: 1, raw: 0.00689, vol: 0.01, eff: 1.45, minRisk: 1.45, status: "CLAMPED", policy: "CLAMP_TO_MIN" };
+  await t.sync("123456", { state: { bs, rk, wcode: "WAITING_VOLUME" } });
+  const l = await t.signIn(); const h = t.auth("123456", l.j.sess);
+  const st = await t.call("/state", { method: "GET", headers: h });
+  assert.deepEqual(st.j.bs, bs); assert.deepEqual(st.j.rk, rk); assert.equal(st.j.wcode, "WAITING_VOLUME");
+});

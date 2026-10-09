@@ -101,3 +101,15 @@
 .lnk{gap:14px;padding:12px 14px}.lnk>i{display:none}.lnk .bot{margin:-6px 0 -8px}
 #lg .box>.bot,#vf .box>.bot{margin:-6px auto 4px}
 @media(prefers-reduced-motion:reduce){.b3 *,.logo3 *{animation:none!important}.bot .rg,.bot .pt{display:none}}
+/* ── v4.11 robot depth: rim light, trim, glare, collar, glints (static; no layout impact) ── */
+.b3 .rim{fill:none;stroke:url(#ybr);stroke-width:1.6}
+.b3 .seam{fill:none;stroke:rgba(40,52,60,.28);stroke-width:2.2;stroke-linecap:round}
+.b3 .vtr{fill:none;stroke:url(#ybt);stroke-width:1.4;opacity:.85}
+.b3 .glr{fill:rgba(255,255,255,.2)}
+.b3 .col{fill:url(#ybc);stroke:rgba(255,255,255,.22)}
+.b3 .ear2{fill:var(--ec);opacity:.85;filter:drop-shadow(0 0 3px var(--ec));transition:fill .4s}
+.b3 .gl,.b3 .bgl{fill:#fff;opacity:.85}
+.b3 .hd3{filter:drop-shadow(0 3px 3px rgba(0,0,0,.28))}
+.bot[data-s=closed] .ear2,.bot[data-s=stopped] .ear2{opacity:.35}
+.logo3{overflow:hidden}
+@media(prefers-reduced-motion:reduce){.logo3::after{display:none}.b3 .sh{animation:none!important}}

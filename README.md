@@ -1,4 +1,4 @@
-# Yetimmm v4.6
+# Yetimmm v4.11.0
 
 نظام تداول XAUUSD على MT5 يتكوّن من ثلاثة أجزاء تعمل معاً:
 
@@ -19,7 +19,7 @@ yetimmm/
 │   ├── wrangler.toml
 │   └── .dev.vars.example
 ├── ea/Yetimmm.mq5
-├── tests/                اختبارات الـ Worker (28 اختباراً بينها دورة الأوردرات الكاملة)
+├── tests/                اختبارات: 43 اختباراً للـ Worker + 13 لمحرك المخاطرة + 15 لخطة التعويض (مرجع حسابي لما يطبّقه الـ EA)
 ├── scripts/check.mjs     فحص سريع للحزمة كلها
 ├── CHANGELOG.md
 └── package.json
@@ -34,7 +34,7 @@ cd worker
 npx wrangler login
 npx wrangler secret put BOT_TOKEN       # توكن بوت تلجرام من @BotFather
 npx wrangler secret put APP_PASSWORD    # كلمة سر التطبيق (إلزامية)
-npx wrangler secret put PAIR_CODE       # رمز ربط الـ EA بالحساب (موصى به؛ بدونه يُستخدم APP_PASSWORD)
+npx wrangler secret put PAIR_CODE       # رمز ربط الـ EA بالحساب — إلزامي منذ v4.8 ومختلف عن APP_PASSWORD (بدونه يُرفض الربط 503 pair_not_configured)
 cd ..
 npm run deploy
 ```
@@ -64,7 +64,7 @@ npm run deploy
 | `LOCK_SECONDS` / `MAX_ATTEMPTS` | 120 / 8 | القفل بعد محاولات خاطئة (لكل مستخدم تلجرام/IP) |
 | `SESSION_DAYS` | 30 | عمر الجلسة المنزلق |
 | `REQUIRE_TG` | 1 | `0` = السماح بالدخول من متصفح عادي (للتجربة فقط) |
-| `PAIR_CODE` *(secret)* | = `APP_PASSWORD` | رمز ربط الـ EA بالحساب (`InpBrPairCode` في الـ EA) |
+| `PAIR_CODE` *(secret)* | **إلزامي** (لا بديل) · `ALLOW_PAIR_FALLBACK=1` يعيد الرجوع لـ `APP_PASSWORD` (غير موصى به) | رمز ربط الـ EA بالحساب (`InpBrPairCode` في الـ EA) |
 | `PAIR_MAX_FAILS` / `PAIR_LOCK_SEC` | 10 / 300 | قفل الربط بعد محاولات رمز خاطئة (لا يؤثر على EA مربوط) |
 | `EA_STALE_SEC` | 20 | ثوانٍ بلا مزامنة قبل اعتبار الـ EA غير متصل. **مصدر واحد**: التطبيق يقرأها من السيرفر (`eaStaleSec`) |
 | `NEWS_SCOPE` | `server` | `server` = تقويم وإشعارات منفصلة لكل سيرفر وسيط · `global` = مشاركة واحدة (سلوك v4.5) |
@@ -76,7 +76,7 @@ npm run deploy
 ## التطوير والتحقق
 ```bash
 npm run check    # فحص صياغة JS + ملفات الواجهة + wrangler + بنية الـ EA
-npm test         # 28 اختباراً للـ Worker (دخول، قفل، جلسات منزلقة، ربط الـ EA، أوامر، إشعارات، تقويم لكل وسيط، ودورة تنبيهات الأوردر الكاملة 4138/4137)
+npm test         # 43 اختباراً للـ Worker + 13 لمحرك المخاطرة + 15 لخطة التعويض (دخول، قفل، جلسات منزلقة، ربط الـ EA، أوامر، إشعارات، تقويم لكل وسيط، ودورة تنبيهات الأوردر الكاملة 4138/4137)
 npm run dev      # تشغيل محلي (انسخ worker/.dev.vars.example إلى worker/.dev.vars)
 ```
 
@@ -87,7 +87,7 @@ npm run dev      # تشغيل محلي (انسخ worker/.dev.vars.example إلى
 | "افتح التطبيق من داخل بوت تلجرام" | الدخول مقصور على تلجرام؛ افتحه من زر البوت (أو `REQUIRE_TG=0` للتجربة) |
 | "البوت غير شغّال على هذا الحساب" | الـ EA غير متصل: تأكد من AutoTrading ورابط WebRequest والشارت XAUUSD |
 | الـ EA لا يتصل | الرابط غير مضاف في *Allowed URLs* في خيارات MT5 |
-| سجل الـ EA: `NOT PAIRED yet` (HTTP 403) | الحساب جديد ولم تدخل رمز الربط: ضع `InpBrPairCode` = قيمة `PAIR_CODE` (أو `APP_PASSWORD` إن لم تضبطه) |
+| سجل الـ EA: `NOT PAIRED yet` (HTTP 403) | الحساب جديد ولم تدخل رمز الربط: ضع `InpBrPairCode` = قيمة `PAIR_CODE` (إلزامي منذ v4.8) |
 | سجل الـ EA: `pairing code REJECTED` | الرمز في الـ EA لا يطابق الـ Worker |
 | سجل الـ EA: `bound to another EA install` | ضاع ملف إعدادات الـ EA أو ثُبّت EA آخر: أدخل رمز الربط ليُعاد الربط |
 | بطاقة «التداول معطّل في MT5» | زر AutoTrading مطفي، أو الحساب/الرمز لا يسمح بالتداول الآن (تعرض البطاقة السبب بالضبط) |
@@ -95,7 +95,7 @@ npm run dev      # تشغيل محلي (انسخ worker/.dev.vars.example إلى
 | لا تصلك إشعارات تلجرام | سجّل الدخول مرة من داخل تلجرام ليُسجَّل حسابك على الحساب |
 
 ## قرارات تداول يجب أن تعرفها
-- **`InpBreachPolicy` الافتراضي = `BREACH_WAIT`** (الفلسفة حرفياً): بعد ضرب SL يوضع الأمر المعاكس (Stop) عند مستوى الوقف وينتظر السعر. `BREACH_MARKET` خيار متقدم اختياري (عكس فوري بسعر السوق إن كان السعر قد تجاوز المستوى). إن كانت إعدادات شارتك القديمة محفوظة بـ MARKET فغيّرها يدوياً؛ يطبع الـ EA السياسة الفعلية في سجل البدء.
+- **الافتراضي v2.23:** `InpEntryMode = ENTRY_PENDING` · `InpBreachPolicy = BREACH_WAIT` (Market Reversal مطفأ) · `InpRiskPolicy = STRICT` · `InpOrderCheck = true` · `InpTgViaWorker = true`. التفاصيل الكاملة لما يحدث الآن في `docs/CURRENT_BEHAVIOR.md`.
 - **`InpProtectCloseSec = 20`**: صفقة بلا SL/TP لم تُحمَ خلال 20 ثانية تُغلق إغلاقاً طارئاً. هذا قرار تداول: مشكلة اتصال مؤقتة قد تغلق صفقة بخسارة أكبر من المخاطرة المخططة. `0` = لا إغلاق قسري (تنبيه + إعادة محاولة فقط) لكن قد تبقى صفقة بلا حماية.
 - **نسبة 1:20** قيمة قوية: إن كانت المسافة 1$ (4138/4137) فهدف الشراء ≈ 4158 والبيع ≈ 4117. تظهر الواجهة تحذيراً صريحاً بالأسعار عند نسبة ≥ 10.
 - **هدف الربح بعد التعويض** ليس TP ثابتاً: المخاطرة التالية = (الخسارة المتراكمة + الهدف) ÷ النسبة.
@@ -110,7 +110,17 @@ npm run dev      # تشغيل محلي (انسخ worker/.dev.vars.example إلى
 - تلجرام ما زال داخل الـ EA لإرسال الإشعارات فقط: في وضع الجسر المشترك يتوقف `getUpdates` تماماً (الأوامر تأتي من التطبيق). نقل الإشعارات كلياً إلى الـ Worker وحذف التوكن من الـ EA خطوة معمارية لاحقة (تحتاج قناة أحداث من الـ EA).
 - الأخبار والإشعارات تُفصل الآن لكل سيرفر وسيط (`NEWS_SCOPE=server`)؛ تنبيهات v4.5 المحفوظة في الشريحة المشتركة القديمة لا تظهر في الشرائح الجديدة (أعد تفعيلها أو استخدم `NEWS_SCOPE=global`).
 
+## v4.8.0 / EA 2.23 — محرك Broker/Risk (تنفيذ تقرير التدقيق الشامل)
+- **لا يوجد «خطأ لوت» قاتل بعد الآن:** الطلب أصغر من أقل حجم للوسيط ⇒ `WAITING_VOLUME` (بلا أمر، بلا خطأ، بلا إيقاف، تنبيه واحد). `STRICT` (الافتراضي) لا يتجاوز المخاطرة المطلوبة أبداً؛ `CLAMP_TO_MIN` يستخدم أقل لوت ويعرض **المخاطرة الفعلية** صراحةً.
+- **BrokerSpec حي** (min/max/step/limit/contract/tick/currency/stops/freeze/modes…) يُنشر من الـ EA في كل مزامنة؛ الواجهة لا تفترض `100/0.01/2 decimals/$` وتعرض المخاطرة المطلوبة/أقل مخاطرة/الفعلية والعملة الحقيقية.
+- `OrderCheck` قبل كل أمر معلّق، `SYMBOL_VOLUME_LIMIT`، انتهاء الأمر حسب `SYMBOL_EXPIRATION_MODE`، `MaxSpread` للتسليح، التحقق الصارم `PAIR_NOT_EXECUTABLE`.
+- **قناة إشعارات واحدة** EA → Worker → Telegram بمعرّف حدث فريد (لا تكرار حتى بعد إعادة التشغيل)، و**Bot Token لا يصل MT5 أبداً**، ولا Telegram عام (Public) بعد الآن.
+- **أوامر بعمر (TTL)** وتنبيه الواجهة فقط لأوامرها هي. `PAIR_CODE` إلزامي.
+- ⚠️ **الـ EA لم يُترجم ولم يُختبر على MT5 هنا** (لا MetaEditor): اضغط F7 ثم Strategy Tester ثم Demo (`docs/MT5-TESTING.md`). ما نُفّذ وما لم يُنفّذ بالتفصيل: `docs/AUDIT-v4.8.md`.
+
 ## مستندات التدقيق والاختبار
+- `docs/CURRENT_BEHAVIOR.md` — ما يفعله النظام **الآن** فقط (الـ CHANGELOG تاريخي)
+- `docs/AUDIT-v4.8.md` — مصفوفة بنود تقرير التدقيق (149 بنداً): منفّذ / جزئي / غير منفّذ ولماذا
 - `docs/AUDIT-v4.6.md` — تقرير التنفيذ + متابعة v4.6.1
 - `docs/MT5-TESTING.md` — بروتوكول F7 / Strategy Tester / Demo قبل المال الحقيقي
 - `docs/EA-CYCLE-REVIEW.md` — مراجعة منطق دورة 4138/4137
