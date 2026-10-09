@@ -33,6 +33,10 @@ new_sqlite_classes = ["Notify"]
 #
 # ── Optional settings: uncomment the lines you need under [vars] above (an env value always wins over worker.js CONFIG) ──
 [vars]
+# PAIR_CODE: EA <-> account pairing code. Must equal the EA input InpBrPairCode (pre-filled 123123). Without it the Worker answers HTTP 503 pair_not_configured.
+# It is a plain variable here so a normal deploy is enough; if you prefer a secret, delete this line and run: npx wrangler secret put PAIR_CODE
+# (it only gates binding a NEW MT5 account; pick a stronger value if the repo is public).
+PAIR_CODE = "123123"
 # PRODUCTION: CORS is restricted to YOUR web app. The Origin is the DOMAIN ONLY (no /repo path). Several origins: comma separated.
 # Not set / empty = no browser origin is allowed (fail-closed). "*" = open, local testing only (GET / then reports corsOpen:true).
 ALLOWED_ORIGIN = "https://spreadsupposed-jpg.github.io"

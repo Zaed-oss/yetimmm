@@ -1,4 +1,8 @@
-# Yetimmm v4.11.0
+# Yetimmm v4.12.0
+
+## v4.12 — ربط الإكسبرت بالـ Worker (خطأ 4014 و HTTP 503)
+- **4014:** يلزم مرة واحدة تفعيل *Allow WebRequest for listed URL* وإضافة رابط الـ Worker و`https://api.telegram.org` (MT5 لا يسمح للإكسبرت بإضافتها بنفسه). الأسهل: أغلق MT5 ثم شغّل `tools/allow-urls.bat` (يقرأ الرابط من `InpBrUrl` ويعدّل `common.ini` لكل النسخ مع نسخة احتياطية). أو يدوياً: Tools ▸ Options ▸ Expert Advisors.
+- **503 `pair_not_configured`:** الـ Worker بلا `PAIR_CODE`. القيمة الافتراضية صارت `123123` في `worker/wrangler.toml [vars]` وفي `InpBrPairCode`؛ انشر بـ `npm run deploy`. غيّر القيمتين معاً عند اختيار رمز أقوى.
 
 نظام تداول XAUUSD على MT5 يتكوّن من ثلاثة أجزاء تعمل معاً:
 

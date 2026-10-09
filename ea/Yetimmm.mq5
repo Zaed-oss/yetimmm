@@ -160,7 +160,7 @@ enum ENUM_YT_RISKPOL
    YT_RISK_CLAMP_MIN=1   // use the broker minimum volume and SAY SO: Requested Risk / Effective Risk are both shown and logged
   };
 
-#define YT_VER "2.25"
+#define YT_VER "2.26"
 
 //--- which pending orders the bot must keep alive
 #define YM_NONE 0
@@ -228,8 +228,8 @@ input int    InpTgPollMs       = 1000;     // Telegram fast polling interval (ms
 
 input group "=== Mini App Bridge (Cloudflare Worker) ==="
 input bool   InpBrEnable       = true;    // Enable Mini App bridge
-input string InpBrUrl      = "https://yetimmm-bridge.sayfhazeem078.workers.dev"; // Worker URL (pre-filled) - must also be listed in Tools > Options > Expert Advisors > Allowed URLs (MT5 does not allow an EA to add it itself)
-input string InpBrPairCode   = "";      // PAIRING CODE = the Worker secret PAIR_CODE (or APP_PASSWORD when PAIR_CODE is not set). Needed ONCE per account: without it a NEW account is refused. Visible in this EA's inputs - use a dedicated PAIR_CODE, not your trading password
+input string InpBrUrl      = "https://yetimmm-bridge.sayfhazeem078.workers.dev"; // Worker URL (pre-filled). MT5 never lets an EA edit Allowed URLs: run tools\allow-urls.bat once (it reads this URL) or add it by hand
+input string InpBrPairCode   = "123123";  // PAIRING CODE = the Worker PAIR_CODE (pre-filled 123123 = the value in worker/wrangler.toml [vars]; change BOTH together). Needed ONCE per account. Visible in the EA inputs - use a dedicated code, not your trading password
 input bool   InpBrResetPw    = false;   // Set TRUE once (then back to FALSE) to sign every device out of this account (a normal EA restart does NOT sign anyone out since v4.1)
 input int    InpCmdTtlSec      = 30;      // v2.23: a Mini App command older than this when it reaches the EA is EXPIRED (acked, never executed)
 input int    InpBrPollSec      = 1;       // Bridge sync interval (sec) - v2.22: 1 s (was 3) so the Mini App price follows the broker closely
@@ -2410,15 +2410,27 @@ void TgQueue(const string text,const long chat=0,const string markup="")
    else TgPush(chat,text,markup);
   }
 
-//--- v2.26: origin (https://host) of a URL, so the 4014 message shows the exact text to paste into Allowed URLs
+//--- v2.26: origin (https://host) of a URL + the exact list MT5 needs in Allowed URLs (built from the live input, never hard-coded)
 string UrlOrigin(const string u)
   {
-   int p=StringFind(u,"://");
-   if(p<0) return u;
-   int q=StringFind(u,"/",p+3);
-   return (q<0)?u:StringSubstr(u,0,q);
+   string x=u;
+   StringTrimLeft(x); StringTrimRight(x);
+   int p=StringFind(x,"://");
+   if(p<0) return x;
+   int q=StringFind(x,"/",p+3);
+   return (q<0)?x:StringSubstr(x,0,q);
+  }
+string AllowUrlsHint()
+  {
+   return UrlOrigin(InpBrUrl)+"  and  https://api.telegram.org";
   }
 bool g_urlAlertShown=false;
+void AllowUrlsAlertOnce()
+  {
+   if(g_urlAlertShown) return;
+   g_urlAlertShown=true;
+   Alert("Yetimmm: Tools > Options > Expert Advisors > tick 'Allow WebRequest' and add: "+AllowUrlsHint()+"  (or run tools\\allow-urls.bat with MT5 closed)");
+  }
 
 //--- low-level Telegram request (token is never logged)
 bool TgCall(const string method,const string body,string &resp)
@@ -2439,7 +2451,7 @@ bool TgCall(const string method,const string body,string &resp)
       if(TimeLocal()-g_tgLastErrLog>=60)
         {
          g_tgLastErrLog=TimeLocal();
-         if(e==4014) YLog("Telegram Connection Error: add https://api.telegram.org to Tools > Options > Expert Advisors > Allowed URLs (error 4014).");
+         if(e==4014) { YLog("Telegram Connection Error: add https://api.telegram.org to Tools > Options > Expert Advisors > Allowed URLs (error 4014)."); AllowUrlsAlertOnce(); }
          else YLog("Telegram Connection Error: WebRequest failed, error "+IntegerToString(e));
         }
       return false;
@@ -6080,9 +6092,8 @@ void BridgeSync()
          g_brErrLog=TimeLocal();
          if(e==4014)
            {
-            string org=UrlOrigin(InpBrUrl);
-            YLog("Mini App bridge: tick 'Allow WebRequest for listed URL' and add  "+org+"  (and https://api.telegram.org) in Tools > Options > Expert Advisors > Allowed URLs (error 4014).");
-            if(!g_urlAlertShown){ g_urlAlertShown=true; Alert("Yetimmm: add these to Allowed URLs -> "+org+" , https://api.telegram.org"); }
+            YLog("Mini App bridge: error 4014 - tick 'Allow WebRequest for listed URL' and add: "+AllowUrlsHint()+"  (Tools > Options > Expert Advisors). Shortcut: close MT5 and run tools\\allow-urls.bat");
+            AllowUrlsAlertOnce();
            }
          else YLog("Mini App bridge: WebRequest failed, error "+IntegerToString(e));
         }
@@ -6101,7 +6112,11 @@ void BridgeSync()
          else if(werr=="pair_bad")     YLog("Mini App bridge: pairing code REJECTED - InpBrPairCode must equal the Worker secret PAIR_CODE (or APP_PASSWORD when PAIR_CODE is not set).");
          else if(werr=="pair_locked")  YLog("Mini App bridge: too many wrong pairing codes - pairing is locked for a few minutes.");
          else if(werr=="secret")       YLog(StringLen(pairCode)>0?"Mini App bridge: this account is bound to another EA install - re-pairing with InpBrPairCode.":"Mini App bridge: this account is bound to another EA install (or the EA settings file was lost) - set InpBrPairCode to re-pair.");
-         else YLog("Mini App bridge: HTTP "+IntegerToString(code)+" (Worker URL wrong, or Worker error)");
+         else if(werr=="pair_not_configured") YLog("Mini App bridge: HTTP 503 pair_not_configured - the Worker has no PAIR_CODE. Deploy worker/wrangler.toml (it now carries PAIR_CODE) or run: npx wrangler secret put PAIR_CODE  (value must equal InpBrPairCode).");
+         else if(werr=="not_configured")    YLog("Mini App bridge: HTTP 503 not_configured - the Worker has no APP_PASSWORD secret (npx wrangler secret put APP_PASSWORD).");
+         else if(werr!="")                  YLog("Mini App bridge: HTTP "+IntegerToString(code)+" - Worker answered '"+werr+"'.");
+         else if(code==404)                 YLog("Mini App bridge: HTTP 404 - Worker URL is wrong (check InpBrUrl: "+UrlOrigin(InpBrUrl)+").");
+         else YLog("Mini App bridge: HTTP "+IntegerToString(code)+" (Worker not deployed / Worker error - open "+UrlOrigin(InpBrUrl)+"/ in a browser: it must answer {\"ok\":true})");
         }
       return;
      }
@@ -6290,11 +6305,11 @@ int OnInit()
    if(InpBrEnable && !MQLInfoInteger(MQL_TESTER))
      {
       if(StringLen(InpBrUrl)<12 || StringLen(BrKeyEff())<8)
-         YLog("Mini App bridge: INACTIVE - fill InpBrUrl and add the Worker URL to Tools > Options > Expert Advisors > Allowed URLs.");
+         YLog("Mini App bridge: INACTIVE - InpBrUrl is empty/too short (or no app key). Fill InpBrUrl, then allow it in Tools > Options > Expert Advisors.");
       else if(StringFind(InpBrUrl,"https://")!=0)
          YLog("Mini App bridge: INACTIVE - InpBrUrl must start with https://");
       else
-         YLog("Mini App bridge: enabled | "+InpBrUrl+" | the URL must be listed in Allowed URLs (error 4014 otherwise).");
+         YLog("Mini App bridge: enabled | "+InpBrUrl+" | Allowed URLs must contain: "+AllowUrlsHint()+" (error 4014 otherwise).");
       if(CfgGet("brpaired","0")!="1" && StringLen(InpBrPairCode)==0)
          YLog("Mini App bridge: InpBrPairCode is empty - an account that is not yet bound to this Worker will be refused until you enter the pairing code (accounts bound by v2.20 keep working).");
      }
