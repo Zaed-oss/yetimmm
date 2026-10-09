@@ -39,7 +39,7 @@ new_sqlite_classes = ["Notify"]
 PAIR_CODE = "123123"
 # PRODUCTION: CORS is restricted to YOUR web app. The Origin is the DOMAIN ONLY (no /repo path). Several origins: comma separated.
 # Not set / empty = no browser origin is allowed (fail-closed). "*" = open, local testing only (GET / then reports corsOpen:true).
-ALLOWED_ORIGIN = "https://spreadsupposed-jpg.github.io"
+ALLOWED_ORIGIN = "https://zaed-oss.github.io,https://spreadsupposed-jpg.github.io"
 # LOCK_SECONDS   = "120"      # lock length after too many wrong passwords
 # MAX_ATTEMPTS   = "8"        # wrong passwords before the lock
 # SESSION_DAYS   = "30"       # sliding session lifetime (any authenticated request extends it)
