@@ -1,0 +1,6423 @@
+﻿//+------------------------------------------------------------------+
+//|                                                     Yetimmm.mq5  |
+//|  Yetimmm - XAUUSD continuous risk-sequence Expert Advisor        |
+//|  MetaTrader 5 | Telegram control | State recovery | Trade log    |
+//+------------------------------------------------------------------+
+#property copyright "Yetimmm"
+#property version   "2.26"
+#property description "Yetimmm | XAUUSD | Two-level Stop Buy / Stop Sell switch + risk sequence | Telegram integration"
+
+#include <Trade\Trade.mqh>
+
+//--- v2.22 (field fix): (1) InpBreachPolicy default = BREACH_MARKET: after a verified SL the opposite direction is opened AT ONCE (with WAIT the Sell Stop at the SL level
+//---   cannot exist because the price is already through it, so the whole reversal was missed). (2) ATOMIC PAIR: a lone Buy/Sell Stop is withdrawn if its partner could not be placed
+//---   together with it. (3) ZONE TOO NARROW alert. (4) InpBrPollSec 3 -> 1 (Mini App price lag).
+//--- v2.21 (audit fixes): InpBreachPolicy now defaults to BREACH_WAIT = the literal philosophy (SL of a Buy Stop -> a Sell Stop is placed at that SL level and
+//---   waits; no market reverse unless you opt in). New InpBrPairCode: explicit EA<->account PAIRING (the Worker mints the EA secret, MathRand is no longer the secret).
+//---   The state now carries tick size / point / position id (exact order-alert matching) and MT5 link diagnostics (connected / AutoTrading / account trading).
+//--- v2.19: EDGE-TRIGGERED ALERTS (a condition is reported once, re-armed after it clears / 1 h), FROZEN PRICE while STOPPED (state carries frz/frzT),
+//---   DELETE / EDIT of a WAITING level from the Mini App (side only, no ticket), duplicate-command guard (3 s), cached closure scan (no global-variable scan per sync)
+//--- v2.18: ZONE GATE (InpZoneGate). In a trending market one of the two stop levels is always placeable (e.g. the Sell Stop below a falling price) while the other is not;
+//---   sending the lone order would trade one side only. Now, when BOTH orders are missing and either cannot be placed yet, NEITHER is sent: the bot keeps both levels,
+//---   caches both trigger prices and places the pair together the tick the price is inside the zone (Ask <= Buy trigger AND Bid >= Sell trigger).
+//--- v2.17: SMART WAITING + COMMAND LIFECYCLE. A level that waits for the market is a first-class object, never a "failure":
+//---   * the trigger price (level -/+ max(StopsLevel, tick) + an adaptive safety buffer) is computed once and cached; OnTick compares ONE number per tick
+//---     and wakes the synchroniser the very tick the price crosses it (no blind retry loop, no HTTP/trade traffic while waiting)
+//---   * a "market moved while sending" race never becomes a failure: the buffer of that side widens (bounded), retries back off, the side stays WAITING
+//---   * a Mini App command that was accepted but is waiting keeps the state "wait" in the app log and is updated IN PLACE:
+//---     wait -> done (activated, ticket + time) | sup (superseded by a newer level) | cancel (bot stopped / orders cancelled). Persisted in the commands CSV.
+//---   * the state JSON carries "st" / "wb" / "ws" per command and ver 2.17
+//--- v2.16: WAIT-FOR-PRICE levels. A Buy/Sell level that is on the wrong side of the market (Buy Stop under the Ask, Sell Stop over the Bid, or inside the Stops Level)
+//---   is no longer rejected by APPLY / the Mini App: the level is ACCEPTED and kept, the side shows WAITING, and the real pending order is placed automatically
+//---   (checked every tick, 300 ms) the moment the broker rules allow it. Structural errors (bad tick, trading disabled, Buy<=Sell, lot) are still rejected.
+//---   When an EXISTING order is moved to a level that cannot be placed yet, the old order is REMOVED (never left at the stale price) and the new one waits.
+//---   The state / Telegram / Mini App show exactly what the side waits for ("Ask must fall to X"). Trading logic, SL/TP, risk sequence and protections are unchanged.
+//--- v2.15: Mini App: new commands cancel / modify / place (real MT5 execution), account block (balance/equity/margin) and extended statistics in the state; bridge URL+key pre-filled
+//--- v2.14: MINI APP COMMAND LOG + DELETE ORDER (every Mini App command is logged and sent back to the app as a log entry; new "delete" command removes ONE pending Stop order from MT5 and the bot keeps working without re-creating it)
+//--- v2.13: FAST TELEGRAM EXECUTION (millisecond timer, ms polling, command executed + answered immediately, callback answered AFTER execution, slow monitors split from the fast path)
+//--- v2.12: SECURITY + SETUP FIXES (hardcoded bot token removed, bridge/Telegram enabled by default, startup self-check of the bridge settings)
+//--- v2.11: SECOND REVIEW FIXES
+//---   * BREACH_MARKET slippage is now REAL: the market request carries the expected price (so Max Slippage Check acts as a price guard)
+//---     AND the fill is compared with that expected price after execution (Deviation was always 0 before). A rejected reversal returns
+//---     to WAITING_REENTRY (direction is not lost) and is retried after a cooldown.
+//---   * History recovery no longer depends on a fixed 1-hour window: the scan marker advances ONLY after every position found in the
+//---     scanned range was registered (6 h safety overlap, last processed deal time as fallback). Positions are registered AND processed
+//---     in chronological order, so a long outage with several trades rebuilds the risk sequence in the right order.
+//---   * Netting: a position that absorbed foreign volume while the bot was OFFLINE is now detected from its history (foreign entry deals)
+//---     and treated as TAINTED even when it was already closed before the bot returned.
+//---   * Combined margin check: a missing Buy Stop / Sell Stop pair is placed only when the margin of BOTH missing orders is available
+//---     (InpCombinedMargin) - no more "one side exists, the other is rejected for NO MONEY".
+//---   * Market reversal: permanent failures (invalid volume, long/short only, close only, volume limit) and failures that persist
+//---     (YT_REV_MAX_HARD attempts) switch the bot to ERROR / MANUAL ACTION instead of retrying forever. /start or new levels resume the reversal.
+//---   * InpPriceFallback can no longer turn a manual / stop-out / EA close into an "SL" or "TP": it is used only when the deal reason is unknown.
+
+//--- v2.10: HARDENING (review fixes)
+//---   * Netting: external volume merged into the bot position is DETECTED, persisted (per position) and NEVER closed by the bot;
+//---     every automatic close is refused while tainted and the contaminated result does NOT feed the risk sequence.
+//---   * BREACH_MARKET: full pre-flight (SL/TP side, Stops Level, volume, margin) against the REAL market price; the lot is sized from the
+//---     REAL execution price to the SL level (so the risk stays = requested risk); TP = real entry + real SL distance x R/R.
+//---     Default policy is now BREACH_MARKET (SL hit -> the opposite direction is opened at once, even when the price already crossed the level).
+//---   * Position without SL/TP = CRITICAL PROTECTION FAILURE: aggressive retry, critical alert, sequence frozen, emergency close after a timeout.
+//---   * Magic Number guard: orphan Yetimmm orders/positions of a previous Magic block the start (no silent abandonment).
+//---   * Cleanup: InpSLDistance / g_sld / g_recheckOrders removed; labels say what they really do (post-fill check, alert-only spread, recovery target).
+
+//--- v2.00: LEVEL-SWITCH PHILOSOPHY (Upper = Buy Entry + Sell SL | Lower = Sell Entry + Buy SL)
+//---   * SL of each order is the OPPOSITE level (no SL distance input any more); TP = (Upper-Lower) x Risk/Reward
+//---   * ONE position at most: the unwanted pending order is removed when one fills; extra positions are closed (oldest kept)
+//---   * Verified Stop-Loss close (DEAL_REASON_SL) -> BOTH Buy Stop @Upper and Sell Stop @Lower are prepared again (WAITING_REENTRY
+//---     until both are on the server). TP ends the sequence (TP_RESET). Any other close reason -> no automatic re-creation.
+//---   * Optional BREACH_MARKET: when the stop-out itself already crossed the opposite level (a pending order cannot exist there)
+//---     the opposite direction is opened at market instead of waiting.
+//--- v1.31: STOP sweep (orders first, then positions, verified) | DeleteOrder classifies by History (never "DELETED" for a FILLED order)
+//---        tracked ticket == the ONLY actual order (panel + reconcile) | levels change the REAL pending order during a sequence
+//---        (queued only while a real position is open) | SL/RR settings reconcile immediately
+//--- v1.30: REAL MT5 state only (no virtual state)
+//---   Every panel value == the real pending order on the server (ticket, price, SL, TP, volume).
+//---   APPLY: Validate (incl. broker rules) -> Compare with ACTUAL MT5 -> CREATE / MODIFY / REMOVE / NOTHING
+//---          -> Server retcode -> Verify the order on the server -> Panel.   No "wait for a tick" for user requests.
+//---   Real tickets are tracked; manual MT5 edits / deletions are DETECTED and handled by an explicit policy.
+//--- v1.20: dynamic Stop Buy / Stop Sell control
+//---   Desired State -> Validate -> Reconcile -> Modify/Create/Remove -> Verify -> Sync
+//---   Existing pending orders are MODIFIED in place (same ticket) instead of delete + re-create.
+
+//--- bot states (no "cycle" concept anywhere)
+enum ENUM_YT_STATE
+  {
+   YT_IDLE=0,
+   YT_ARMED=1,
+   YT_BUY_ACTIVE=2,
+   YT_SELL_ACTIVE=3,
+   YT_WAITING_REENTRY=4,
+   YT_TP_RESET=5,
+   YT_STOPPED=6,
+   YT_ERROR=7
+  };
+
+//--- what to do when a pending order fills with slippage above the Max Slippage Check
+//--- (MT5 cannot cap slippage on server-triggered stop orders, so it is enforced right after the fill)
+enum ENUM_YT_DEV_ACTION
+  {
+   YT_DEV_REJECT=0,   // Reject: close the position immediately
+   YT_DEV_ALERT=1     // Alert only (legacy behaviour)
+  };
+
+//--- synchronisation status of one pending order (Desired State vs Actual State on the server)
+enum ENUM_YT_SYNC
+  {
+   YS_IDLE=0,         // no order desired on this side
+   YS_SYNCED=1,       // server holds exactly the desired order
+   YS_UPDATING=2,     // MODIFY in progress / awaiting server confirmation
+   YS_CREATING=3,     // CREATE in progress
+   YS_REMOVING=4,     // REMOVE in progress
+   YS_FAILED=5,       // the server rejected the last request (old state kept)
+   YS_WAITING=6,      // desired, but NOT on the server (shown as NOT PLACED + reason)
+   YS_PLACED=7,       // sent AND found on the server with the requested values (shown briefly, then SYNCED)
+   YS_MISSING=8,      // the tracked ticket vanished from the server (deleted / expired outside the EA)
+   YS_EXTERNAL=9,     // the order was changed outside the EA (in the MT5 terminal)
+   YS_FILLED=10,      // the pending order was triggered by MT5 -> real position
+   YS_REMOVED=11      // the pending order was deleted and the deletion was verified on the server
+  };
+
+//--- what to do when the user moves a pending order manually in MT5
+enum ENUM_YT_EXT
+  {
+   YT_EXT_ADOPT=0,    // MT5 is authoritative: the new price is adopted into the panel level (SL/TP re-derived)
+   YT_EXT_RESTORE=1,  // the panel is authoritative: the order is moved back
+   YT_EXT_HOLD=2      // do nothing automatically: flag it and wait for APPLY
+  };
+
+//--- APPLY of new levels while a risk sequence is running
+enum ENUM_YT_SEQ
+  {
+   YT_SEQ_APPLY_NOW=0, // the REAL pending order(s) are moved immediately; only while a real POSITION is open they wait for its close
+   YT_SEQ_QUEUE=1      // legacy: new levels always wait for the next TP
+  };
+
+//--- what to do when the user deletes a pending order manually in MT5
+enum ENUM_YT_MISS
+  {
+   YT_MISS_HOLD=0,    // flag MISSING, manual intervention (APPLY / START) required
+   YT_MISS_RECREATE=1 // flag MISSING and place it again (strategy allows it)
+  };
+
+//--- after a verified SL: what if the OPPOSITE level has already been crossed (a stop order cannot be placed there)?
+enum ENUM_YT_ENTRY
+  {
+   ENTRY_PENDING=0,   // classic: a Buy Stop + a Sell Stop are placed on the server (needs Stops Level room, zone gate, both orders at once)
+   ENTRY_VIRTUAL=1    // v2.22 DEFAULT: the EA stores the zone and watches the price tick by tick; the moment the price crosses a level it opens that side AT MARKET (SL = opposite level)
+  };
+
+enum ENUM_YT_BREACH
+  {
+   BREACH_WAIT=0,     // DEFAULT (v2.21): the strategy's literal philosophy - pending orders only: the opposite Stop is placed at the SL level and waits for price (after a gap the move may be MISSED)
+   BREACH_MARKET=1    // ADVANCED / opt-in: open the opposite direction at market right after the SL when the price already crossed the level (pre-flighted, lot from the real price)
+  };
+
+//--- v2.23 Risk policy when the broker minimum volume risks MORE than the requested risk
+enum ENUM_YT_RISKPOL
+  {
+   YT_RISK_STRICT=0,     // DEFAULT: never exceed the requested risk. No legal volume -> WAITING_VOLUME (no order, no error, no stop, no spam)
+   YT_RISK_CLAMP_MIN=1   // use the broker minimum volume and SAY SO: Requested Risk / Effective Risk are both shown and logged
+  };
+
+#define YT_VER "2.25"
+
+//--- which pending orders the bot must keep alive
+#define YM_NONE 0
+#define YM_BOTH 1
+#define YM_BUY  2
+#define YM_SELL 3
+
+//+------------------------------------------------------------------+
+//| Inputs                                                           |
+//+------------------------------------------------------------------+
+
+input group "=== Trading Levels ==="
+input double InpBuyStop        = 0.0;     // Buy Stop Price
+input double InpSellStop       = 0.0;     // Sell Stop Price
+
+input group "=== Risk Management ==="
+input double InpInitialRisk    = 1.0;     // Initial Risk ($) - lot is rounded DOWN to the broker step: real risk <= requested
+input double InpTargetProfit   = 20.0;    // Recovery Target ($) - extra profit the NEXT trade must earn on top of the accumulated loss (sizes the next risk; does NOT stop the EA)
+input double InpRiskReward     = 20.0;    // Risk/Reward (TP = SL distance x this)
+input bool   InpResetRiskOnStart = true;  // Reset risk sequence when started after STOP
+
+input group "=== Risk / Broker engine (v2.23) ==="
+input ENUM_YT_RISKPOL InpRiskPolicy = YT_RISK_STRICT; // STRICT = never exceed the requested risk (WAITING_VOLUME when the broker minimum lot risks more) | CLAMP_TO_MIN = use the broker minimum lot and report the Effective Risk
+input bool   InpOrderCheck     = true;    // Run OrderCheck (server pre-flight) before every pending OrderSend
+input int    InpMaxSpread      = 0;       // Max Spread to ARM (points, live Ask-Bid). 0 = off. Above it NEW orders wait (WAITING_SPREAD); open trades are never touched
+input double InpMaxRevGap      = 0.0;     // Max Reversal Distance ($, BREACH_MARKET/VIRTUAL only): market entry farther than this from the level is skipped. 0 = off
+input bool   InpTpResetNetOnly = true;    // A TP resets the risk sequence only when its NET result (after commission/swap) repaid the accumulated loss; otherwise the remaining debt is kept
+
+input group "=== Recovery Plan Guard (v2.24) ==="
+input int    InpMaxSeqLosses   = 0;       // Max consecutive losses in one recovery cycle. 0 = off. When reached, NEW orders wait (WAITING_SEQCAP); open trades are never touched. Resume: New Cycle / Reset, or raise the cap. Report recommendation: 15-20
+input double InpMaxRiskPctBal  = 0.0;     // Max risk of ONE trade as % of the account balance. 0 = off. If the next planned risk is above it, NEW orders wait (WAITING_RISKCAP). Report recommendation: 2-3
+input bool   InpPlanLog        = true;    // Print the exact recovery plan (risk / target / cumulative loss / balance needed) in the Experts log at start
+
+input group "=== Execution ==="
+input int    InpMaxDeviation   = 30;      // Max Slippage Check (points) - checked AFTER every fill (stop orders cannot be capped by MT5); a market reversal also sends it as a price guard
+input ENUM_YT_DEV_ACTION InpDevAction = YT_DEV_REJECT; // Action when a fill exceeds the Max Slippage Check
+input int    InpWarnSpread     = 60;      // Spread Alert (points) - ALERT ONLY, trading is never blocked
+input double InpMinLevelGap    = 0.0;     // Minimum gap between Buy/Sell levels ($)
+input ENUM_YT_ENTRY InpEntryMode = ENTRY_PENDING; // v2.23 DEFAULT = PENDING (real Buy Stop + Sell Stop on the server = the strategy). VIRTUAL = stored zone + tick trigger + market execution (advanced, opt-in)
+input bool   InpZoneGate     = true;    // v2.18 ZONE GATE: when BOTH Buy Stop and Sell Stop are missing, place them TOGETHER only when the price is inside the zone (no lone order in a trending market)
+input ENUM_YT_BREACH InpBreachPolicy = BREACH_WAIT; // After an SL: WAIT (DEFAULT v2.23: pending pair re-armed, WAITING_REENTRY until both Stops are placeable - Market Reversal OFF) or MARKET (advanced: opens the opposite side at market; a different strategy with a different SL distance)
+input bool   InpPriceFallback  = false;   // Classify SL/TP by exit price ONLY when the deal reason is unknown (never for manual / stop-out / EA closes; off = strict: DEAL_REASON only)
+input bool   InpCombinedMargin  = true;    // Place a missing Buy Stop / Sell Stop pair only when the margin of BOTH missing orders is available (off = each order is checked alone)
+input int    InpProtectCloseSec = 20;     // Position WITHOUT SL/TP: emergency-close after N seconds of failed protection. TRADING DECISION: 20 = "never stay unprotected" (a transient connection problem can close the trade at a loss larger than the planned risk); 0 = never force-close (alert + retry only; the position may stay unprotected)
+
+input group "=== Manual changes in MT5 ==="
+input ENUM_YT_EXT  InpExtPolicy  = YT_EXT_ADOPT;   // Order moved in MT5 (ADOPT = MT5 sets ENTRY only; SL/TP re-derived)
+input ENUM_YT_MISS InpMissPolicy = YT_MISS_HOLD;   // Pending order deleted manually in MT5
+input ENUM_YT_SEQ  InpSeqPolicy  = YT_SEQ_APPLY_NOW; // Levels changed during a sequence
+
+input group "=== System ==="
+input long   InpMagic          = 20260101; // Magic Number (changing it while Yetimmm orders/positions of the old Magic exist blocks the start)
+input bool   InpIgnoreOrphans  = false;    // Start even if orders/positions of ANOTHER Magic carry the "Yetimmm" comment (second instance / deliberate)
+input bool   InpShowPanel      = true;     // Show Yetimmm panel
+
+input group "=== Telegram ==="
+input bool   InpTgEnable       = true;    // Enable Telegram
+input bool   InpTgNotify       = true;    // Telegram Notifications
+input bool   InpTgControl      = true;    // Telegram Control Enabled
+input int    InpTgPollSec      = 2;       // (deprecated - replaced by Telegram fast polling below)
+input bool   InpTgViaWorker    = true;    // v2.23: notifications go EA -> Worker (unique event id) -> Telegram. The Bot Token is NEVER sent to / stored in MT5 and the EA never polls Telegram
+input bool   InpTgMenu         = false;   // v2.25: attach the START/STOP/CANCEL/STATUS... inline keyboard to every bot message. Default OFF (clean messages). Typing /menu always shows it on demand; every /command and callback keeps working
+input bool   InpTgAutoHeal     = true;    // Self-heal: single poller per token, auto-clear webhook on 409, auto-pause polling if another instance owns the token
+input int    InpTgPollMs       = 1000;     // Telegram fast polling interval (ms, 100..2000). Lower = faster commands but more HTTP calls
+
+input group "=== Mini App Bridge (Cloudflare Worker) ==="
+input bool   InpBrEnable       = true;    // Enable Mini App bridge
+input string InpBrUrl      = "https://yetimmm-bridge.sayfhazeem078.workers.dev"; // Worker URL (pre-filled) - must also be listed in Tools > Options > Expert Advisors > Allowed URLs (MT5 does not allow an EA to add it itself)
+input string InpBrPairCode   = "";      // PAIRING CODE = the Worker secret PAIR_CODE (or APP_PASSWORD when PAIR_CODE is not set). Needed ONCE per account: without it a NEW account is refused. Visible in this EA's inputs - use a dedicated PAIR_CODE, not your trading password
+input bool   InpBrResetPw    = false;   // Set TRUE once (then back to FALSE) to sign every device out of this account (a normal EA restart does NOT sign anyone out since v4.1)
+input int    InpCmdTtlSec      = 30;      // v2.23: a Mini App command older than this when it reaches the EA is EXPIRED (acked, never executed)
+input int    InpBrPollSec      = 1;       // Bridge sync interval (sec) - v2.22: 1 s (was 3) so the Mini App price follows the broker closely
+
+//+------------------------------------------------------------------+
+//| Constants                                                        |
+//+------------------------------------------------------------------+
+#define UI "YTP_"
+#define YT_REV_MAX_HARD    20       // market-reversal attempts that fail for a NON-transient reason before the bot goes to ERROR / MANUAL ACTION
+#define YT_ALERT_REARM_SEC 3600     // v2.19: a persistent condition is reported ONCE; it may be reported again only after it cleared (ClearAlert) or after this many seconds
+#define YT_SCAN_BUFFER_SEC 21600    // history recovery safety overlap (6 h): every position is registered / logged once, so an overlap is harmless
+const string TRADE_HEADER="TradeNo;OrderTicket;DealIn;DealOut;PositionID;Type;ExecType;Entry;Exit;SL;TP;Lot;RequestedRisk;TheoLossAtSL;TheoProfitAtTP;GrossProfit;Commission;Swap;NetPL;SpreadAtOpen;DeviationPts;OpenTime;CloseTime;CloseReason;BalanceBefore;BalanceAfter;AccLossBefore;AccLossAfter;RiskBefore;NextRisk;OrigBuyLevel;OrigSellLevel;Magic;Symbol;Status;Notes";
+const string ORDER_HEADER="Time;Event;Side;OrderType;Price;Lot;Ticket;Magic;Symbol;Retcode;Note";
+
+//+------------------------------------------------------------------+
+//| Types                                                            |
+//+------------------------------------------------------------------+
+struct SStats
+  {
+   int    total,wins,losses,buys,sells,winBuy,loseBuy,winSell,loseSell;
+   double totProfit,totLoss,net,avgProfit,avgLoss,maxProfit,maxLoss;
+   double commission,swap,volume,highRisk,highLot,winRate;
+   int    streak,consSL,consTP;
+  };
+
+//+------------------------------------------------------------------+
+//| Globals                                                          |
+//+------------------------------------------------------------------+
+CTrade        g_trade;
+string        g_sym;
+long          g_magic=0;
+int           g_digits=2;
+int           g_lotDigits=2;
+string        g_riskCode="";            // v2.23: code of the LAST risk computation (RISK_BELOW_MIN_VOLUME ...)
+string        g_riskAlertKey="";        // alert key raised for the current risk condition (cleared when it resolves)
+string        g_wcode="";               // v2.23: machine-readable WAITING_* code shown to the Mini App
+string        g_evId[], g_evK[], g_evT[], g_evB[];   // v2.23 event outbox (EA -> Worker -> Telegram), acked by the Worker
+long          g_evSeq=0;
+string        g_bsSig="";               // last broker-spec signature (change detection)
+double        g_point=0.01;
+double        g_tick=0.01;
+
+ENUM_YT_STATE g_state=YT_IDLE;
+int           g_mode=YM_NONE;
+double        g_buyLevel=0.0;
+double        g_sellLevel=0.0;
+double        g_initRisk=1.0;
+double        g_curRisk=1.0;
+double        g_accLoss=0.0;
+int           g_seq=0;
+long          g_tradeNo=0;
+bool          g_fresh=false;
+ulong         g_lastDeal=0;
+int           g_lastSLSide=0;      // 1 = a Buy was stopped out, 2 = a Sell was stopped out (0 = none)
+ulong         g_nextExtraMs=0;
+
+bool          g_connected=true;
+bool          g_dirty=true;
+bool          g_busy=false;
+ulong         g_nextPlaceMs=0;
+ulong         g_lastSyncMs=0;
+int           g_failCount=0;
+string        g_blockReason="";
+string        g_waitReason="";
+datetime      g_activeNoPosSince=0;
+int           g_lastPosCount=0;
+bool          g_spreadWarned=false;
+bool          g_stateRecovered=false;
+
+//--- Desired vs Actual synchronisation (index 0 = BUY STOP, 1 = SELL STOP)
+int           g_sync[2]={0,0};              // ENUM_YT_SYNC per side
+string        g_syncMsg[2]={"",""};
+bool          g_reqBusy[2]={false,false};   // a server request for this side is in flight: no second one is sent
+ulong         g_retryMs[2]={0,0};           // earliest time a failed / unconfirmed request may be repeated
+int           g_failCnt[2]={0,0};
+double        g_failLvl[2]={0.0,0.0};       // desired level of the last failed request (a NEW level bypasses the back-off)
+bool          g_vArmed=false;               // v2.22 virtual entry: the price has been INSIDE the zone since arming (edge trigger, like a real Stop order)
+bool          g_zoneGate=false;             // v2.18: both orders are held back until the price is inside the zone
+bool          g_unconf[2]={false,false};    // server accepted the modify but the order does not show the new values yet
+ulong         g_nextDelMs=0;
+
+//--- REAL tickets (buyStopTicket / sellStopTicket) + the last snapshot verified on the server (index 0 = BUY STOP, 1 = SELL STOP)
+ulong         g_stopTicket[2]={0,0};
+double        g_snapPx[2]={0.0,0.0};
+double        g_snapSL[2]={0.0,0.0};
+double        g_snapTP[2]={0.0,0.0};
+double        g_snapVol[2]={0.0,0.0};
+int           g_raceCnt[2]={0,0};           // v2.16: quiet retries when the market moved between the check and the request
+bool          g_hold[2]={false,false};      // external change / missing order: no automatic action until APPLY / START
+double        g_waitBuf[2]={0.0,0.0};       // v2.17: adaptive safety buffer added to the trigger distance after a "market moved" race (decays after a success)
+ulong         g_trigMs[2]={0,0};            // v2.17: moment the price first reached the trigger (execution latency is measured from it)
+double        g_trig[2]={0.0,0.0};          // v2.17: cached trigger price of a waiting side (0 = not waiting). Buy: Ask <= trig, Sell: Bid >= trig
+double        g_deferLvl[2]={0.0,0.0};      // v2.16: level for which the "waiting for the market" notice was already sent (one notice per level)
+ulong         g_missMs[2]={0,0};            // first time a tracked ticket was not found (history may lag behind)
+ulong         g_guardMs[2]={0,0};           // server said DONE but the order is not visible yet: do not send a second one
+ulong         g_guardTk[2]={0,0};
+bool          g_restartPass=false;          // a fill was registered inside Reconcile: stop this pass, re-evaluate from the new state
+ulong         g_placedMs[2]={0,0};          // PLACED stays visible for a few seconds before it becomes SYNCED
+string        g_uiMsg="";
+color         g_uiMsgCol=clrSilver;
+string        g_applyNote="";
+bool          g_uiChanged=false;
+string        g_uiTxt[];                    // panel cache: only changed rows are written
+color         g_uiCol[];
+
+//--- runtime configuration (inputs are the defaults; the panel can override and the values persist in a config file)
+double        g_target=20.0;
+double        g_rr=20.0;
+int           g_maxDev=30;
+int           g_warn=60;
+bool          g_tgEn=false;
+bool          g_tgNot=true;
+bool          g_tgCtl=true;
+string        g_tgTok="";
+string        g_tgAuth="";
+string        g_tgPub="";     // public mode: chats that talked to the bot are registered here automatically
+string        g_ckKey[];
+string        g_ckVal[];
+
+//--- levels entered while a sequence is running: they start only after the next TP
+double        g_pendBuy=0.0;
+double        g_pendSell=0.0;
+
+//--- Netting protection / contract size / deviation / panel state
+bool          g_netting=false;
+bool          g_extBlock=false;
+bool          g_netTaint=false;
+double        g_contract=0.0;
+bool          g_csWarned=false;
+bool          g_cmWarned=false;        // combined-margin alert state
+int           g_revHard=0;             // consecutive NON-transient market-reversal failures
+ulong         g_nextDevCloseMs=0;
+
+//--- protection guard: a position without SL/TP is a CRITICAL failure for this strategy
+bool          g_unprot=false;          // some own position currently lacks SL and/or TP
+ulong         g_unprotPid=0;
+ulong         g_unprotSinceMs=0;
+ulong         g_protNextMs=0;          // earliest time of the next protection attempt
+int           g_protTries=0;
+ulong         g_nextRevMs=0;           // earliest time of the next market-reversal attempt
+int           g_revFails=0;
+int           g_page=0;
+bool          g_uiTgEn=false;
+bool          g_uiTgNot=false;
+bool          g_uiTgCtl=false;
+string        g_edBuy="";
+string        g_edSell="";
+string        g_edRisk="";
+bool          g_edHave=false;
+double        g_frzBid=0.0,g_frzAsk=0.0;   // v2.19: price frozen at the moment the bot was stopped
+long          g_frzTs=0;
+string        g_brSig="";                  // v2.19: duplicate-command guard
+ulong         g_brSigMs=0;
+int           g_gvTotal=-1;                // v2.19: cached list of registered position ids (rebuilt only when the globals change)
+ulong         g_pids[];
+bool          g_inited=false;      // OnInit completed: only then may OnDeinit overwrite the saved state
+
+bool          g_stopCleanup=false;
+int           g_stopTries=0;
+int           g_stopCode=1;
+long          g_stopChat=0;
+datetime      g_stopLastTry=0;
+
+SStats        g_st;
+ulong         g_loggedPos[];
+ulong         g_loggedDeal[];
+
+string        g_alKey[];
+datetime      g_alTime[];
+
+//--- Telegram
+long          g_tgIds[];
+long          g_tgLast=0;
+int           g_tgLastCode=0;      // last WebRequest/HTTP code of TgCall (diagnostics)
+ulong         g_tgBackoffUntil=0;
+int           g_tg409=0;           // consecutive 409 conflicts
+datetime      g_tgWhTry=0;         // last deleteWebhook attempt
+datetime      g_tgPausedUntil=0;   // polling paused (another instance owns the token) - notifications keep working  // ms tick: pause polling after a failed getUpdates
+bool          g_tgOk=false;
+datetime      g_tgLastOk=0;
+datetime      g_tgLastPoll=0;
+ulong         g_tgLastPollMs=0;    // v2.13: millisecond polling gate
+ulong         g_slowMs=0;          // v2.13: gate of the 1-second slow cycle
+datetime      g_tgLastErrLog=0;
+string        g_qText[];
+long          g_qChat[];
+string        g_qMarkup[];
+int           g_qTry[];
+string        g_lastCmdKey="";
+datetime      g_lastCmdTime=0;
+string        g_confAction="";
+string        g_confNonce="";
+datetime      g_confExpire=0;
+
+//--- panel
+string        g_rowKeys[32]={"Bot Status","Symbol",
+                             "BUY STOP  Requested","BUY STOP  MT5 Actual","BUY STOP  Status",
+                             "SELL STOP Requested","SELL STOP MT5 Actual","SELL STOP Status",
+                             "Current Position","Current Order","Last Action",
+                             "Trade Sequence","Current Risk","Current Lot","Accumulated Loss","Next Risk","Theoretical TP Profit",
+                             "Risk/Reward","Connection","Spread","Current Trade #","Total Trades","Winning Trades",
+                             "Losing Trades","Total Profit","Total Loss","Net P/L","Win Rate","Telegram",
+                             "BUY STOP  SL | TP | Lot","SELL STOP SL | TP | Lot","Position SL | TP | Ticket"};
+
+//+------------------------------------------------------------------+
+//| Small helpers                                                    |
+//+------------------------------------------------------------------+
+void YLog(const string s) { Print("[Yetimmm] ",s); }
+string D2(const double v) { return DoubleToString(v,2); }
+string PX(const double v) { return DoubleToString(v,g_digits); }
+string LotS(const double v) { return DoubleToString(v,g_lotDigits); }
+string Money(const double v) { return (v<0.0?"-$":"+$")+DoubleToString(MathAbs(v),2); }
+string TNo(const long n) { return StringFormat("%04d",(int)n); }
+string UL(const ulong v) { return StringFormat("%I64u",v); }
+string Clean(const string s) { string r=s; StringReplace(r,";",","); StringReplace(r,"\r"," "); StringReplace(r,"\n"," "); return r; }
+double NP(const double p) { return NormalizeDouble(p,g_digits); }
+double RoundTick(const double p)
+  {
+   if(g_tick>0.0) return NormalizeDouble(MathRound(p/g_tick)*g_tick,g_digits);
+   return NP(p);
+  }
+bool PriceEq(const double a,const double b) { return MathAbs(a-b)<(g_tick>0.0?g_tick/2.0:g_point/2.0); }
+
+string StateText()
+  {
+   switch(g_state)
+     {
+      case YT_IDLE:            return "IDLE";
+      case YT_ARMED:           return "ARMED";
+      case YT_BUY_ACTIVE:      return "BUY_ACTIVE";
+      case YT_SELL_ACTIVE:     return "SELL_ACTIVE";
+      case YT_WAITING_REENTRY: return "WAITING_REENTRY";
+      case YT_TP_RESET:        return "TP_RESET";
+      case YT_STOPPED:         return "STOPPED";
+      case YT_ERROR:           return "ERROR";
+     }
+   return "UNKNOWN";
+  }
+
+string RunStatus()
+  {
+   if(g_state==YT_STOPPED) return "STOPPED";
+   if(g_state==YT_ERROR)   return "ERROR";
+   if(g_state==YT_IDLE || g_state==YT_TP_RESET) return "RUNNING (WAITING FOR LEVELS)";
+   return "RUNNING";
+  }
+
+//+------------------------------------------------------------------+
+//| Global-variable persistence                                      |
+//+------------------------------------------------------------------+
+string GN(const string k) { return "YT"+IntegerToString(g_magic)+"_"+k; }
+bool   GHas(const string k) { return GlobalVariableCheck(GN(k)); }
+double GV(const string k,const double def=0.0) { string n=GN(k); if(GlobalVariableCheck(n)) return GlobalVariableGet(n); return def; }
+void   GS(const string k,const double v) { GlobalVariableSet(GN(k),v); }
+
+string PNm(const ulong pid,const string k) { return GN("P"+UL(pid)+"_"+k); }
+bool   PHas(const ulong pid,const string k) { return GlobalVariableCheck(PNm(pid,k)); }
+double PGV(const ulong pid,const string k,const double def=0.0) { string n=PNm(pid,k); if(GlobalVariableCheck(n)) return GlobalVariableGet(n); return def; }
+void   PSet(const ulong pid,const string k,const double v) { GlobalVariableSet(PNm(pid,k),v); if(k=="N") g_gvTotal=-1; }
+
+void ClearPosGV(const ulong pid)
+  {
+   string keys[]={"N","R","AL","BB","SP","DV","SLP","TPP","LOT","LB","LS","TY","ET","CRC","ENT","ORD","PM","TAINT"};
+   for(int i=0;i<ArraySize(keys);i++) GlobalVariableDel(PNm(pid,keys[i]));
+   g_gvTotal=-1;
+  }
+
+//+------------------------------------------------------------------+
+//| Runtime configuration (panel-editable, persisted in a file)      |
+//| Rule: if an EA input was changed since the last run, the input   |
+//| wins; otherwise the value saved from the panel is restored.      |
+//+------------------------------------------------------------------+
+void CfgSet(const string k,const string v)
+  {
+   for(int i=0;i<ArraySize(g_ckKey);i++)
+      if(g_ckKey[i]==k) { g_ckVal[i]=v; return; }
+   int n=ArraySize(g_ckKey);
+   ArrayResize(g_ckKey,n+1);
+   ArrayResize(g_ckVal,n+1);
+   g_ckKey[n]=k;
+   g_ckVal[n]=v;
+  }
+
+bool CfgHas(const string k)
+  {
+   for(int i=0;i<ArraySize(g_ckKey);i++) if(g_ckKey[i]==k) return true;
+   return false;
+  }
+
+string CfgGet(const string k,const string def="")
+  {
+   for(int i=0;i<ArraySize(g_ckKey);i++) if(g_ckKey[i]==k) return g_ckVal[i];
+   return def;
+  }
+
+string CfgFile() { return "Yetimmm_"+IntegerToString(g_magic)+"_Config.cfg"; }
+
+void CfgLoadFile()
+  {
+   ArrayResize(g_ckKey,0);
+   ArrayResize(g_ckVal,0);
+   int h=FileOpen(CfgFile(),FILE_READ|FILE_TXT|FILE_ANSI|FILE_SHARE_READ|FILE_SHARE_WRITE);
+   if(h==INVALID_HANDLE) return;
+   while(!FileIsEnding(h))
+     {
+      string line=FileReadString(h);
+      StringTrimRight(line);
+      int p=StringFind(line,"=");
+      if(p<=0) continue;
+      CfgSet(StringSubstr(line,0,p),StringSubstr(line,p+1));
+     }
+   FileClose(h);
+  }
+
+void CfgSaveFile()
+  {
+   int h=FileOpen(CfgFile(),FILE_WRITE|FILE_TXT|FILE_ANSI|FILE_SHARE_READ|FILE_SHARE_WRITE);
+   if(h==INVALID_HANDLE)
+     {
+      YLog("Config file error ("+CfgFile()+") code "+IntegerToString(GetLastError()));
+      return;
+     }
+   for(int i=0;i<ArraySize(g_ckKey);i++) FileWriteString(h,g_ckKey[i]+"="+g_ckVal[i]+"\r\n");
+   FileClose(h);
+  }
+
+double CfgD(const string key,const double inp)
+  {
+   bool changed=(!CfgHas("in_"+key) || MathAbs(StringToDouble(CfgGet("in_"+key))-inp)>1e-9);
+   double eff=(changed || !CfgHas(key))?inp:StringToDouble(CfgGet(key));
+   CfgSet("in_"+key,DoubleToString(inp,8));
+   CfgSet(key,DoubleToString(eff,8));
+   return eff;
+  }
+
+bool CfgB(const string key,const bool inp)
+  {
+   bool changed=(!CfgHas("in_"+key) || (CfgGet("in_"+key)=="1")!=inp);
+   bool eff=(changed || !CfgHas(key))?inp:(CfgGet(key)=="1");
+   CfgSet("in_"+key,inp?"1":"0");
+   CfgSet(key,eff?"1":"0");
+   return eff;
+  }
+
+string CfgS(const string key,const string inp)
+  {
+   bool changed=(!CfgHas("in_"+key) || CfgGet("in_"+key)!=inp);
+   string eff=(changed || !CfgHas(key))?inp:CfgGet(key);
+   CfgSet("in_"+key,inp);
+   CfgSet(key,eff);
+   return eff;
+  }
+
+void CfgPutAll()
+  {
+   CfgSet("target",DoubleToString(g_target,8));
+   CfgSet("rr",DoubleToString(g_rr,8));
+   CfgSet("maxdev",DoubleToString((double)g_maxDev,8));
+   CfgSet("warn",DoubleToString((double)g_warn,8));
+   CfgSet("tgen",g_tgEn?"1":"0");
+   CfgSet("tgnot",g_tgNot?"1":"0");
+   CfgSet("tgctl",g_tgCtl?"1":"0");
+   CfgSet("tgtok",InpTgViaWorker?"":g_tgTok);
+   CfgSet("tgauth",g_tgAuth);
+   CfgSet("tgpub",g_tgPub);
+  }
+
+void CfgInit()
+  {
+   CfgLoadFile();
+   g_target=CfgD("target",InpTargetProfit);
+   g_rr=CfgD("rr",InpRiskReward);
+   g_maxDev=(int)CfgD("maxdev",(double)InpMaxDeviation);
+   g_warn=(int)CfgD("warn",(double)InpWarnSpread);
+   g_tgEn=CfgB("tgen",InpTgEnable);
+   g_tgNot=CfgB("tgnot",InpTgNotify);
+   g_tgCtl=CfgB("tgctl",InpTgControl);
+   g_tgTok=InpTgViaWorker?"":CfgS("tgtok","");
+   g_tgAuth=CfgS("tgauth","");
+   g_tgPub=CfgS("tgpub","");
+   //--- a corrupted/edited config file must never produce unusable parameters
+   if(!MathIsValidNumber(g_rr) || g_rr<=0.0 ||
+      !MathIsValidNumber(g_target) || g_target<0.0 || g_maxDev<0 || g_warn<0)
+     {
+      YLog("Config file values invalid - falling back to EA inputs.");
+      g_target=InpTargetProfit; g_rr=InpRiskReward;
+      g_maxDev=InpMaxDeviation; g_warn=InpWarnSpread;
+      g_tgEn=InpTgEnable; g_tgNot=InpTgNotify; g_tgCtl=InpTgControl;
+      CfgPutAll();
+     }
+   CfgSaveFile();
+  }
+
+void SaveState()
+  {
+   GS("STATE",(double)g_state);
+   GS("MODE",(double)g_mode);
+   GS("BL",g_buyLevel);
+   GS("SLV",g_sellLevel);
+   GS("IR",g_initRisk);
+   GS("CRK",g_curRisk);
+   GS("AL",g_accLoss);
+   GS("SEQ",(double)g_seq);
+   GS("TNO",(double)g_tradeNo);
+   GS("FRESH",g_fresh?1.0:0.0);
+   GS("LDEAL",(double)g_lastDeal);
+   GS("PBL",g_pendBuy);
+   GS("PSL",g_pendSell);
+   GS("LSLS",(double)g_lastSLSide);
+   GS("USERDEL",(g_mode==YM_BUY || g_mode==YM_SELL)?1.0:0.0);   // v2.14: single-side mode comes ONLY from a user "delete order"
+   GlobalVariablesFlush();
+  }
+
+void LoadState()
+  {
+   if(GHas("STATE"))
+     {
+      g_state=(ENUM_YT_STATE)(int)GV("STATE",0);
+      g_mode=(int)GV("MODE",0);
+      g_buyLevel=GV("BL",0);
+      g_sellLevel=GV("SLV",0);
+      g_initRisk=GV("IR",InpInitialRisk);
+      g_curRisk=GV("CRK",g_initRisk);
+      g_accLoss=GV("AL",0);
+      g_seq=(int)GV("SEQ",0);
+      g_tradeNo=(long)GV("TNO",0);
+      g_fresh=(GV("FRESH",0)>0.5);
+      g_lastDeal=(ulong)GV("LDEAL",0);
+      g_pendBuy=GV("PBL",0);
+      g_pendSell=GV("PSL",0);
+      g_lastSLSide=(int)GV("LSLS",0);
+      //--- v2.00 migration: a single-side re-entry saved by an older version becomes "both sides"
+      if((g_state==YT_ARMED || g_state==YT_WAITING_REENTRY) && (g_mode==YM_BUY || g_mode==YM_SELL) && GV("USERDEL",0)<0.5) g_mode=YM_BOTH;
+      g_stateRecovered=true;
+     }
+   else
+     {
+      g_state=YT_IDLE; g_mode=YM_NONE; g_buyLevel=0; g_sellLevel=0;
+      g_initRisk=InpInitialRisk; g_curRisk=InpInitialRisk; g_accLoss=0; g_seq=0;
+      g_tradeNo=(long)GV("TNO",0); g_fresh=false; g_lastDeal=0; g_pendBuy=0; g_pendSell=0; g_lastSLSide=0;
+      g_stateRecovered=false;
+     }
+   if(g_state==YT_BUY_ACTIVE || g_state==YT_SELL_ACTIVE) g_activeNoPosSince=0;
+  }
+
+void ResetRisk()
+  {
+   g_accLoss=0.0;
+   g_seq=0;
+   g_curRisk=g_initRisk;
+  }
+
+double NextRiskFor(const double L)
+  {
+   if(L<=1e-9) return g_initRisk;
+   return (L+g_target)/g_rr;
+  }
+
+//+------------------------------------------------------------------+
+//| Alerts                                                           |
+//+------------------------------------------------------------------+
+bool AlertThrottle(const string key,const int sec)
+  {
+   for(int i=0;i<ArraySize(g_alKey);i++)
+      if(g_alKey[i]==key)
+        {
+         if(TimeLocal()-g_alTime[i]<sec) return false;
+         g_alTime[i]=TimeLocal();
+         return true;
+        }
+   int n=ArraySize(g_alKey);
+   ArrayResize(g_alKey,n+1);
+   ArrayResize(g_alTime,n+1);
+   g_alKey[n]=key;
+   g_alTime[n]=TimeLocal();
+   return true;
+  }
+
+void ClearAlert(const string key)
+  {
+   for(int i=0;i<ArraySize(g_alKey);i++)
+      if(g_alKey[i]==key) g_alTime[i]=0;
+  }
+
+void RaiseAlert(const string key,const string msg,const bool popup=true,const bool tg=true)
+  {
+   if(!AlertThrottle(key,YT_ALERT_REARM_SEC)) return;
+   Print("[Yetimmm] ALERT: ",msg);
+   if(popup && !MQLInfoInteger(MQL_TESTER)) Alert("Yetimmm: ",msg);
+   if(tg) TgQueue("⚠️ "+msg);
+  }
+
+//+------------------------------------------------------------------+
+//| File logging (Orders log / Trades log)                           |
+//+------------------------------------------------------------------+
+string TradeFile() { return "Yetimmm_"+IntegerToString(g_magic)+"_Trades.csv"; }
+string OrderFile() { return "Yetimmm_"+IntegerToString(g_magic)+"_Orders.csv"; }
+
+void AppendLine(const string file,const string header,const string line)
+  {
+   int h=FileOpen(file,FILE_READ|FILE_WRITE|FILE_TXT|FILE_ANSI|FILE_SHARE_READ|FILE_SHARE_WRITE);
+   if(h==INVALID_HANDLE)
+     {
+      YLog("File error ("+file+") code "+IntegerToString(GetLastError()));
+      return;
+     }
+   if(FileSize(h)==0) FileWriteString(h,header+"\r\n");
+   FileSeek(h,0,SEEK_END);
+   FileWriteString(h,line+"\r\n");
+   FileFlush(h);
+   FileClose(h);
+  }
+
+string OTypeStr(const long t)
+  {
+   switch((int)t)
+     {
+      case ORDER_TYPE_BUY_STOP:  return "BUY_STOP";
+      case ORDER_TYPE_SELL_STOP: return "SELL_STOP";
+      case ORDER_TYPE_BUY:       return "BUY";
+      case ORDER_TYPE_SELL:      return "SELL";
+      case ORDER_TYPE_BUY_LIMIT: return "BUY_LIMIT";
+      case ORDER_TYPE_SELL_LIMIT:return "SELL_LIMIT";
+     }
+   return "OTHER";
+  }
+
+void LogOrder(const string ev,const long otype,const double price,const double lot,const ulong ticket,const uint rc,const string note)
+  {
+   string side="";
+   if(otype==ORDER_TYPE_BUY_STOP || otype==ORDER_TYPE_BUY) side="BUY";
+   else if(otype==ORDER_TYPE_SELL_STOP || otype==ORDER_TYPE_SELL) side="SELL";
+   string line=TimeToString(TimeCurrent(),TIME_DATE|TIME_SECONDS)+";"+ev+";"+side+";"+OTypeStr(otype)+";"+PX(price)+";"+LotS(lot)+";"+
+               UL(ticket)+";"+IntegerToString(g_magic)+";"+g_sym+";"+IntegerToString((int)rc)+";"+Clean(note);
+   AppendLine(OrderFile(),ORDER_HEADER,line);
+  }
+
+bool IsLoggedPos(const ulong pid)
+  {
+   for(int i=0;i<ArraySize(g_loggedPos);i++) if(g_loggedPos[i]==pid) return true;
+   return false;
+  }
+bool IsLoggedDeal(const ulong d)
+  {
+   if(d==0) return false;
+   for(int i=0;i<ArraySize(g_loggedDeal);i++) if(g_loggedDeal[i]==d) return true;
+   return false;
+  }
+void MarkLogged(const ulong pid,const ulong d)
+  {
+   int n=ArraySize(g_loggedPos); ArrayResize(g_loggedPos,n+1); g_loggedPos[n]=pid;
+   n=ArraySize(g_loggedDeal);    ArrayResize(g_loggedDeal,n+1); g_loggedDeal[n]=d;
+  }
+
+void StatsReset()
+  {
+   ZeroMemory(g_st);
+  }
+
+void StatsAdd(const double net,const double comm,const double swap,const string type,const double lot,const double risk,const string reason)
+  {
+   g_st.total++;
+   bool buy=(type=="BUY");
+   bool rej=(reason=="Deviation Reject");
+   if(buy) g_st.buys++; else g_st.sells++;
+   if(net>0.0)
+     {
+      g_st.wins++; g_st.totProfit+=net;
+      if(net>g_st.maxProfit) g_st.maxProfit=net;
+      if(buy) g_st.winBuy++; else g_st.winSell++;
+      if(!rej) g_st.streak=(g_st.streak>0)?g_st.streak+1:1;
+     }
+   else if(net<0.0)
+     {
+      g_st.losses++; g_st.totLoss+=MathAbs(net);
+      if(MathAbs(net)>g_st.maxLoss) g_st.maxLoss=MathAbs(net);
+      if(buy) g_st.loseBuy++; else g_st.loseSell++;
+      if(!rej) g_st.streak=(g_st.streak<0)?g_st.streak-1:-1;
+     }
+   g_st.net=g_st.totProfit-g_st.totLoss;
+   g_st.commission+=comm;
+   g_st.swap+=swap;
+   g_st.volume+=lot;
+   if(risk>g_st.highRisk) g_st.highRisk=risk;
+   if(lot>g_st.highLot) g_st.highLot=lot;
+   if(reason=="SL") g_st.consSL++; else if(!rej) g_st.consSL=0;
+   if(reason=="TP") g_st.consTP++; else if(!rej) g_st.consTP=0;
+   g_st.avgProfit=(g_st.wins>0)?g_st.totProfit/g_st.wins:0.0;
+   g_st.avgLoss=(g_st.losses>0)?g_st.totLoss/g_st.losses:0.0;
+   g_st.winRate=(g_st.total>0)?100.0*g_st.wins/g_st.total:0.0;
+  }
+
+//--- load the persistent trade log: fills the dedupe arrays and the statistics
+void LoadTradeLog()
+  {
+   ArrayResize(g_loggedPos,0);
+   ArrayResize(g_loggedDeal,0);
+   StatsReset();
+   int h=FileOpen(TradeFile(),FILE_READ|FILE_TXT|FILE_ANSI|FILE_SHARE_READ|FILE_SHARE_WRITE);
+   if(h==INVALID_HANDLE) return;
+   bool first=true;
+   while(!FileIsEnding(h))
+     {
+      string line=FileReadString(h);
+      if(StringLen(line)==0) continue;
+      if(first) { first=false; continue; }
+      string f[];
+      int c=StringSplit(line,';',f);
+      if(c<30) continue;
+      ulong pid=(ulong)StringToInteger(f[4]);
+      ulong dout=(ulong)StringToInteger(f[3]);
+      MarkLogged(pid,dout);
+      if(c>34 && StringFind(f[34],"TAINTED")>=0) continue;     // Netting-contaminated rows are not part of the statistics
+      StatsAdd(StringToDouble(f[18]),StringToDouble(f[16]),StringToDouble(f[17]),f[5],StringToDouble(f[11]),StringToDouble(f[12]),f[23]);
+     }
+   FileClose(h);
+  }
+
+int ReadTradeLines(string &lines[])
+  {
+   ArrayResize(lines,0);
+   int h=FileOpen(TradeFile(),FILE_READ|FILE_TXT|FILE_ANSI|FILE_SHARE_READ|FILE_SHARE_WRITE);
+   if(h==INVALID_HANDLE) return 0;
+   bool first=true;
+   while(!FileIsEnding(h))
+     {
+      string line=FileReadString(h);
+      if(StringLen(line)==0) continue;
+      if(first) { first=false; continue; }
+      int n=ArraySize(lines);
+      ArrayResize(lines,n+1);
+      lines[n]=line;
+     }
+   FileClose(h);
+   return ArraySize(lines);
+  }
+
+//+------------------------------------------------------------------+
+//| Symbol / price helpers                                           |
+//+------------------------------------------------------------------+
+//--- v2.00: Upper = Buy Entry + Sell SL, Lower = Sell Entry + Buy SL
+//--- SL distance = Upper - Lower. 0.0 when no valid pair of levels exists: a distance is never invented.
+double SLDist()
+  {
+   if(g_buyLevel>0.0 && g_sellLevel>0.0 && g_buyLevel>g_sellLevel) return g_buyLevel-g_sellLevel;
+   return 0.0;
+  }
+//--- 0.0 = no valid opposite level (callers treat it as "cannot compute")
+double SLPrice(const bool buy,const double entry)
+  {
+   if(buy  && g_sellLevel>0.0 && g_sellLevel<entry) return RoundTick(g_sellLevel);
+   if(!buy && g_buyLevel>0.0  && g_buyLevel>entry)  return RoundTick(g_buyLevel);
+   return 0.0;
+  }
+double TPPrice(const bool buy,const double entry)
+  {
+   double d=SLDist()*g_rr;
+   if(d<=0.0) return 0.0;
+   return RoundTick(buy?entry+d:entry-d);
+  }
+
+//--- Contract Size: cross-check + last-resort fallback for the loss-per-lot calculation
+bool ProfitCcyIsAccount()
+  {
+   return (SymbolInfoString(g_sym,SYMBOL_CURRENCY_PROFIT)==AccountInfoString(ACCOUNT_CURRENCY));
+  }
+
+void VerifyContract(const double dist,const double brokerPerLot)
+  {
+   if(g_contract<=0.0 || !ProfitCcyIsAccount() || dist<=0.0) return;
+   double expected=dist*g_contract;
+   if(MathAbs(brokerPerLot-expected)/expected>0.02 && !g_csWarned)
+     {
+      g_csWarned=true;
+      string m="Contract Size check: broker loss per lot "+D2(brokerPerLot)+" differs from SL distance x Contract Size ("+D2(dist)+" x "+DoubleToString(g_contract,2)+" = "+D2(expected)+
+               "). Lot sizing uses the broker value (OrderCalcProfit). Verify the symbol specification.";
+      YLog(m);
+      RaiseAlert("CSIZE",m,true,true);
+     }
+  }
+
+//--- loss of ONE lot between an explicit entry and an explicit SL (broker specifications)
+double PerLotLossSL(const bool buy,const double entry,const double sl)
+  {
+   if(sl<=0.0 || entry<=0.0 || MathAbs(entry-sl)<1e-12) return 0.0;
+   double profit=0.0;
+   ENUM_ORDER_TYPE ot=buy?ORDER_TYPE_BUY:ORDER_TYPE_SELL;
+   if(OrderCalcProfit(ot,g_sym,1.0,entry,sl,profit) && profit<0.0)
+     {
+      VerifyContract(MathAbs(entry-sl),-profit);
+      return -profit;
+     }
+   double tv=SymbolInfoDouble(g_sym,SYMBOL_TRADE_TICK_VALUE_LOSS);
+   if(tv<=0.0) tv=SymbolInfoDouble(g_sym,SYMBOL_TRADE_TICK_VALUE);
+   if(tv>0.0 && g_tick>0.0) return MathAbs(entry-sl)/g_tick*tv;
+   if(g_contract>0.0 && ProfitCcyIsAccount()) return MathAbs(entry-sl)*g_contract;
+   return 0.0;
+  }
+
+//--- stop-order sizing: entry = the level, SL = the opposite level
+double PerLotLoss(const bool buy,const double entry)
+  {
+   return PerLotLossSL(buy,entry,SLPrice(buy,entry));
+  }
+
+
+//+------------------------------------------------------------------+
+//| v2.23 BROKER / RISK ENGINE                                       |
+//| BrokerSpec (live) -> RiskCompute -> (OrderCheck) -> OrderSend.   |
+//| The EA is the authority; the Mini App only displays the result.  |
+//+------------------------------------------------------------------+
+struct SRiskResult
+  {
+   bool   valid;
+   bool   clamped;
+   string code;       // OK | RISK_BELOW_MIN_VOLUME | RISK_ABOVE_MAX_VOLUME | RISK_ABOVE_VOLUME_LIMIT | RISK_NO_MARGIN | RISK_NO_SPEC
+   string text;
+   string policy;
+   bool   buy;
+   double entry, sl;
+   double requested, perLot, rawVol, vol, minVol, maxVol, step, limit;
+   double effective, minRisk, maxRisk, margin;
+  };
+
+SRiskResult g_rk;
+
+string AccCcy() { return AccountInfoString(ACCOUNT_CURRENCY); }
+
+//--- volume already open + pending on the symbol in ONE direction (own pending orders are excluded: they are the ones being (re)placed).
+//--- only called when the broker sets SYMBOL_VOLUME_LIMIT > 0
+double DirVolume(const bool buy)
+  {
+   double v=0.0;
+   for(int i=PositionsTotal()-1;i>=0;i--)
+     {
+      ulong t=PositionGetTicket(i);
+      if(t==0) continue;
+      if(PositionGetString(POSITION_SYMBOL)!=g_sym) continue;
+      bool pb=(PositionGetInteger(POSITION_TYPE)==POSITION_TYPE_BUY);
+      if(pb==buy) v+=PositionGetDouble(POSITION_VOLUME);
+     }
+   for(int i=OrdersTotal()-1;i>=0;i--)
+     {
+      ulong t=OrderGetTicket(i);
+      if(t==0) continue;
+      if(OrderGetString(ORDER_SYMBOL)!=g_sym) continue;
+      if(OrderGetInteger(ORDER_MAGIC)==g_magic) continue;
+      long ty=OrderGetInteger(ORDER_TYPE);
+      bool ob=(ty==ORDER_TYPE_BUY || ty==ORDER_TYPE_BUY_STOP || ty==ORDER_TYPE_BUY_LIMIT || ty==ORDER_TYPE_BUY_STOP_LIMIT);
+      bool os=(ty==ORDER_TYPE_SELL || ty==ORDER_TYPE_SELL_STOP || ty==ORDER_TYPE_SELL_LIMIT || ty==ORDER_TYPE_SELL_STOP_LIMIT);
+      if((ob && buy) || (os && !buy)) v+=OrderGetDouble(ORDER_VOLUME_CURRENT);
+     }
+   return v;
+  }
+
+//--- Requested Risk -> executable volume, with the explicit policy. Never throws a "fatal": it explains WHY no volume exists.
+bool RiskCompute(const double risk,const bool buy,const double entry,const double sl,SRiskResult &r)
+  {
+   r.valid=false; r.clamped=false; r.code="OK"; r.text=""; r.buy=buy; r.entry=entry; r.sl=sl;
+   r.policy=(InpRiskPolicy==YT_RISK_CLAMP_MIN)?"CLAMP_TO_MIN":"STRICT";
+   r.requested=risk; r.perLot=0.0; r.rawVol=0.0; r.vol=0.0; r.effective=0.0; r.minRisk=0.0; r.maxRisk=0.0; r.margin=0.0;
+   double vmin=SymbolInfoDouble(g_sym,SYMBOL_VOLUME_MIN);
+   double vmax=SymbolInfoDouble(g_sym,SYMBOL_VOLUME_MAX);
+   double step=SymbolInfoDouble(g_sym,SYMBOL_VOLUME_STEP);
+   double lim =SymbolInfoDouble(g_sym,SYMBOL_VOLUME_LIMIT);
+   if(step<=0.0) step=(vmin>0.0)?vmin:0.01;
+   if(vmin<=0.0) vmin=step;
+   r.minVol=vmin; r.maxVol=vmax; r.step=step; r.limit=lim;
+   string ccy=AccCcy();
+   double perLot=PerLotLossSL(buy,entry,sl);
+   if(perLot<=0.0) { r.code="RISK_NO_SPEC"; r.text="Cannot determine the loss per lot from the broker specifications."; return false; }
+   r.perLot=perLot; r.minRisk=vmin*perLot; r.maxRisk=vmax*perLot;
+   double raw=risk/perLot;
+   r.rawVol=raw;
+   double lot;
+   if(raw<vmin-1e-9)
+     {
+      if(InpRiskPolicy==YT_RISK_CLAMP_MIN) { lot=vmin; r.clamped=true; }
+      else
+        {
+         r.code="RISK_BELOW_MIN_VOLUME";
+         r.text="Requested risk "+D2(risk)+" "+ccy+" is below the minimum executable risk "+D2(r.minRisk)+" "+ccy+" (min lot "+DoubleToString(vmin,g_lotDigits)+"). WAITING_VOLUME: raise the Risk, widen the levels or enable CLAMP_TO_MIN.";
+         return false;
+        }
+     }
+   else lot=vmin+MathFloor((raw-vmin)/step+1e-7)*step;           // rounded DOWN to the step: real risk <= requested
+   lot=NormalizeDouble(lot,g_lotDigits);
+   if(lot>vmax+1e-9)
+     {
+      r.code="RISK_ABOVE_MAX_VOLUME";
+      r.text="Required volume "+DoubleToString(lot,g_lotDigits)+" exceeds the broker maximum "+DoubleToString(vmax,g_lotDigits)+". WAITING_VOLUME.";
+      return false;
+     }
+   if(lim>0.0)
+     {
+      double ex=DirVolume(buy);
+      if(ex+lot>lim+1e-9)
+        {
+         r.code="RISK_ABOVE_VOLUME_LIMIT";
+         r.text="Volume limit: open+pending "+DoubleToString(ex,g_lotDigits)+" + new "+DoubleToString(lot,g_lotDigits)+" > broker limit "+DoubleToString(lim,g_lotDigits)+". WAITING_VOLUME.";
+         return false;
+        }
+     }
+   r.vol=lot;
+   r.effective=lot*perLot;
+   double margin=0.0;
+   ENUM_ORDER_TYPE ot=buy?ORDER_TYPE_BUY:ORDER_TYPE_SELL;
+   if(OrderCalcMargin(ot,g_sym,lot,entry,margin))
+     {
+      r.margin=margin;
+      if(margin>AccountInfoDouble(ACCOUNT_MARGIN_FREE))
+        {
+         r.code="RISK_NO_MARGIN";
+         r.text="Not enough free margin: required "+D2(margin)+" "+ccy+", free "+D2(AccountInfoDouble(ACCOUNT_MARGIN_FREE))+" "+ccy+". WAITING_MARGIN.";
+         return false;
+        }
+     }
+   r.valid=true;
+   if(r.clamped)
+      r.text="Minimum lot used: Requested Risk "+D2(risk)+" "+ccy+" -> Effective Risk "+D2(r.effective)+" "+ccy+" (lot "+DoubleToString(lot,g_lotDigits)+")";
+   return true;
+  }
+
+//--- machine code -> WAITING_* state shown to the user (a volume/margin condition is a WAIT, never a fatal error)
+string WaitCodeOf(const string rc)
+  {
+   if(rc=="RISK_BELOW_MIN_VOLUME" || rc=="RISK_ABOVE_MAX_VOLUME" || rc=="RISK_ABOVE_VOLUME_LIMIT") return "WAITING_VOLUME";
+   if(rc=="RISK_NO_MARGIN") return "WAITING_MARGIN";
+   if(rc=="RISK_NO_SPEC") return "WAITING_BROKER";
+   return "";
+  }
+
+//--- live spread (Ask-Bid), not the possibly stale SYMBOL_SPREAD field
+double LiveSpread()
+  {
+   MqlTick t;
+   if(SymbolInfoTick(g_sym,t) && t.ask>0.0 && t.bid>0.0 && t.ask>=t.bid) return t.ask-t.bid;
+   return (double)SymbolInfoInteger(g_sym,SYMBOL_SPREAD)*g_point;
+  }
+
+bool SpreadTooWide(string &why)
+  {
+   why="";
+   if(InpMaxSpread<=0) return false;
+   double sp=LiveSpread()/g_point;
+   if(sp>(double)InpMaxSpread) { why="WAITING_SPREAD: spread "+DoubleToString(sp,0)+" pts > Max Spread "+IntegerToString(InpMaxSpread)+" pts (new orders wait; open trades are untouched)"; return true; }
+   return false;
+  }
+
+//--- v2.24 Recovery Plan Guard: caps the risk-multiplication cycle (report recommendations 3 and 4).
+//    It blocks ONLY the placement of NEW orders / a new market reversal. An open trade is never touched or closed.
+bool RecoveryGuardBlocks(string &why,string &code)
+  {
+   why=""; code="";
+   if(InpMaxSeqLosses>0 && g_accLoss>1e-9 && g_seq>=InpMaxSeqLosses)
+     {
+      code="WAITING_SEQCAP";
+      why="WAITING_SEQCAP: "+IntegerToString(g_seq)+" consecutive losses reached the cap ("+IntegerToString(InpMaxSeqLosses)+"). Accumulated loss "+D2(g_accLoss)+" "+AccCcy()+". New orders are paused - start a New Cycle or raise the cap.";
+      return true;
+     }
+   if(InpMaxRiskPctBal>0.0)
+     {
+      double bal=AccountInfoDouble(ACCOUNT_BALANCE);
+      double cap=(bal>0.0)?bal*InpMaxRiskPctBal/100.0:0.0;
+      if(g_curRisk>cap+1e-9)
+        {
+         code="WAITING_RISKCAP";
+         why="WAITING_RISKCAP: the next planned risk "+D2(g_curRisk)+" "+AccCcy()+" is above "+DoubleToString(InpMaxRiskPctBal,2)+"% of the balance ("+D2(cap)+" "+AccCcy()+"). New orders are paused - start a New Cycle, raise the cap or add funds.";
+         return true;
+        }
+     }
+   return false;
+  }
+
+//--- exact plan (same recurrence as NextRiskFor: risk = (accLoss + target) / RR; with target = RR = 20 the growth is exactly 5% per loss)
+void PrintRecoveryPlan()
+  {
+   if(!InpPlanLog) return;
+   double L=0.0;
+   string ccy=AccCcy();
+   YLog("Recovery plan | start risk "+D2(g_initRisk)+" | target "+D2(g_target)+" | RR "+D2(g_rr)+" | cap seq "+(InpMaxSeqLosses>0?IntegerToString(InpMaxSeqLosses):"off")+" | cap risk% "+(InpMaxRiskPctBal>0.0?DoubleToString(InpMaxRiskPctBal,2):"off")+" | balance "+D2(AccountInfoDouble(ACCOUNT_BALANCE))+" "+ccy);
+   int last=(InpMaxSeqLosses>0)?InpMaxSeqLosses:20;
+   for(int n=1;n<=last;n++)
+     {
+      double r=(n==1)?g_initRisk:NextRiskFor(L);
+      L+=r;
+      if(n<=5 || n==10 || n==15 || n==20 || n==last)
+         YLog("  loss #"+IntegerToString(n)+": risk "+D2(r)+" | TP profit if it wins "+D2(r*g_rr)+" | cumulative loss "+D2(L));
+     }
+   YLog("  balance needed to survive "+IntegerToString(last)+" consecutive losses: >= "+D2(L)+" "+ccy+" (before spread/commission/margin).");
+  }
+
+//--- minimum width of a Buy Stop / Sell Stop PAIR at the live market: both must sit outside their Stops Level
+double PairMinWidth()
+  {
+   double sl=(double)SymbolInfoInteger(g_sym,SYMBOL_TRADE_STOPS_LEVEL)*g_point;
+   return 2.0*sl+LiveSpread();
+  }
+
+//--- pending order lifetime allowed by the symbol (GTC when permitted)
+ENUM_ORDER_TYPE_TIME PendingTimeType(datetime &expir)
+  {
+   expir=0;
+   long m=SymbolInfoInteger(g_sym,SYMBOL_EXPIRATION_MODE);
+   if((m&SYMBOL_EXPIRATION_GTC)!=0) return ORDER_TIME_GTC;
+   if((m&SYMBOL_EXPIRATION_DAY)!=0) return ORDER_TIME_DAY;
+   if((m&SYMBOL_EXPIRATION_SPECIFIED)!=0) { expir=TimeCurrent()+7*86400; return ORDER_TIME_SPECIFIED; }
+   if((m&SYMBOL_EXPIRATION_SPECIFIED_DAY)!=0) { expir=TimeCurrent()+7*86400; return ORDER_TIME_SPECIFIED_DAY; }
+   return ORDER_TIME_GTC;
+  }
+
+//--- server pre-flight of a pending order. Returns true = send it. Only well-understood refusals stop the send (everything else is left to OrderSend).
+//--- out: code = WAITING_* , why = text, coolMs = retry delay
+bool PendingOrderCheck(const bool buy,const double lot,const double level,const double slp,const double tpp,string &code,string &why,ulong &coolMs)
+  {
+   code=""; why=""; coolMs=0;
+   if(!InpOrderCheck || MQLInfoInteger(MQL_TESTER)) return true;
+   MqlTradeRequest rq; MqlTradeCheckResult ck;
+   ZeroMemory(rq); ZeroMemory(ck);
+   datetime ex; ENUM_ORDER_TYPE_TIME tt=PendingTimeType(ex);
+   rq.action=TRADE_ACTION_PENDING; rq.symbol=g_sym; rq.volume=lot;
+   rq.type=buy?ORDER_TYPE_BUY_STOP:ORDER_TYPE_SELL_STOP;
+   rq.price=level; rq.sl=slp; rq.tp=tpp; rq.type_time=tt; rq.expiration=ex;
+   rq.type_filling=ORDER_FILLING_RETURN; rq.magic=(ulong)g_magic; rq.comment="Yetimmm"; rq.deviation=(ulong)g_maxDev;
+   ResetLastError();
+   bool okc=OrderCheck(rq,ck);
+   uint rc=ck.retcode;
+   if(okc && (rc==0 || rc==TRADE_RETCODE_DONE || rc==TRADE_RETCODE_PLACED)) return true;
+   YLog("OrderCheck "+(buy?"BUY STOP":"SELL STOP")+" "+PX(level)+" lot "+DoubleToString(lot,g_lotDigits)+" -> retcode "+IntegerToString((int)rc)+" ("+ck.comment+")");
+   if(rc==TRADE_RETCODE_INVALID_VOLUME) { code="WAITING_VOLUME"; why="The broker refuses this volume right now (min "+DoubleToString(SymbolInfoDouble(g_sym,SYMBOL_VOLUME_MIN),g_lotDigits)+", step "+DoubleToString(SymbolInfoDouble(g_sym,SYMBOL_VOLUME_STEP),g_lotDigits)+")."; coolMs=30000; return false; }
+   if(rc==TRADE_RETCODE_NO_MONEY) { code="WAITING_MARGIN"; why="Not enough margin according to the server."; coolMs=15000; return false; }
+   if(rc==TRADE_RETCODE_MARKET_CLOSED) { code="WAITING_MARKET"; why="Market is closed."; coolMs=30000; return false; }
+   if(rc==TRADE_RETCODE_TRADE_DISABLED) { code="WAITING_BROKER"; why="Trading is currently disabled by the server."; coolMs=30000; return false; }
+   if(rc==TRADE_RETCODE_INVALID_STOPS || rc==TRADE_RETCODE_INVALID_PRICE) { code="WAITING_PRICE"; why="The server refuses the price/stops at this moment - waiting for the market."; coolMs=3000; return false; }
+   return true;     // unknown / filling-mode / transport code: the real OrderSend decides
+  }
+
+//--- Risk Amount -> Lot, using real broker specifications (explicit entry AND explicit SL)
+bool CalcLotSL(const double risk,const bool buy,const double entry,const double sl,double &lot,double &estLoss,string &err)
+  {
+   lot=0.0; estLoss=0.0; err="";
+   SRiskResult r;
+   bool ok=RiskCompute(risk,buy,entry,sl,r);
+   g_rk=r;
+   g_riskCode=r.code;
+   if(!ok) { err=r.text; return false; }
+   lot=r.vol;
+   estLoss=r.effective;
+   return true;
+  }
+
+//--- stop-order sizing: SL = the opposite level
+bool CalcLot(const double risk,const bool buy,const double entry,double &lot,double &estLoss,string &err)
+  {
+   return CalcLotSL(risk,buy,entry,SLPrice(buy,entry),lot,estLoss,err);
+  }
+
+//--- PRE-FLIGHT of a MARKET order against the REAL prices (the same discipline PlacementOk applies to pending orders):
+//--- trading allowed for the direction, SL and TP present, on the correct side of the market, outside the broker Stops Level
+bool MarketPreflight(const bool buy,const double sl,const double tp,string &why)
+  {
+   why="";
+   MqlTick t;
+   if(!SymbolInfoTick(g_sym,t) || t.ask<=0.0 || t.bid<=0.0) { why="No market prices"; return false; }
+   long tm=SymbolInfoInteger(g_sym,SYMBOL_TRADE_MODE);
+   if(tm==SYMBOL_TRADE_MODE_DISABLED || tm==SYMBOL_TRADE_MODE_CLOSEONLY) { why="Trading is disabled for this symbol"; return false; }
+   if(tm==SYMBOL_TRADE_MODE_LONGONLY && !buy)  { why="Only long trades are allowed on this symbol"; return false; }
+   if(tm==SYMBOL_TRADE_MODE_SHORTONLY && buy)  { why="Only short trades are allowed on this symbol"; return false; }
+   if((SymbolInfoInteger(g_sym,SYMBOL_ORDER_MODE) & SYMBOL_ORDER_MARKET)==0) { why="Market orders are not allowed on this symbol"; return false; }
+   if(!MathIsValidNumber(sl) || !MathIsValidNumber(tp) || sl<=0.0 || tp<=0.0) { why="SL/TP could not be computed"; return false; }
+   double stopsLvl=(double)SymbolInfoInteger(g_sym,SYMBOL_TRADE_STOPS_LEVEL)*g_point;
+   if(buy)
+     {
+      if(sl>=t.bid)                          why="SL "+PX(sl)+" is not below the Bid "+PX(t.bid);
+      else if(t.bid-sl<stopsLvl-1e-9)        why="SL "+PX(sl)+" is inside the Stops Level ("+PX(stopsLvl)+")";
+      else if(tp<=t.bid)                     why="TP "+PX(tp)+" is not above the Bid "+PX(t.bid);
+      else if(tp-t.bid<stopsLvl-1e-9)        why="TP "+PX(tp)+" is inside the Stops Level ("+PX(stopsLvl)+")";
+     }
+   else
+     {
+      if(sl<=t.ask)                          why="SL "+PX(sl)+" is not above the Ask "+PX(t.ask);
+      else if(sl-t.ask<stopsLvl-1e-9)        why="SL "+PX(sl)+" is inside the Stops Level ("+PX(stopsLvl)+")";
+      else if(tp>=t.ask)                     why="TP "+PX(tp)+" is not below the Ask "+PX(t.ask);
+      else if(t.ask-tp<stopsLvl-1e-9)        why="TP "+PX(tp)+" is inside the Stops Level ("+PX(stopsLvl)+")";
+     }
+   return (why=="");
+  }
+
+string ValidateRisk(const double r)
+  {
+   if(!MathIsValidNumber(r) || r<=0.0) return "Initial Risk must be greater than zero.";
+   return "";
+  }
+
+string ValidateLevels(const double buy,const double sell)
+  {
+   if(!MathIsValidNumber(buy) || !MathIsValidNumber(sell) || buy<=0.0 || sell<=0.0) return "Prices must be positive numbers.";
+   if(MathAbs(buy-sell)<(g_tick>0.0?g_tick/2.0:g_point/2.0)) return "Buy Stop and Sell Stop must not be equal.";
+   if(buy<sell) return "Buy Stop must be higher than Sell Stop.";
+   if(MathAbs(buy-NP(buy))>1e-9 || MathAbs(sell-NP(sell))>1e-9) return "Prices have more decimals than the symbol allows.";
+   if(g_tick>0.0)
+     {
+      double q1=buy/g_tick, q2=sell/g_tick;
+      if(MathAbs(q1-MathRound(q1))>1e-3 || MathAbs(q2-MathRound(q2))>1e-3) return "Prices must be multiples of the tick size ("+DoubleToString(g_tick,g_digits)+").";
+     }
+   if(buy-sell<InpMinLevelGap-1e-9) return "Distance between levels is below the minimum gap ("+D2(InpMinLevelGap)+").";
+   long tm=SymbolInfoInteger(g_sym,SYMBOL_TRADE_MODE);
+   if(tm==SYMBOL_TRADE_MODE_DISABLED || tm==SYMBOL_TRADE_MODE_CLOSEONLY) return "Trading is disabled for this symbol.";
+   double stopsLvl=(double)SymbolInfoInteger(g_sym,SYMBOL_TRADE_STOPS_LEVEL)*g_point;
+   if(buy-sell<stopsLvl-1e-9) return "Distance between the levels (= Stop Loss) is below the broker minimum stops level.";
+   if(InpEntryMode==ENTRY_PENDING)
+     {
+      double need=PairMinWidth();
+      if(buy-sell<need-1e-9)
+         return "PAIR_NOT_EXECUTABLE: a Buy Stop and a Sell Stop can never exist together at this width. Minimum width now = "+DoubleToString(need,g_digits)+" (2 x Stops Level + live spread).";
+     }
+   return "";
+  }
+
+//+------------------------------------------------------------------+
+//| Own positions / orders                                           |
+//+------------------------------------------------------------------+
+int OwnPositions(ulong &tk[])
+  {
+   ArrayResize(tk,0);
+   int n=PositionsTotal();
+   for(int i=0;i<n;i++)
+     {
+      ulong t=PositionGetTicket(i);
+      if(t==0) continue;
+      if(PositionGetString(POSITION_SYMBOL)!=g_sym) continue;
+      if((long)PositionGetInteger(POSITION_MAGIC)!=g_magic) continue;
+      int k=ArraySize(tk);
+      ArrayResize(tk,k+1);
+      tk[k]=t;
+     }
+   return ArraySize(tk);
+  }
+
+int OwnOrders(ulong &tk[])
+  {
+   ArrayResize(tk,0);
+   int n=OrdersTotal();
+   for(int i=0;i<n;i++)
+     {
+      ulong t=OrderGetTicket(i);
+      if(t==0) continue;
+      if(OrderGetString(ORDER_SYMBOL)!=g_sym) continue;
+      if((long)OrderGetInteger(ORDER_MAGIC)!=g_magic) continue;
+      int k=ArraySize(tk);
+      ArrayResize(tk,k+1);
+      tk[k]=t;
+     }
+   return ArraySize(tk);
+  }
+
+//--- find a live position by its identifier and leave it selected
+bool FindLive(const ulong pid,ulong &ticket)
+  {
+   int n=PositionsTotal();
+   for(int i=0;i<n;i++)
+     {
+      ulong t=PositionGetTicket(i);
+      if(t==0) continue;
+      if((ulong)PositionGetInteger(POSITION_IDENTIFIER)==pid) { ticket=t; return true; }
+     }
+   return false;
+  }
+
+//+------------------------------------------------------------------+
+//| Real-ticket tracking: ticket + last snapshot verified on server  |
+//+------------------------------------------------------------------+
+void TrkStore(const int s)
+  {
+   string i=IntegerToString(s);
+   GS("TKT"+i,(double)g_stopTicket[s]);
+   GS("TKP"+i,g_snapPx[s]);
+   GS("TKS"+i,g_snapSL[s]);
+   GS("TKQ"+i,g_snapTP[s]);
+   GS("TKV"+i,g_snapVol[s]);
+  }
+
+void TrkLoad()
+  {
+   for(int s=0;s<2;s++)
+     {
+      string i=IntegerToString(s);
+      g_stopTicket[s]=(ulong)GV("TKT"+i,0.0);
+      g_snapPx[s]=GV("TKP"+i,0.0);
+      g_snapSL[s]=GV("TKS"+i,0.0);
+      g_snapTP[s]=GV("TKQ"+i,0.0);
+      g_snapVol[s]=GV("TKV"+i,0.0);
+     }
+  }
+
+void TrkDrop(const int s)
+  {
+   g_stopTicket[s]=0;
+   g_snapPx[s]=0.0; g_snapSL[s]=0.0; g_snapTP[s]=0.0; g_snapVol[s]=0.0;
+   g_missMs[s]=0;
+   TrkStore(s);
+  }
+
+void TrkDropTicket(const ulong ticket)
+  {
+   for(int s=0;s<2;s++)
+      if(g_stopTicket[s]==ticket) TrkDrop(s);
+  }
+
+//--- the baseline = what the server REALLY holds for this ticket right now
+bool TrkTake(const bool buy,const ulong ticket)
+  {
+   if(ticket==0 || !OrderSelect(ticket)) return false;
+   int s=buy?0:1;
+   g_stopTicket[s]=ticket;
+   g_snapPx[s]=OrderGetDouble(ORDER_PRICE_OPEN);
+   g_snapSL[s]=OrderGetDouble(ORDER_SL);
+   g_snapTP[s]=OrderGetDouble(ORDER_TP);
+   g_snapVol[s]=OrderGetDouble(ORDER_VOLUME_CURRENT);
+   g_missMs[s]=0;
+   TrkStore(s);
+   return true;
+  }
+
+//--- outside Armed states nothing is tracked or held any more
+void TrkPrune()
+  {
+   for(int s=0;s<2;s++)
+     {
+      g_hold[s]=false;
+      g_missMs[s]=0;
+      if(g_stopTicket[s]!=0 && !OrderSelect(g_stopTicket[s])) TrkDrop(s);
+     }
+  }
+
+bool g_delFilled=false;   // set by DeleteOrder when the order was NOT deleted because MT5 filled it
+
+bool DeleteOrder(const ulong ticket,const string reason)
+  {
+   g_delFilled=false;
+   double price=0.0,vol=0.0; long type=-1;
+   if(OrderSelect(ticket))
+     {
+      price=OrderGetDouble(ORDER_PRICE_OPEN);
+      vol=OrderGetDouble(ORDER_VOLUME_CURRENT);
+      type=OrderGetInteger(ORDER_TYPE);
+     }
+   bool r=g_trade.OrderDelete(ticket);
+   uint rc=g_trade.ResultRetcode();
+   bool ok=(r && (rc==TRADE_RETCODE_DONE || rc==TRADE_RETCODE_PLACED));
+   if(ok)
+     {
+      //--- a successful call is not enough: the order must really be gone from the server
+      for(int w=0;w<6 && OrderSelect(ticket);w++) Sleep(60);
+      if(OrderSelect(ticket)) ok=false;
+     }
+   string ev=ok?"DELETED":"DELETE_FAILED";
+   string why=reason;
+   if(!ok && !OrderSelect(ticket))
+     {
+      //--- the ticket vanished although our delete did not succeed: a vanished order is NOT automatically a deleted order
+      bool inH=false;
+      for(int w=0;w<5 && !(inH=HistoryOrderSelect(ticket));w++) Sleep(60);
+      long hs=inH?HistoryOrderGetInteger(ticket,ORDER_STATE):-1;
+      if(inH && (hs==ORDER_STATE_FILLED || hs==ORDER_STATE_PARTIAL))
+        {
+         g_delFilled=true;
+         TrkDropTicket(ticket);
+         LogOrder("FILLED_BEFORE_DELETE",type,price,vol,ticket,rc,reason+" | order was FILLED by MT5, a position exists");
+         YLog("Order #"+UL(ticket)+" was FILLED before it could be deleted - NOT reported as deleted ("+reason+")");
+         g_dirty=true;
+         return false;
+        }
+      ok=true;
+      if(inH && hs==ORDER_STATE_EXPIRED)       { ev="EXPIRED";  why=reason+" | expired on the server"; }
+      else if(inH && hs==ORDER_STATE_CANCELED) { ev="DELETED";  why=reason+" | cancelled (confirmed by history)"; }
+      else if(!inH)                            { ev="DELETED_UNCONFIRMED"; why=reason+" | gone from the server, history not available yet"; }
+     }
+   if(ok) TrkDropTicket(ticket);
+   LogOrder(ev,type,price,vol,ticket,rc,why);
+   YLog((ok?"Order "+ev+" #":"Order Delete FAILED #")+UL(ticket)+" ("+why+")");
+   return ok;
+  }
+
+//+------------------------------------------------------------------+
+//| Desired State / Actual State synchronisation                     |
+//| DESIRED = what the bot wants on the server (level, SL, TP, lot)  |
+//| ACTUAL  = what the server really holds                           |
+//| Reconcile compares both per side and sends the smallest request: |
+//| KEEP / MODIFY (same ticket) / CREATE / REMOVE                    |
+//+------------------------------------------------------------------+
+int SideIdx(const bool buy) { return buy?0:1; }
+string SideName(const bool buy) { return buy?"BUY STOP":"SELL STOP"; }
+
+string SyncText(const int st)
+  {
+   switch(st)
+     {
+      case YS_SYNCED:   return "SYNCED";
+      case YS_PLACED:   return "PLACED";
+      case YS_UPDATING: return "MODIFYING...";
+      case YS_CREATING: return "PLACING...";
+      case YS_REMOVING: return "REMOVING...";
+      case YS_REMOVED:  return "REMOVED";
+      case YS_FILLED:   return "FILLED";
+      case YS_MISSING:  return "MISSING";
+      case YS_EXTERNAL: return "EXTERNAL CHANGE";
+      case YS_FAILED:   return "FAILED";
+      case YS_WAITING:  return "NOT PLACED";
+     }
+   return "IDLE";
+  }
+
+color SyncColor(const int st)
+  {
+   switch(st)
+     {
+      case YS_SYNCED:   return clrLime;
+      case YS_PLACED:   return clrSpringGreen;
+      case YS_UPDATING: return clrDeepSkyBlue;
+      case YS_CREATING: return clrDeepSkyBlue;
+      case YS_REMOVING: return clrOrange;
+      case YS_REMOVED:  return clrOrange;
+      case YS_FILLED:   return clrAqua;
+      case YS_MISSING:  return clrTomato;
+      case YS_EXTERNAL: return clrGold;
+      case YS_FAILED:   return clrTomato;
+      case YS_WAITING:  return clrGold;
+     }
+   return clrSilver;
+  }
+
+void SetSync(const bool buy,const int st,const string msg="")
+  {
+   int s=SideIdx(buy);
+   g_sync[s]=st;
+   g_syncMsg[s]=msg;
+  }
+
+void PanelMsg(const string txt,const color c=clrSilver)
+  {
+   g_uiMsg=txt;
+   g_uiMsgCol=c;
+  }
+
+//--- is a pending order wanted on this side right now, and at which level?
+bool SideDesired(const bool buy,double &level)
+  {
+   level=buy?g_buyLevel:g_sellLevel;
+   if(g_state!=YT_ARMED && g_state!=YT_WAITING_REENTRY) return false;
+   if(g_mode==YM_NONE) return false;
+   bool need=buy?(g_mode==YM_BOTH || g_mode==YM_BUY):(g_mode==YM_BOTH || g_mode==YM_SELL);
+   return (need && level>0.0);
+  }
+
+//--- the real pending order of this side on the server (first match)
+//--- THE canonical ticket of a side (single source of truth for panel AND reconcile):
+//--- 1) the tracked ticket, 2) an order at the desired price, 3) the lowest ticket (deterministic)
+ulong CanonicalTicket(const bool buy,const double level)
+  {
+   int s=SideIdx(buy);
+   long want=buy?(long)ORDER_TYPE_BUY_STOP:(long)ORDER_TYPE_SELL_STOP;
+   ulong tk=g_stopTicket[s];
+   if(tk!=0 && OrderSelect(tk) && OrderGetInteger(ORDER_TYPE)==want &&
+      OrderGetString(ORDER_SYMBOL)==g_sym && (long)OrderGetInteger(ORDER_MAGIC)==g_magic) return tk;
+   ulong od[];
+   int n=OwnOrders(od);
+   ulong best=0; bool bestExact=false;
+   for(int i=0;i<n;i++)
+     {
+      if(!OrderSelect(od[i])) continue;
+      if(OrderGetInteger(ORDER_TYPE)!=want) continue;
+      bool ex=(level>0.0 && PriceEq(OrderGetDouble(ORDER_PRICE_OPEN),level));
+      if(best==0 || (ex && !bestExact) || (ex==bestExact && od[i]<best)) { best=od[i]; bestExact=ex; }
+     }
+   return best;
+  }
+
+bool SideActual(const bool buy,ulong &ticket,double &price)
+  {
+   ticket=0; price=0.0;
+   ulong t=CanonicalTicket(buy,buy?g_buyLevel:g_sellLevel);
+   if(t==0 || !OrderSelect(t)) return false;
+   ticket=t;
+   price=OrderGetDouble(ORDER_PRICE_OPEN);
+   return true;
+  }
+
+//--- status for the panel: SYNCED is only shown when the server really holds the desired order
+int SideStatusShown(const bool buy)
+  {
+   int s=SideIdx(buy);
+   double lvl;
+   ulong tk; double ap;
+   bool have=SideActual(buy,tk,ap);
+   if(!SideDesired(buy,lvl))
+     {
+      if(!have)
+        {
+         int ls=g_sync[s];
+         return (ls==YS_FILLED || ls==YS_REMOVED)?ls:YS_IDLE;
+        }
+      return (g_sync[s]==YS_FAILED)?YS_FAILED:YS_REMOVING;
+     }
+   int st=g_sync[s];
+   if(st==YS_IDLE) return YS_WAITING;
+   if(st==YS_SYNCED || st==YS_PLACED)
+     {
+      if(!have) return YS_CREATING;
+      if(!PriceEq(ap,lvl)) return YS_UPDATING;
+     }
+   return st;
+  }
+
+string SyncSummary()
+  {
+   string s="";
+   for(int k=0;k<2;k++)
+     {
+      bool b=(k==0);
+      double l;
+      if(!SideDesired(b,l)) continue;
+      if(s!="") s+=" | ";
+      int st=SideStatusShown(b);
+      ulong stk; double sap;
+      s+=(b?"BUY ":"SELL ")+PX(l)+" "+SyncText(st);
+      if(SideActual(b,stk,sap)) s+=" #"+UL(stk);
+      if((st==YS_FAILED || st==YS_WAITING || st==YS_MISSING || st==YS_EXTERNAL) && StringLen(g_syncMsg[k])>0) s+=" ("+g_syncMsg[k]+")";
+     }
+   if(s=="") s="no pending order desired";
+   return s;
+  }
+
+//--- a user action (APPLY / START) always gets a fresh attempt
+void ResetSyncBackoff()
+  {
+   for(int k=0;k<2;k++)
+     {
+      g_retryMs[k]=0; g_failCnt[k]=0; g_failLvl[k]=0.0; g_unconf[k]=false;
+      g_hold[k]=false; g_missMs[k]=0; g_guardMs[k]=0;      // a user action releases every hold
+     }
+   g_nextDelMs=0;
+  }
+
+bool TradingAllowedNow(string &why)
+  {
+   why="";
+   if(!g_connected) why="No connection to the trade server";
+   else if(!TerminalInfoInteger(TERMINAL_TRADE_ALLOWED) || !MQLInfoInteger(MQL_TRADE_ALLOWED)) why="AutoTrading is disabled";
+   else if(!AccountInfoInteger(ACCOUNT_TRADE_ALLOWED) || !AccountInfoInteger(ACCOUNT_TRADE_EXPERT)) why="Trading not allowed on this account";
+   return (why=="");
+  }
+
+//--- v2.16: classification of a stop-order price.
+//---   0 = can be placed right now
+//---   1 = the level itself is fine, but the MARKET is on the wrong side of it / too close (Stops Level): the order WAITS for the price
+//---   2 = can never be placed as entered (bad price / tick, symbol rules): rejected
+int PlacementState(const bool buy,const double price,string &why)
+  {
+   why="";
+   if(!MathIsValidNumber(price) || price<=0.0) { why="Invalid price"; return 2; }
+   double tkSz=(g_tick>0.0)?g_tick:g_point;
+   if(MathAbs(price-RoundTick(price))>tkSz*1e-3) { why="Price is not a multiple of the tick size"; return 2; }
+   long tm=SymbolInfoInteger(g_sym,SYMBOL_TRADE_MODE);
+   if(tm==SYMBOL_TRADE_MODE_DISABLED || tm==SYMBOL_TRADE_MODE_CLOSEONLY) { why="Trading is disabled for this symbol"; return 2; }
+   if(tm==SYMBOL_TRADE_MODE_LONGONLY && !buy)  { why="Only long trades are allowed on this symbol"; return 2; }
+   if(tm==SYMBOL_TRADE_MODE_SHORTONLY && buy)  { why="Only short trades are allowed on this symbol"; return 2; }
+   if((SymbolInfoInteger(g_sym,SYMBOL_ORDER_MODE) & SYMBOL_ORDER_STOP)==0) { why="Stop orders are not allowed on this symbol"; return 2; }
+   MqlTick t;
+   if(!SymbolInfoTick(g_sym,t) || t.ask<=0.0 || t.bid<=0.0) { why="No market prices"; return 1; }
+   double stopsLvl=(double)SymbolInfoInteger(g_sym,SYMBOL_TRADE_STOPS_LEVEL)*g_point;
+   if(buy)
+     {
+      if(price<=t.ask) { why="Buy Stop must be above the Ask ("+PX(t.ask)+")"; return 1; }
+      if(price-t.ask<stopsLvl-1e-9) { why="too close to market (Stops Level "+PX(stopsLvl)+")"; return 1; }
+     }
+   else
+     {
+      if(price>=t.bid) { why="Sell Stop must be below the Bid ("+PX(t.bid)+")"; return 1; }
+      if(t.bid-price<stopsLvl-1e-9) { why="too close to market (Stops Level "+PX(stopsLvl)+")"; return 1; }
+     }
+   return 0;
+  }
+
+//--- can a stop order of this side sit at this price right now? (symbol rules + broker minimum distance)
+bool PlacementOk(const bool buy,const double price,string &why)
+  {
+   return PlacementState(buy,price,why)==0;
+  }
+
+void BrWaitActivated(const bool buy,const double level,const ulong ticket,const ulong latMs=0);   // v2.17 (defined with the Mini App command log)
+
+//--- v2.17: distance (broker minimum + learned safety buffer) between the market and a waiting level, and the resulting TRIGGER price
+double WaitGap(const bool buy)
+  {
+   double stopsLvl=(double)SymbolInfoInteger(g_sym,SYMBOL_TRADE_STOPS_LEVEL)*g_point;
+   return MathMax(stopsLvl,(g_tick>0.0)?g_tick:g_point)+g_waitBuf[SideIdx(buy)];
+  }
+
+double WaitTrigger(const bool buy,const double level)
+  {
+   double gap=WaitGap(buy);
+   return buy?NP(level-gap):NP(level+gap);
+  }
+
+//--- v2.16: what a waiting level needs from the market (shown on the panel, in Telegram and in the Mini App)
+string WaitText(const bool buy,const double level)
+  {
+   MqlTick t;
+   if(!SymbolInfoTick(g_sym,t) || t.ask<=0.0 || t.bid<=0.0) return SideName(buy)+" "+PX(level)+" waits for market prices";
+   if(buy)
+      return "BUY STOP "+PX(level)+" waits for the price: Ask "+PX(t.ask)+" must fall to "+PX(WaitTrigger(true,level))+" or lower, then it is placed automatically";
+   return "SELL STOP "+PX(level)+" waits for the price: Bid "+PX(t.bid)+" must rise to "+PX(WaitTrigger(false,level))+" or higher, then it is placed automatically";
+  }
+
+//--- a pending order that is within the Freeze Level of the market can be neither modified nor deleted
+bool FrozenNow(const bool buy,const double orderPrice)
+  {
+   double fz=(double)SymbolInfoInteger(g_sym,SYMBOL_TRADE_FREEZE_LEVEL)*g_point;
+   if(fz<=0.0) return false;
+   MqlTick t;
+   if(!SymbolInfoTick(g_sym,t)) return false;
+   return buy?(orderPrice-t.ask<=fz+1e-9):(t.bid-orderPrice<=fz+1e-9);
+  }
+
+//--- APPLY pre-check: when a live order has to be MODIFIED, the new price must be acceptable right now
+string CheckModifiable(const double buy,const double sell)
+  {
+   for(int k=0;k<2;k++)
+     {
+      bool b=(k==0);
+      double nl=b?buy:sell;
+      ulong tk; double ap;
+      if(!SideActual(b,tk,ap)) continue;        // no live order on this side: it is simply created
+      if(PriceEq(ap,nl)) continue;              // price unchanged
+      string why;
+      if(PlacementState(b,nl,why)==2) return SideName(b)+" "+PX(nl)+" cannot be applied now: "+why;   // v2.16: a level that only waits for the market is accepted
+      if(FrozenNow(b,ap)) return SideName(b)+" cannot be modified now: the order is inside the Freeze Level.";
+     }
+   return "";
+  }
+
+//--- APPLY pre-check = broker rules BEFORE anything is sent: a request that cannot become a real order is rejected with the reason
+string CheckApplicableCore(const double buy,const double sell,const double risk)
+  {
+   string why;
+   if(!TradingAllowedNow(why)) return "Trading is not possible now: "+why;
+   double rk=(g_accLoss<=1e-9)?(risk>0.0?risk:g_initRisk):g_curRisk;
+   for(int k=0;k<2;k++)
+     {
+      bool b=(k==0);
+      double nl=b?buy:sell;
+      bool seq1=((g_state==YT_ARMED || g_state==YT_WAITING_REENTRY) && (g_mode==YM_BUY || g_mode==YM_SELL));
+      if(seq1 && ((b && g_mode==YM_SELL) || (!b && g_mode==YM_BUY))) continue;   // that side has no order in this sequence
+      ulong tk; double ap;
+      if(SideActual(b,tk,ap))
+        {
+         if(!PriceEq(ap,nl))
+           {
+            //--- v2.16: only a level that can NEVER be placed is rejected; a level that waits for the market is accepted
+            if(PlacementState(b,nl,why)==2) return SideName(b)+" "+PX(nl)+" cannot be applied now: "+why;
+            if(FrozenNow(b,ap)) return SideName(b)+" cannot be modified now: the order is inside the Freeze Level.";
+           }
+        }
+      else if(g_state!=YT_WAITING_REENTRY && PlacementState(b,nl,why)==2) return SideName(b)+" "+PX(nl)+" cannot be placed: "+why;
+      double lot,est; string le;
+      if(!CalcLot(rk,b,nl,lot,est,le) && WaitCodeOf(g_riskCode)=="") return SideName(b)+": "+le;   // v2.23: a volume/margin condition is accepted and shown as WAITING_*
+     }
+   return "";
+  }
+
+//--- the SL of each order is the OTHER level, so the lot/SL check must use the candidate levels, not the active ones
+string CheckApplicable(const double buy,const double sell,const double risk)
+  {
+   const double ob=g_buyLevel, os=g_sellLevel;
+   g_buyLevel=buy; g_sellLevel=sell;
+   string r=CheckApplicableCore(buy,sell,risk);
+   g_buyLevel=ob; g_sellLevel=os;
+   return r;
+  }
+
+//--- v2.16: sides whose level is accepted but cannot be placed yet (computed live from the real market, never stale)
+string DeferText()
+  {
+   string out="";
+   for(int k=0;k<2;k++)
+     {
+      bool b=(k==0);
+      double lv;
+      if(!SideDesired(b,lv)) continue;
+      ulong tk; double ap;
+      if(SideActual(b,tk,ap)) continue;
+      string why;
+      if(PlacementState(b,lv,why)!=1) continue;
+      if(out!="") out+=" | ";
+      out+=WaitText(b,lv);
+     }
+   return out;
+  }
+
+string WaitNote()
+  {
+   string d=DeferText();
+   return (StringLen(d)>0)?d:g_waitReason;
+  }
+
+//--- one log line + one Telegram notice per waiting level
+void NoteDefer(const bool buy,const double level,const string txt)
+  {
+   int s=SideIdx(buy);
+   if(PriceEq(g_deferLvl[s],level)) return;
+   g_deferLvl[s]=level;
+   YLog("Level accepted, waiting for the market: "+txt);
+   LogOrder("DEFERRED",buy?(long)ORDER_TYPE_BUY_STOP:(long)ORDER_TYPE_SELL_STOP,level,0.0,0,0,txt);
+   if(g_state==YT_ARMED) TgQueue("⏳ "+SideName(buy)+" WAITING FOR PRICE\n"+txt);
+  }
+
+//--- v2.16: machine-readable list of the waiting levels (the Mini App shows live distance to the trigger)
+string WaitsJson()
+  {
+   MqlTick t;
+   if(!SymbolInfoTick(g_sym,t) || t.ask<=0.0 || t.bid<=0.0) return "[]";
+   string out="[";
+   int c=0;
+   for(int k=0;k<2;k++)
+     {
+      bool b=(k==0);
+      double lv;
+      if(!SideDesired(b,lv)) continue;
+      ulong tk; double ap;
+      if(SideActual(b,tk,ap)) continue;
+      string why;
+      if(PlacementState(b,lv,why)!=1) continue;
+      double trig=WaitTrigger(b,lv);
+      double now=b?t.ask:t.bid;
+      double dist=b?(now-trig):(trig-now);
+      if(c>0) out+=",";
+      out+="{\"side\":\""+(b?"BUY":"SELL")+"\",\"level\":"+DoubleToString(lv,g_digits)+",\"trig\":"+DoubleToString(trig,g_digits)+
+           ",\"now\":"+DoubleToString(now,g_digits)+",\"dist\":"+DoubleToString(MathMax(dist,0.0),g_digits)+"}";
+      c++;
+     }
+   return out+"]";
+  }
+
+void ModifyFailed(const bool buy,const ulong ticket,const long otype,const double vol,const double actualPx,const double level,const uint rc,const string descIn)
+  {
+   int s=SideIdx(buy);
+   string desc=descIn;
+   if(StringLen(desc)==0) desc="request rejected";
+   MqlTick t;
+   double cur=0.0;
+   if(SymbolInfoTick(g_sym,t)) cur=buy?t.ask:t.bid;
+   g_failCnt[s]++;
+   g_failLvl[s]=level;
+   ulong delay=(ulong)MathMin(30000.0,1500.0*MathPow(2.0,(double)MathMin(g_failCnt[s]-1,5)));
+   if(rc==TRADE_RETCODE_MARKET_CLOSED) delay=30000;
+   else if(rc==TRADE_RETCODE_TOO_MANY_REQUESTS && delay<10000) delay=10000;
+   g_retryMs[s]=GetTickCount64()+delay;
+   string rcs=(rc>0)?" [retcode "+IntegerToString((int)rc)+"]":"";
+   string msg="MODIFY FAILED: "+desc+rcs;
+   SetSync(buy,YS_FAILED,msg);
+   PanelMsg(SideName(buy)+" "+msg,clrTomato);
+   LogOrder("MODIFY_FAILED",otype,level,vol,ticket,rc,desc+" | Actual "+PX(actualPx)+" | Market "+PX(cur));
+   YLog("MODIFY FAILED | "+SideName(buy)+" | Ticket "+UL(ticket)+" | Retcode "+IntegerToString((int)rc)+" ("+desc+") | Requested "+PX(level)+" | Actual "+PX(actualPx)+" | Market "+PX(cur));
+   bool first=(g_failCnt[s]==1);
+   RaiseAlert("MODFAIL"+IntegerToString(s),"MODIFY FAILED ("+SideName(buy)+"): "+desc+rcs+" | Ticket "+UL(ticket)+" | Requested "+PX(level)+" | Current "+PX(cur)+" | Actual "+PX(actualPx),first,first);
+  }
+
+//+------------------------------------------------------------------+
+//| MODIFY the existing pending order in place: the Ticket, Magic,   |
+//| Comment, Volume and expiration are kept; only price / SL / TP    |
+//| are sent. One request per order at a time; the result is read    |
+//| from the server before the status becomes SYNCED.                |
+//+------------------------------------------------------------------+
+bool ModifySide(const bool buy,const ulong ticket,const double level,const double dSL,const double dTP)
+  {
+   int s=SideIdx(buy);
+   if(g_reqBusy[s]) return false;                    // never two requests for the same order at once
+   if(!OrderSelect(ticket)) return false;
+   long   otype=OrderGetInteger(ORDER_TYPE);
+   double aP=OrderGetDouble(ORDER_PRICE_OPEN);
+   double aV=OrderGetDouble(ORDER_VOLUME_CURRENT);
+   double hs=((g_tick>0.0)?g_tick:g_point)/2.0;
+   ulong  nowMs=GetTickCount64();
+
+   if(!PriceEq(g_failLvl[s],level)) { g_failCnt[s]=0; g_retryMs[s]=0; g_unconf[s]=false; }   // a NEW desired level always gets a fresh attempt
+   if(nowMs<g_retryMs[s]) return false;              // back-off after a failure / waiting for the server to show the change
+   if(g_unconf[s])
+     {
+      g_unconf[s]=false;
+      ModifyFailed(buy,ticket,otype,aV,aP,level,0,"server accepted the request but the order still shows the old values");
+      return false;
+     }
+
+   //--- pre-flight validation: a request that is known to be invalid is never sent
+   string why;
+   if(!TradingAllowedNow(why))                           { SetSync(buy,YS_WAITING,why); return false; }
+   int pst=PriceEq(aP,level)?0:PlacementState(buy,level,why);
+   if(pst==2)            { SetSync(buy,YS_WAITING,"Cannot modify now: "+why); return false; }
+   if(FrozenNow(buy,aP)) { SetSync(buy,YS_WAITING,"Order is inside the Freeze Level"); return false; }
+   if(pst==1)
+     {
+      //--- v2.16: the NEW level cannot be placed yet. The old order must never stay alive at the stale price:
+      //--- it is removed (verified) and the new level waits; TryPlace creates the order the moment the market allows it
+      string wt=WaitText(buy,level);
+      SetSync(buy,YS_REMOVING,"New level "+PX(level)+" must wait for the price: old order #"+UL(ticket)+" is removed");
+      UpdatePanel();
+      if(DeleteOrder(ticket,"Level moved to "+PX(level)+" which cannot be placed yet - old order removed, new level waits for the market"))
+        {
+         g_unconf[s]=false; g_failCnt[s]=0; g_failLvl[s]=0.0; g_retryMs[s]=0;
+         SetSync(buy,YS_WAITING,wt);
+         NoteDefer(buy,level,wt);
+         g_dirty=true;
+        }
+      else if(g_delFilled) g_dirty=true;                  // the old order was triggered meanwhile: the position logic takes over
+      else
+        {
+         g_failLvl[s]=level; g_retryMs[s]=GetTickCount64()+2000;
+         SetSync(buy,YS_FAILED,"REMOVE FAILED: could not delete the old order");
+        }
+      return false;
+     }
+
+   //--- send ONE modify request
+   g_reqBusy[s]=true;
+   SetSync(buy,YS_UPDATING,"Modify "+PX(aP)+" -> "+PX(level));
+   UpdatePanel();                                    // the panel shows UPDATING while the server works
+   g_trade.SetDeviationInPoints(g_maxDev);
+   datetime mdExp=0;
+   ENUM_ORDER_TYPE_TIME mdTT=PendingTimeType(mdExp);
+   bool r=g_trade.OrderModify(ticket,level,dSL,dTP,mdTT,mdExp);
+   uint rc=g_trade.ResultRetcode();
+   string desc=g_trade.ResultRetcodeDescription();
+   g_reqBusy[s]=false;
+   bool ok=((r && (rc==TRADE_RETCODE_DONE || rc==TRADE_RETCODE_PLACED)) || rc==TRADE_RETCODE_NO_CHANGES);
+   if(!ok)
+     {
+      ModifyFailed(buy,ticket,otype,aV,aP,level,rc,desc);   // old state is kept, nothing is reported as modified
+      return false;
+     }
+
+   //--- verify with the server: the order must now carry the requested values
+   if(!OrderSelect(ticket))
+     {
+      SetSync(buy,YS_UPDATING,"Order no longer pending (triggered?)");
+      g_dirty=true;
+      return false;
+     }
+   bool conf=(PriceEq(OrderGetDouble(ORDER_PRICE_OPEN),level) &&
+              MathAbs(OrderGetDouble(ORDER_SL)-dSL)<=hs && MathAbs(OrderGetDouble(ORDER_TP)-dTP)<=hs);
+   if(!conf)
+     {
+      g_unconf[s]=true;
+      g_failLvl[s]=level;
+      g_retryMs[s]=GetTickCount64()+2000;
+      SetSync(buy,YS_UPDATING,"Awaiting server confirmation");
+      g_dirty=true;
+      return false;
+     }
+
+   g_failCnt[s]=0; g_failLvl[s]=0.0; g_retryMs[s]=0; g_unconf[s]=false;
+   TrkTake(buy,ticket);                              // baseline = the values the server confirmed
+   SetSync(buy,YS_SYNCED,"");
+   ClearAlert("MODFAIL"+IntegerToString(s));
+   string note="Ticket "+UL(ticket)+" kept | "+PX(aP)+" -> "+PX(level)+" | SL "+PX(dSL)+" TP "+PX(dTP);
+   LogOrder("MODIFIED",otype,level,aV,ticket,rc,note);
+   YLog(SideName(buy)+" MODIFIED | "+note);
+   PanelMsg(SideName(buy)+" modified "+PX(aP)+" -> "+PX(level),clrLime);
+   TgQueue("✏️ "+SideName(buy)+" MODIFIED\nTicket: "+UL(ticket)+" (kept)\nOld: "+PX(aP)+"\nNew: "+PX(level)+"\nSL: "+PX(dSL)+"\nTP: "+PX(dTP));
+   return true;
+  }
+
+//+------------------------------------------------------------------+
+//| Verification of a freshly placed order on the server             |
+//+------------------------------------------------------------------+
+bool VerifyPlaced(const ulong ticket,const bool buy,const double level,const double lot,const double sl,const double tp,string &why)
+  {
+   why="";
+   if(ticket==0) { why="the server returned no ticket"; return false; }
+   double hs=((g_tick>0.0)?g_tick:g_point)/2.0;
+   double step=SymbolInfoDouble(g_sym,SYMBOL_VOLUME_STEP);
+   if(step<=0.0) step=0.01;
+   for(int i=0;i<6;i++)
+     {
+      if(OrderSelect(ticket))
+        {
+         long want=buy?(long)ORDER_TYPE_BUY_STOP:(long)ORDER_TYPE_SELL_STOP;
+         if(OrderGetInteger(ORDER_TYPE)!=want) { why="wrong order type on the server"; return false; }
+         double aP=OrderGetDouble(ORDER_PRICE_OPEN), aV=OrderGetDouble(ORDER_VOLUME_CURRENT);
+         double aS=OrderGetDouble(ORDER_SL), aT=OrderGetDouble(ORDER_TP);
+         if(PriceEq(aP,level) && MathAbs(aV-lot)<=step/2.0 && MathAbs(aS-sl)<=hs && MathAbs(aT-tp)<=hs) return true;
+         why="MT5 holds price "+PX(aP)+" lot "+LotS(aV)+" SL "+PX(aS)+" TP "+PX(aT);
+         return false;
+        }
+      Sleep(50);
+     }
+   why="order #"+UL(ticket)+" not found on the server";
+   return false;
+  }
+
+//--- when MT5 is authoritative the panel edit box follows the real order (unless the user is typing something else)
+void PanelSetLevelText(const bool buy,const double oldLevel,const double newLevel)
+  {
+   if(!InpShowPanel || g_page!=0) return;
+   string n=UI+(buy?"ED_BUY":"ED_SELL");
+   if(ObjectFind(0,n)<0) return;
+   double cur=ParseNum(ObjectGetString(0,n,OBJPROP_TEXT));
+   if(cur<=0.0 || PriceEq(cur,oldLevel)) ObjectSetString(0,n,OBJPROP_TEXT,PX(newLevel));
+  }
+
+//+------------------------------------------------------------------+
+//| External changes: the user moved / deleted the order in MT5      |
+//| Returns true when this side must NOT be reconciled in this pass  |
+//+------------------------------------------------------------------+
+bool ExternalCheck(const bool buy,const bool need,const double level)
+  {
+   int s=SideIdx(buy);
+   double hs=((g_tick>0.0)?g_tick:g_point)/2.0;
+   long wantType=buy?(long)ORDER_TYPE_BUY_STOP:(long)ORDER_TYPE_SELL_STOP;
+
+   //--- explicit HOLD: nothing changes automatically until the real order matches the panel again or the user presses APPLY / START
+   if(g_hold[s])
+     {
+      ulong hT; double hP;
+      if(!need || !SideActual(buy,hT,hP) || !PriceEq(hP,level)) return true;
+      g_hold[s]=false;
+      TrkTake(buy,hT);
+      YLog(SideName(buy)+" is back in line with the panel - hold released");
+      return false;
+     }
+
+   ulong tk=g_stopTicket[s];
+   if(tk==0) return false;                            // not tracked yet (it is adopted by ReconcileSide)
+   if(g_reqBusy[s] || g_unconf[s]) return false;      // our own request is still being confirmed
+
+   //--- 1) the ticket exists: did somebody change it outside the EA?
+   if(OrderSelect(tk))
+     {
+      g_missMs[s]=0;
+      if(OrderGetInteger(ORDER_TYPE)!=wantType) return false;
+      double p=OrderGetDouble(ORDER_PRICE_OPEN), sl=OrderGetDouble(ORDER_SL), tp=OrderGetDouble(ORDER_TP), v=OrderGetDouble(ORDER_VOLUME_CURRENT);
+      bool pxChg=!PriceEq(p,g_snapPx[s]);
+      bool stChg=(MathAbs(sl-g_snapSL[s])>hs || MathAbs(tp-g_snapTP[s])>hs);
+      if(!pxChg && !stChg) return false;
+
+      string what=pxChg?("price "+PX(g_snapPx[s])+" -> "+PX(p)):("SL "+PX(g_snapSL[s])+" -> "+PX(sl)+" / TP "+PX(g_snapTP[s])+" -> "+PX(tp));
+      string msg=SideName(buy)+" EXTERNAL CHANGE DETECTED | Ticket #"+UL(tk)+" | "+what;
+      LogOrder("EXTERNAL_CHANGE",wantType,p,v,tk,0,what);
+      YLog(msg);
+      RaiseAlert("EXT"+IntegerToString(s),msg,true,true);
+      TrkTake(buy,tk);                                // the new MT5 state is the baseline: it is reported only once
+      if(!need) return false;
+
+      bool holdIt=(InpExtPolicy==YT_EXT_HOLD);
+      string note="";
+      if(!holdIt && pxChg && InpExtPolicy==YT_EXT_ADOPT)
+        {
+         string e=ValidateLevels(buy?p:g_buyLevel,buy?g_sellLevel:p);
+         if(e=="")
+           {
+            //--- MT5 is authoritative: the panel level becomes the real order price (SL / TP are re-derived by the reconcile)
+            if(buy) g_buyLevel=p; else g_sellLevel=p;
+            SaveState();
+            PanelSetLevelText(buy,level,p);
+            SetSync(buy,YS_EXTERNAL,"MT5 price adopted: "+PX(level)+" -> "+PX(p));
+            PanelMsg(SideName(buy)+" EXTERNAL CHANGE: panel level now "+PX(p),clrGold);
+            TgQueue("⚠️ EXTERNAL CHANGE DETECTED\n"+SideName(buy)+" Ticket #"+UL(tk)+"\nMT5 price: "+PX(p)+" (panel was "+PX(level)+")\nPolicy: MT5 adopted.");
+            g_dirty=true;
+            return false;
+           }
+         holdIt=true;                                 // adopting would break the level rules: explicit hold instead
+         note=" (cannot adopt: "+e+")";
+        }
+      if(holdIt)
+        {
+         g_hold[s]=true;
+         SetSync(buy,YS_EXTERNAL,"Panel "+PX(level)+" vs MT5 "+PX(p)+" - press APPLY to enforce the panel"+note);
+         PanelMsg(SideName(buy)+" EXTERNAL CHANGE: hold, press APPLY",clrGold);
+         TgQueue("⚠️ EXTERNAL CHANGE DETECTED\n"+SideName(buy)+" Ticket #"+UL(tk)+"\nMT5 price: "+PX(p)+"\nPanel: "+PX(level)+"\nNo automatic action. Press APPLY to enforce the panel."+note);
+         return true;
+        }
+      //--- RESTORE (or an SL / TP-only change under ADOPT): the reconcile that follows puts the same ticket back
+      SetSync(buy,YS_EXTERNAL,"Restoring panel values on ticket #"+UL(tk));
+      PanelMsg(SideName(buy)+" EXTERNAL CHANGE: restoring panel values",clrGold);
+      TgQueue("⚠️ EXTERNAL CHANGE DETECTED\n"+SideName(buy)+" Ticket #"+UL(tk)+"\nPolicy: panel values are restored on the same ticket.");
+      return false;
+     }
+
+   //--- 2) the ticket is gone from the server
+   ulong pp[];
+   if(OwnPositions(pp)>0) { TrkDrop(s); return true; }                 // triggered meanwhile: the position logic takes over
+   bool inHist=HistoryOrderSelect(tk);
+   long hst=inHist?HistoryOrderGetInteger(tk,ORDER_STATE):-1;
+   if(inHist && (hst==ORDER_STATE_FILLED || hst==ORDER_STATE_PARTIAL))
+     {
+      //--- triggered and possibly already closed (fast market): book the position immediately, never wait for the 30 s history scan
+      ulong fpid=(ulong)HistoryOrderGetInteger(tk,ORDER_POSITION_ID);
+      TrkDrop(s);
+      if(fpid!=0)
+        {
+         YLog(SideName(buy)+" #"+UL(tk)+" was FILLED - registering position "+UL(fpid)+" now");
+         RegisterPosition(fpid);
+         CheckClosures();
+        }
+      g_restartPass=true;
+      g_dirty=true;
+      return true;
+     }
+   if(!inHist)
+     {
+      if(g_missMs[s]==0) g_missMs[s]=GetTickCount64();
+      if(GetTickCount64()-g_missMs[s]<3000) return true;              // history may lag behind the trade server
+     }
+   g_missMs[s]=0;
+   TrkDrop(s);
+   if(!need) return false;
+
+   string how=inHist?((hst==ORDER_STATE_EXPIRED)?"expired":"deleted / cancelled"):"no longer on the server";
+   string mm=SideName(buy)+" MISSING | Ticket #"+UL(tk)+" "+how+" outside the EA";
+   LogOrder("MISSING",wantType,level,0.0,tk,0,how);
+   YLog(mm);
+   RaiseAlert("MISS"+IntegerToString(s),mm,true,true);
+   if(InpMissPolicy==YT_MISS_RECREATE)
+     {
+      SetSync(buy,YS_MISSING,"Ticket #"+UL(tk)+" missing - placing it again");
+      PanelMsg(SideName(buy)+" MISSING: placing again",clrGold);
+      TgQueue("⚠️ "+SideName(buy)+" MISSING\nTicket #"+UL(tk)+" "+how+".\nPolicy: placing it again.");
+      return false;
+     }
+   g_hold[s]=true;
+   SetSync(buy,YS_MISSING,"Ticket #"+UL(tk)+" "+how+" - press APPLY / START to place it again");
+   PanelMsg(SideName(buy)+" MISSING: manual intervention",clrTomato);
+   TgQueue("⚠️ "+SideName(buy)+" MISSING\nTicket #"+UL(tk)+" "+how+".\nManual intervention required: press APPLY / START to place it again.");
+   return true;
+  }
+
+//+------------------------------------------------------------------+
+//| One side of Reconcile: KEEP / MODIFY / REPLACE (lot only) / CREATE|
+//+------------------------------------------------------------------+
+void ReconcileSide(const bool buy,const double level,const double expLot,const bool lotOk,const ulong ticket)
+  {
+   int s=SideIdx(buy);
+   if(ticket==0 || !OrderSelect(ticket))
+     {
+      //--- no order on the server: CREATE (the only case where a brand-new pending order is sent)
+      if(GetTickCount64()<g_guardMs[s])
+        {
+         //--- the server answered DONE a moment ago but the order is not visible yet: never send a second one
+         SetSync(buy,YS_CREATING,"Awaiting server confirmation of #"+UL(g_guardTk[s]));
+         return;
+        }
+      g_unconf[s]=false;
+      if(g_sync[s]!=YS_FAILED && g_sync[s]!=YS_WAITING) SetSync(buy,YS_CREATING,"");
+      TryPlace(buy,level);                           // sets WAITING / FAILED / SYNCED itself
+      return;
+     }
+   double hs=((g_tick>0.0)?g_tick:g_point)/2.0;
+   double step=SymbolInfoDouble(g_sym,SYMBOL_VOLUME_STEP);
+   if(step<=0.0) step=0.01;
+   if(g_stopTicket[s]!=ticket) TrkTake(buy,ticket);   // adopt the real ticket (restart / first run); the order stays selected
+   g_guardMs[s]=0;
+   double aP=OrderGetDouble(ORDER_PRICE_OPEN);
+   double aSL=OrderGetDouble(ORDER_SL);
+   double aTP=OrderGetDouble(ORDER_TP);
+   double aV=OrderGetDouble(ORDER_VOLUME_CURRENT);
+   long   aT=OrderGetInteger(ORDER_TYPE);
+   double dSL=SLPrice(buy,level), dTP=TPPrice(buy,level);
+   if(dSL<=0.0 || dTP<=0.0)
+     {
+      //--- never send an order/modification without a computed SL/TP (no invented distance any more)
+      SetSync(buy,YS_WAITING,"Levels invalid: SL/TP cannot be computed");
+      return;
+     }
+   bool volDiff=(lotOk && MathAbs(aV-expLot)>step/2.0);
+   bool diff=(!PriceEq(aP,level) || MathAbs(aSL-dSL)>hs || MathAbs(aTP-dTP)>hs);
+
+   if(volDiff)
+     {
+      //--- MT5 cannot change the volume of a pending order: the ONLY case that needs delete + create
+      if(GetTickCount64()<g_nextDelMs) return;
+      string why="Lot changed (risk update): volume cannot be modified, order is replaced";
+      if(FrozenNow(buy,aP)) { SetSync(buy,YS_WAITING,"Order is inside the Freeze Level"); return; }
+      SetSync(buy,YS_UPDATING,why);
+      UpdatePanel();
+      if(DeleteOrder(ticket,why))
+        {
+         g_unconf[s]=false;
+         SetSync(buy,YS_CREATING,"");
+         TryPlace(buy,level);
+        }
+      else
+        {
+         g_nextDelMs=GetTickCount64()+2000;
+         SetSync(buy,YS_FAILED,"REPLACE FAILED: could not delete the old order");
+        }
+      return;
+     }
+
+   if(!diff)
+     {
+      //--- KEEP: the server already holds exactly the desired order, nothing is sent
+      if(g_unconf[s])
+        {
+         LogOrder("MODIFIED",aT,aP,aV,ticket,0,"Confirmed by server | "+PX(aP)+" SL "+PX(aSL)+" TP "+PX(aTP));
+         YLog(SideName(buy)+" MODIFIED (confirmed) | Ticket "+UL(ticket)+" | "+PX(aP));
+         PanelMsg(SideName(buy)+" modified -> "+PX(aP),clrLime);
+        }
+      g_failCnt[s]=0; g_failLvl[s]=0.0; g_retryMs[s]=0; g_unconf[s]=false;
+      if(g_sync[s]==YS_FAILED) ClearAlert("MODFAIL"+IntegerToString(s));
+      TrkTake(buy,ticket);                           // input == EA state == MT5 state: this is the verified baseline
+      if(g_sync[s]==YS_PLACED && GetTickCount64()-g_placedMs[s]<5000) return;   // keep PLACED visible briefly
+      SetSync(buy,YS_SYNCED,"");
+      return;
+     }
+
+   //--- MODIFY the existing order (same ticket / magic / comment / volume)
+   ModifySide(buy,ticket,level,dSL,dTP);
+  }
+
+//+------------------------------------------------------------------+
+//| Netting protection                                               |
+//| In a Netting account every deal on the symbol merges into ONE    |
+//| position, so the bot cannot separate its trade from a foreign    |
+//| one. Rule: never place orders while a foreign position exists,   |
+//| never close volume that is not ours.                             |
+//+------------------------------------------------------------------+
+bool IsNettingAccount()
+  {
+   return ((ENUM_ACCOUNT_MARGIN_MODE)AccountInfoInteger(ACCOUNT_MARGIN_MODE)!=ACCOUNT_MARGIN_MODE_RETAIL_HEDGING);
+  }
+
+//--- volume of positions on this symbol that were NOT opened by this bot (other magic / manual)
+double ExternalPositionVolume()
+  {
+   double v=0.0;
+   int n=PositionsTotal();
+   for(int i=0;i<n;i++)
+     {
+      ulong t=PositionGetTicket(i);
+      if(t==0) continue;
+      if(PositionGetString(POSITION_SYMBOL)!=g_sym) continue;
+      if((long)PositionGetInteger(POSITION_MAGIC)==g_magic) continue;
+      v+=PositionGetDouble(POSITION_VOLUME);
+     }
+   return v;
+  }
+
+//--- true => the bot must stay frozen (Netting + foreign position). Resumes by itself when it is gone.
+bool NettingBlocked()
+  {
+   if(!g_netting) return false;
+   double ev=ExternalPositionVolume();
+   if(ev<=0.0)
+     {
+      if(g_extBlock)
+        {
+         g_extBlock=false;
+         g_blockReason="";
+         ClearAlert("NETEXT");
+         YLog("Netting: external position closed - bot resumed.");
+        }
+      return false;
+     }
+   if(!g_extBlock)
+     {
+      g_extBlock=true;
+      YLog("Netting: external "+g_sym+" position detected ("+LotS(ev)+" lots) - bot frozen, its own pending orders are removed.");
+     }
+   g_blockReason="Netting account: external "+g_sym+" position ("+LotS(ev)+" lots) - bot frozen";
+   ulong od[];
+   int no=OwnOrders(od);
+   for(int i=0;i<no;i++) DeleteOrder(od[i],"Netting: external position present");
+   RaiseAlert("NETEXT","Netting account: an external "+g_sym+" position exists. Yetimmm places no orders and does not touch it. It resumes automatically once that position is closed.",true,true);
+   return true;
+  }
+
+//--- Netting: own position volume must equal the lot the bot registered; otherwise foreign volume merged into it
+void NettingDriftCheck(const ulong ticket)
+  {
+   if(!PositionSelectByTicket(ticket)) return;
+   ulong pid=(ulong)PositionGetInteger(POSITION_IDENTIFIER);
+   double reg=PGV(pid,"LOT",0.0);
+   if(reg<=0.0) return;
+   double vol=PositionGetDouble(POSITION_VOLUME);
+   double step=SymbolInfoDouble(g_sym,SYMBOL_VOLUME_STEP);
+   if(step<=0.0) step=0.01;
+   bool bad=(MathAbs(vol-reg)>step/2.0);
+   if(bad)
+     {
+      //--- persisted PER POSITION: survives a restart, and the result of this position never feeds the risk sequence
+      if(PGV(pid,"TAINT",0.0)<0.5) { PSet(pid,"TAINT",1.0); GlobalVariablesFlush(); }
+      if(!g_netTaint)
+        {
+         g_netTaint=true;
+         YLog("Netting: position volume "+LotS(vol)+" differs from registered lot "+LotS(reg)+" - foreign volume merged. Automatic closing is DISABLED and the risk sequence will NOT be updated from this position.");
+         RaiseAlert("NETDRIFT","Netting account: an external trade changed the Yetimmm position volume ("+LotS(vol)+" vs "+LotS(reg)+"). Yetimmm will NOT close it, and the risk sequence will NOT be updated from its result - handle it manually.",true,true);
+        }
+     }
+   else if(g_netTaint)
+     {
+      g_netTaint=false;                     // closing is allowed again; the position stays flagged (its P/L is not purely ours)
+      ClearAlert("NETDRIFT");
+      YLog("Netting: position volume matches the registered lot again.");
+     }
+  }
+
+//--- every AUTOMATIC close goes through this guard: never close volume that is not ours
+bool NetTaintRefusesClose(const string what)
+  {
+   if(!(g_netting && g_netTaint)) return false;
+   RaiseAlert("NETCLOSE","Netting account: the Yetimmm position contains external volume, so "+what+" was NOT executed automatically. Handle it manually.",true,true);
+   return true;
+  }
+
+//+------------------------------------------------------------------+
+//| Telegram                                                         |
+//+------------------------------------------------------------------+
+bool TgActive()
+  {
+   if(!g_tgEn) return false;
+   if(MQLInfoInteger(MQL_TESTER)) return false;
+   if(StringLen(g_tgTok)==0) return false;
+   return true;
+  }
+
+void ParseIds()
+  {
+   ArrayResize(g_tgIds,0);
+   string s=g_tgAuth;
+   if(StringLen(g_tgPub)>0) s+=(StringLen(s)>0?",":"")+g_tgPub;
+   StringReplace(s,";",",");
+   StringReplace(s," ",",");
+   string p[];
+   int n=StringSplit(s,',',p);
+   for(int i=0;i<n;i++)
+     {
+      if(StringLen(p[i])==0) continue;
+      long v=StringToInteger(p[i]);
+      if(v==0) continue;
+      bool dup=false;
+      for(int q=0;q<ArraySize(g_tgIds);q++) if(g_tgIds[q]==v) { dup=true; break; }
+      if(dup) continue;
+      int k=ArraySize(g_tgIds);
+      ArrayResize(g_tgIds,k+1);
+      g_tgIds[k]=v;
+     }
+  }
+
+//--- PUBLIC MODE (owner decision): any Telegram user who messages the bot may control it and receives its notifications
+bool TgAuthorized(const long from)
+  {
+   //--- v2.23: NO public mode. Only chat ids registered through the Worker (Telegram-verified identity) may control the EA.
+   if(from==0) return false;
+   for(int i=0;i<ArraySize(g_tgIds);i++) if(g_tgIds[i]==from) return true;
+   return false;
+  }
+
+void TgAddId(const long id)
+  {
+   if(id==0) return;
+   for(int i=0;i<ArraySize(g_tgIds);i++) if(g_tgIds[i]==id) return;
+   if(ArraySize(g_tgIds)>=50) return;                       // hard cap: a public bot must not grow the list without limit
+   g_tgPub+=(StringLen(g_tgPub)>0?",":"")+IntegerToString(id);
+   CfgSet("tgpub",g_tgPub);
+   CfgSaveFile();
+   ParseIds();
+   YLog("Telegram: chat registered automatically (id "+IntegerToString(id)+") - public mode.");
+  }
+
+string UrlEnc(const string s)
+  {
+   char b[];
+   int n=StringToCharArray(s,b,0,WHOLE_ARRAY,CP_UTF8);
+   string out="";
+   for(int i=0;i<n-1;i++)
+     {
+      int c=((int)b[i])&0xFF;
+      if((c>='0'&&c<='9')||(c>='a'&&c<='z')||(c>='A'&&c<='Z')||c=='-'||c=='_'||c=='.'||c=='~')
+         out+=ShortToString((ushort)c);
+      else
+         out+=StringFormat("%%%02X",c);
+     }
+   return out;
+  }
+
+void TgPush(const long chat,const string text,const string markup)
+  {
+   int n=ArraySize(g_qText);
+   if(n>=60)
+     {
+      for(int i=1;i<n;i++) { g_qText[i-1]=g_qText[i]; g_qChat[i-1]=g_qChat[i]; g_qMarkup[i-1]=g_qMarkup[i]; g_qTry[i-1]=g_qTry[i]; }
+      n--;
+     }
+   ArrayResize(g_qText,n+1);
+   ArrayResize(g_qChat,n+1);
+   ArrayResize(g_qMarkup,n+1);
+   ArrayResize(g_qTry,n+1);
+   g_qText[n]=text; g_qChat[n]=chat; g_qMarkup[n]=markup; g_qTry[n]=0;
+  }
+
+void TgPop()
+  {
+   int n=ArraySize(g_qText);
+   if(n<=0) return;
+   for(int i=1;i<n;i++) { g_qText[i-1]=g_qText[i]; g_qChat[i-1]=g_qChat[i]; g_qMarkup[i-1]=g_qMarkup[i]; g_qTry[i-1]=g_qTry[i]; }
+   ArrayResize(g_qText,n-1);
+   ArrayResize(g_qChat,n-1);
+   ArrayResize(g_qMarkup,n-1);
+   ArrayResize(g_qTry,n-1);
+  }
+
+//--- chat==0 -> broadcast to every authorized id (requires Notifications enabled)
+string JEsc(const string s);   // defined with the Mini App bridge
+
+//--- v2.23 EVENT OUTBOX: every notification gets a unique id (login:magic:sequence). The Worker de-duplicates by id and acks it;
+//--- unacked events are re-sent with the next sync (same id = never delivered twice). The sequence survives MT5 restarts.
+void EvEmit(const string text)
+  {
+   if(StringLen(text)==0) return;
+   if(g_evSeq==0) g_evSeq=(long)GV("EVSEQ",0.0);
+   g_evSeq++;
+   GS("EVSEQ",(double)g_evSeq);
+   string title=text, body="";
+   int nl=StringFind(text,"\n");
+   if(nl>0) { title=StringSubstr(text,0,nl); body=StringSubstr(text,nl+1); }
+   if(StringLen(title)>110) title=StringSubstr(title,0,110);
+   if(StringLen(body)>550) body=StringSubstr(body,0,550);
+   string kind=(StringFind(text,"ACTIVATED")>=0)?"act":"ev";
+   string id=IntegerToString((long)AccountInfoInteger(ACCOUNT_LOGIN))+":"+IntegerToString((long)g_magic)+":"+IntegerToString(g_evSeq);
+   int n=ArraySize(g_evId);
+   if(n>=40)
+     {
+      for(int i=1;i<n;i++) { g_evId[i-1]=g_evId[i]; g_evK[i-1]=g_evK[i]; g_evT[i-1]=g_evT[i]; g_evB[i-1]=g_evB[i]; }
+      n--;
+     }
+   ArrayResize(g_evId,n+1); ArrayResize(g_evK,n+1); ArrayResize(g_evT,n+1); ArrayResize(g_evB,n+1);
+   g_evId[n]=id; g_evK[n]=kind; g_evT[n]=title; g_evB[n]=body;
+  }
+
+void EvAckFrom(const string resp)
+  {
+   int p=StringFind(resp,"\"evack\":[");
+   if(p<0) return;
+   int e=StringFind(resp,"]",p);
+   if(e<0) return;
+   string sec=StringSubstr(resp,p,e-p);
+   for(int i=ArraySize(g_evId)-1;i>=0;i--)
+     {
+      if(StringFind(sec,"\""+g_evId[i]+"\"")<0) continue;
+      int n=ArraySize(g_evId);
+      for(int j=i+1;j<n;j++) { g_evId[j-1]=g_evId[j]; g_evK[j-1]=g_evK[j]; g_evT[j-1]=g_evT[j]; g_evB[j-1]=g_evB[j]; }
+      ArrayResize(g_evId,n-1); ArrayResize(g_evK,n-1); ArrayResize(g_evT,n-1); ArrayResize(g_evB,n-1);
+     }
+  }
+
+string EvJson()
+  {
+   string j="[";
+   for(int i=0;i<ArraySize(g_evId);i++)
+      j+=(i>0?",":"")+"{\"id\":\""+JEsc(g_evId[i])+"\",\"k\":\""+g_evK[i]+"\",\"t\":\""+JEsc(g_evT[i])+"\",\"b\":\""+JEsc(g_evB[i])+"\"}";
+   return j+"]";
+  }
+
+void TgQueue(const string text,const long chat=0,const string markup="")
+  {
+   if(!g_tgEn) return;
+   if(chat==0 && InpTgViaWorker)
+     {
+      //--- v2.23: ONE notification channel: EA -> Worker (unique event id, de-duplicated) -> Telegram. No token in MT5.
+      if(g_tgNot && InpBrEnable) EvEmit(text);
+      return;
+     }
+   if(chat==0)
+     {
+      if(!g_tgNot) return;
+      for(int i=0;i<ArraySize(g_tgIds);i++) TgPush(g_tgIds[i],text,markup);
+     }
+   else TgPush(chat,text,markup);
+  }
+
+//--- v2.26: origin (https://host) of a URL, so the 4014 message shows the exact text to paste into Allowed URLs
+string UrlOrigin(const string u)
+  {
+   int p=StringFind(u,"://");
+   if(p<0) return u;
+   int q=StringFind(u,"/",p+3);
+   return (q<0)?u:StringSubstr(u,0,q);
+  }
+bool g_urlAlertShown=false;
+
+//--- low-level Telegram request (token is never logged)
+bool TgCall(const string method,const string body,string &resp)
+  {
+   resp="";
+   string url="https://api.telegram.org/bot"+g_tgTok+"/"+method;
+   char data[],res[];
+   string rh;
+   int n=StringToCharArray(body,data,0,WHOLE_ARRAY,CP_UTF8);
+   if(n>0) ArrayResize(data,n-1);
+   ResetLastError();
+   int code=WebRequest("POST",url,"Content-Type: application/x-www-form-urlencoded\r\n",3000,data,res,rh);
+   if(code==-1)
+     {
+      int e=GetLastError();
+      g_tgOk=false;
+      g_tgLastCode=-1;
+      if(TimeLocal()-g_tgLastErrLog>=60)
+        {
+         g_tgLastErrLog=TimeLocal();
+         if(e==4014) YLog("Telegram Connection Error: add https://api.telegram.org to Tools > Options > Expert Advisors > Allowed URLs (error 4014).");
+         else YLog("Telegram Connection Error: WebRequest failed, error "+IntegerToString(e));
+        }
+      return false;
+     }
+   resp=CharArrayToString(res,0,WHOLE_ARRAY,CP_UTF8);
+   g_tgLastCode=code;
+   if(code!=200 || StringFind(resp,"\"ok\":true")<0)
+     {
+      g_tgOk=false;
+      if(TimeLocal()-g_tgLastErrLog>=60)
+        {
+         g_tgLastErrLog=TimeLocal();
+         {
+            string why="";
+            if(code==409) why=" | CONFLICT: another getUpdates/webhook is using this same Bot Token (another chart, VPS, PC or program) - keep only ONE instance";
+            else if(code==429) why=" | rate limited by Telegram - increase InpTgPollMs";
+            else if(code==401 || code==404) why=" | invalid Bot Token";
+            else if(code>=1000) why=" | network/proxy/ISP level failure (not a Telegram reply) - check VPN/firewall/internet, increase InpTgPollMs";
+            string body2=(StringLen(resp)>0)?" | "+StringSubstr(resp,0,160):"";
+            YLog("Telegram Connection Error: HTTP "+IntegerToString(code)+why+body2);
+           }
+        }
+      return false;
+     }
+   g_tgOk=true;
+   g_tgLastOk=TimeLocal();
+   return true;
+  }
+
+bool TgSend(const long chat,const string text,const string markup)
+  {
+   string t=text;
+   if(StringLen(t)>3900) t=StringSubstr(t,0,3900)+"\n...";
+   string body="chat_id="+IntegerToString(chat)+"&text="+UrlEnc(t)+"&disable_web_page_preview=true";
+   if(StringLen(markup)>0) body+="&reply_markup="+UrlEnc(markup);
+   string resp;
+   return TgCall("sendMessage",body,resp);
+  }
+
+void TgFlush()
+  {
+   if(!TgActive()) { if(ArraySize(g_qText)>60) TgPop(); return; }
+   if(!g_connected) return;
+   int sent=0;
+   while(ArraySize(g_qText)>0 && sent<5)
+     {
+      if(TgSend(g_qChat[0],g_qText[0],g_qMarkup[0]))
+        {
+         YLog("Telegram Notification Sent");
+         TgPop();
+         sent++;
+        }
+      else
+        {
+         g_qTry[0]++;
+         if(g_qTry[0]>=5) TgPop(); // drop a message that keeps failing
+         break;
+        }
+     }
+  }
+
+string MenuKeyboard()
+  {
+   return "{\"inline_keyboard\":[[{\"text\":\"▶️ START\",\"callback_data\":\"CMD:start\"},{\"text\":\"⏹ STOP\",\"callback_data\":\"CMD:stop\"}],"
+          "[{\"text\":\"❌ CANCEL\",\"callback_data\":\"CMD:cancel\"},{\"text\":\"📊 STATUS\",\"callback_data\":\"CMD:status\"}],"
+          "[{\"text\":\"📜 HISTORY\",\"callback_data\":\"CMD:history\"},{\"text\":\"📈 STATS\",\"callback_data\":\"CMD:stats\"}],"
+          "[{\"text\":\"⚙️ SETTINGS\",\"callback_data\":\"CMD:settings\"},{\"text\":\"❓ HELP\",\"callback_data\":\"CMD:help\"}]]}";
+  }
+
+// v2.25: the default keyboard is attached only when InpTgMenu=true; /menu still shows it explicitly (MenuKeyboard)
+string MenuMarkup()
+  {
+   return InpTgMenu ? MenuKeyboard() : "";
+  }
+
+string ConfirmMarkup(const string nonce,const string yes,const string no)
+  {
+   return "{\"inline_keyboard\":[[{\"text\":\""+yes+"\",\"callback_data\":\"C1:"+nonce+"\"},{\"text\":\""+no+"\",\"callback_data\":\"C0:"+nonce+"\"}]]}";
+  }
+
+//--- minimal JSON helpers
+int HexDigit(const ushort c)
+  {
+   if(c>='0' && c<='9') return c-'0';
+   if(c>='a' && c<='f') return c-'a'+10;
+   if(c>='A' && c<='F') return c-'A'+10;
+   return 0;
+  }
+
+string JStr(const string seg,const string marker)
+  {
+   int a=StringFind(seg,marker);
+   if(a<0) return "";
+   int i=a+StringLen(marker);
+   int L=StringLen(seg);
+   string out="";
+   while(i<L)
+     {
+      ushort c=StringGetCharacter(seg,i);
+      if(c==92 && i+1<L)
+        {
+         ushort d=StringGetCharacter(seg,i+1);
+         if(d=='n') { out+="\n"; i+=2; continue; }
+         if(d=='t') { out+=" "; i+=2; continue; }
+         if(d=='r') { i+=2; continue; }
+         if(d=='u' && i+5<L)
+           {
+            int code=0;
+            for(int k=0;k<4;k++) code=code*16+HexDigit(StringGetCharacter(seg,i+2+k));
+            out+=ShortToString((ushort)code);
+            i+=6;
+            continue;
+           }
+         out+=ShortToString(d);
+         i+=2;
+         continue;
+        }
+      if(c==34) break;
+      out+=ShortToString(c);
+      i++;
+     }
+   return out;
+  }
+
+long JNum(const string seg,const string marker,bool &found)
+  {
+   found=false;
+   int a=StringFind(seg,marker);
+   if(a<0) return 0;
+   int i=a+StringLen(marker);
+   int L=StringLen(seg);
+   string s="";
+   while(i<L)
+     {
+      ushort c=StringGetCharacter(seg,i);
+      if((c>='0' && c<='9') || (c=='-' && s==""))
+        { s+=ShortToString(c); i++; }
+      else break;
+     }
+   if(s=="" || s=="-") return 0;
+   found=true;
+   return StringToInteger(s);
+  }
+
+//+------------------------------------------------------------------+
+//| Status texts                                                     |
+//+------------------------------------------------------------------+
+bool OwnPosInfo(ulong &ticket,ulong &pid,bool &buy,double &vol,double &entry,double &sl,double &tp,double &profit)
+  {
+   ulong tk[];
+   if(OwnPositions(tk)<1) return false;
+   ticket=tk[ArraySize(tk)-1];
+   if(!PositionSelectByTicket(ticket)) return false;
+   pid=(ulong)PositionGetInteger(POSITION_IDENTIFIER);
+   buy=(PositionGetInteger(POSITION_TYPE)==POSITION_TYPE_BUY);
+   vol=PositionGetDouble(POSITION_VOLUME);
+   entry=PositionGetDouble(POSITION_PRICE_OPEN);
+   sl=PositionGetDouble(POSITION_SL);
+   tp=PositionGetDouble(POSITION_TP);
+   profit=PositionGetDouble(POSITION_PROFIT)+PositionGetDouble(POSITION_SWAP);
+   return true;
+  }
+
+//--- current / planned lot and estimated loss at SL
+bool CurrentLotInfo(double &lot,double &est,string &err)
+  {
+   lot=0; est=0; err="";
+   ulong tk,pid; bool buy; double vol,entry,sl,tp,pr;
+   if(OwnPosInfo(tk,pid,buy,vol,entry,sl,tp,pr))
+     {
+      lot=vol;
+      double lvl=buy?g_buyLevel:g_sellLevel;
+      if(lvl<=0.0) lvl=entry;
+      est=vol*PerLotLoss(buy,lvl);
+      return true;
+     }
+   bool useBuy=(g_mode!=YM_SELL);
+   double level=useBuy?g_buyLevel:g_sellLevel;
+   if(level<=0.0) { err="No valid levels"; return false; }
+   return CalcLot(g_curRisk,useBuy,level,lot,est,err);
+  }
+
+string OrdersText()
+  {
+   ulong od[];
+   int n=OwnOrders(od);
+   if(n==0) return "No Pending Orders";
+   string s="Pending Orders\n";
+   for(int i=0;i<n;i++)
+     {
+      if(!OrderSelect(od[i])) continue;
+      long t=OrderGetInteger(ORDER_TYPE);
+      s+=(t==ORDER_TYPE_BUY_STOP?"Buy Stop: ":"Sell Stop: ")+PX(OrderGetDouble(ORDER_PRICE_OPEN))+"  Lot: "+LotS(OrderGetDouble(ORDER_VOLUME_CURRENT))+"  SL: "+PX(OrderGetDouble(ORDER_SL))+"  TP: "+PX(OrderGetDouble(ORDER_TP))+"  Ticket: #"+UL(od[i])+"\n";
+     }
+   return s;
+  }
+
+string OpenText()
+  {
+   ulong tk,pid; bool buy; double vol,entry,sl,tp,pr;
+   if(!OwnPosInfo(tk,pid,buy,vol,entry,sl,tp,pr)) return "No Open Position";
+   double cur=buy?SymbolInfoDouble(g_sym,SYMBOL_BID):SymbolInfoDouble(g_sym,SYMBOL_ASK);
+   return "Open Position\nTrade #: "+TNo((long)PGV(pid,"N",0))+"\n"+(buy?"BUY":"SELL")+"\nEntry: "+PX(entry)+"\nSL: "+PX(sl)+"\nTP: "+PX(tp)+
+          "\nLot: "+LotS(vol)+"\nRisk: $"+D2(PGV(pid,"R",g_curRisk))+"\nCurrent Price: "+PX(cur)+"\nFloating P/L: "+Money(pr);
+  }
+
+string TgStateText()
+  {
+   return g_tgOk?"CONNECTED":(TgActive()?"ERROR":(g_tgEn?"NOT CONFIGURED":"DISABLED"));
+  }
+
+string StatusText()
+  {
+   string s="🤖 Yetimmm Status\nStatus: "+RunStatus()+"\nState: "+StateText()+"\nSymbol: "+g_sym+"\nBuy Stop: "+PX(g_buyLevel)+"\nSell Stop: "+PX(g_sellLevel)+"\n";
+   ulong tk,pid; bool buy; double vol,entry,sl,tp,pr;
+   if(OwnPosInfo(tk,pid,buy,vol,entry,sl,tp,pr))
+      s+="Position: "+(buy?"BUY":"SELL")+"\nTrade #: "+TNo((long)PGV(pid,"N",0))+"\nEntry: "+PX(entry)+"\nSL: "+PX(sl)+"\nTP: "+PX(tp)+"\nLot: "+LotS(vol)+"\n";
+   else s+="Position: NONE\n";
+   s+="Sync: "+SyncSummary()+"\n";
+   if(g_fresh && g_pendBuy>0.0 && g_pendSell>0.0) s+="Pending levels (start after TP): Buy "+PX(g_pendBuy)+" / Sell "+PX(g_pendSell)+"\n";
+   s+="Initial Risk: $"+D2(g_initRisk)+"\nCurrent Risk: $"+D2(g_curRisk)+"\nAccumulated Loss: $"+D2(g_accLoss)+"\nTrade Sequence: "+IntegerToString(g_seq)+
+      "\nConnection: "+(g_connected?"ONLINE":"OFFLINE")+"\nSpread: "+IntegerToString((int)SymbolInfoInteger(g_sym,SYMBOL_SPREAD))+" pts\nTelegram: "+TgStateText();
+   { string wn=WaitNote(); if(StringLen(wn)>0) s+="\nNote: "+wn; }
+   if(StringLen(g_blockReason)>0) s+="\nBlocked: "+g_blockReason;
+   return s;
+  }
+
+string StatsText()
+  {
+   return "📈 Yetimmm Statistics\nTotal Trades: "+IntegerToString(g_st.total)+"\nWinning Trades: "+IntegerToString(g_st.wins)+"\nLosing Trades: "+IntegerToString(g_st.losses)+
+          "\nBuy Trades: "+IntegerToString(g_st.buys)+" (W "+IntegerToString(g_st.winBuy)+" / L "+IntegerToString(g_st.loseBuy)+")"+
+          "\nSell Trades: "+IntegerToString(g_st.sells)+" (W "+IntegerToString(g_st.winSell)+" / L "+IntegerToString(g_st.loseSell)+")"+
+          "\nTotal Profit: "+Money(g_st.totProfit)+"\nTotal Loss: "+Money(-g_st.totLoss)+"\nNet P/L: "+Money(g_st.net)+"\nWin Rate: "+D2(g_st.winRate)+"%"+
+          "\nAverage Profit: "+Money(g_st.avgProfit)+"\nAverage Loss: "+Money(-g_st.avgLoss)+
+          "\nLargest Loss: "+Money(-g_st.maxLoss)+"\nLargest Profit: "+Money(g_st.maxProfit)+
+          "\nCurrent Streak: "+IntegerToString(g_st.streak)+"\nConsecutive SL: "+IntegerToString(g_st.consSL)+"\nConsecutive TP: "+IntegerToString(g_st.consTP)+
+          "\nTotal Commission: "+Money(g_st.commission)+"\nTotal Swap: "+Money(g_st.swap)+"\nTotal Volume: "+LotS(g_st.volume)+
+          "\nHighest Risk Used: $"+D2(g_st.highRisk)+"\nHighest Lot Used: "+LotS(g_st.highLot)+
+          "\nCurrent Risk: $"+D2(g_curRisk)+"\nAccumulated Loss: $"+D2(g_accLoss)+"\nCurrent Trade: #"+TNo(g_tradeNo);
+  }
+
+string RiskText()
+  {
+   double lot,est; string err;
+   bool ok=CurrentLotInfo(lot,est,err);
+   double nxt=NextRiskFor(g_accLoss+(ok?est:g_curRisk));
+   return "Risk Info\nInitial Risk: $"+D2(g_initRisk)+"\nCurrent Risk: $"+D2(g_curRisk)+"\nNext Risk (if SL): $"+D2(nxt)+"\nAccumulated Loss: $"+D2(g_accLoss)+
+          "\nTrade Sequence: "+IntegerToString(g_seq)+"\nCurrent Lot: "+(ok?LotS(lot):"n/a ("+err+")")+"\nEstimated Loss at SL: "+(ok?"$"+D2(est):"n/a")+
+          "\nTheoretical TP Profit: "+(ok?"$"+D2(est*g_rr):"n/a");
+  }
+
+string SettingsText()
+  {
+   return "Yetimmm Settings\nSymbol: "+g_sym+"\nSL (Upper-Lower): $"+D2(SLDist())+"\nRisk/Reward: 1:"+DoubleToString(g_rr,0)+"\nRecovery Target (sizes next risk): $"+D2(g_target)+
+          "\nSpread Alert (alert only): "+IntegerToString(g_warn)+" pts\nMax Slippage Check (post-fill): "+IntegerToString(g_maxDev)+" pts\nMagic Number: "+IntegerToString(g_magic)+
+          "\nContract Size: "+DoubleToString(g_contract,2)+"\nAccount Mode: "+(g_netting?"NETTING (external-position guard ON)":"HEDGING")+
+          "\nDeviation Action: "+(InpDevAction==YT_DEV_REJECT?"REJECT (close)":"ALERT ONLY")+
+          "\nTelegram: "+(g_tgEn?"ENABLED":"DISABLED")+"\nNotifications: "+(g_tgNot?"ON":"OFF")+"\nTelegram Control: "+(g_tgCtl?"ON":"OFF")+
+          "\nChats: "+IntegerToString(ArraySize(g_tgIds))+" (public)"+"\nBot Token: HIDDEN";
+  }
+
+string HistoryText(int count,int skip)
+  {
+   string lines[];
+   int n=ReadTradeLines(lines);
+   if(n==0) return "📊 Yetimmm Trade History\nNo trades recorded yet.";
+   if(count<1) count=10;
+   if(count>20) count=20;
+   if(skip<0) skip=0;
+   string s="📊 Yetimmm Trade History\n";
+   int end=n-skip;
+   int start=MathMax(0,end-count);
+   if(end<=0) return s+"No older trades.";
+   for(int i=end-1;i>=start;i--)
+     {
+      string f[];
+      if(StringSplit(lines[i],';',f)<30) continue;
+      string blk="\n#"+TNo(StringToInteger(f[0]))+" "+f[5]+"\nEntry: "+f[7]+"\nExit: "+f[8]+"\nLot: "+f[11]+"\nRisk: $"+D2(StringToDouble(f[12]))+
+                 "\nResult: "+f[23]+"\nP/L: "+Money(StringToDouble(f[18]))+"\n";
+      if(StringLen(s)+StringLen(blk)>3700) { s+="\n... (use /history N SKIP for more)"; break; }
+      s+=blk;
+     }
+   return s;
+  }
+
+string LastText()
+  {
+   string lines[];
+   int n=ReadTradeLines(lines);
+   if(n==0) return "No trades recorded yet.";
+   string f[];
+   if(StringSplit(lines[n-1],';',f)<30) return "No trades recorded yet.";
+   return "Last Trade\nTrade #: "+TNo(StringToInteger(f[0]))+"\nType: "+f[5]+"\nEntry: "+f[7]+"\nExit: "+f[8]+"\nLot: "+f[11]+"\nRisk: $"+D2(StringToDouble(f[12]))+
+          "\nResult: "+f[23]+"\nGross Profit: "+Money(StringToDouble(f[15]))+"\nCommission: "+Money(StringToDouble(f[16]))+"\nSwap: "+Money(StringToDouble(f[17]))+
+          "\nNet P/L: "+Money(StringToDouble(f[18]));
+  }
+
+string HelpText()
+  {
+   return "Yetimmm Commands\n/start - تشغيل البوت\n/stop - إيقاف البوت\n/set BUY SELL [RISK] - إدخال المستويات والمخاطرة\n/cancel - إلغاء الأوامر / إدارة الإغلاق\n"
+          "/status - حالة البوت\n/open - الصفقات المفتوحة\n/orders - الأوامر المعلقة\n/history [N] [SKIP] - سجل الصفقات\n/last - آخر صفقة\n"
+          "/stats - الإحصائيات\n/risk - معلومات المخاطرة\n/settings - الإعدادات\n/menu - لوحة الأزرار\n/help - المساعدة";
+  }
+
+//+------------------------------------------------------------------+
+//| Max Slippage Check enforcement                                    |
+//| MT5 ignores "deviation" for pending orders (the server triggers  |
+//| them), so the limit is enforced immediately after the fill: the  |
+//| position is closed, the risk sequence is NOT changed, and the    |
+//| same orders are re-armed once after a cooldown.                  |
+//+------------------------------------------------------------------+
+bool CloseRejected(const ulong pid)
+  {
+   ulong t=0;
+   if(!FindLive(pid,t)) return true;
+   if(NetTaintRefusesClose("the slippage-reject close")) return false;
+   long ot=(PositionGetInteger(POSITION_TYPE)==POSITION_TYPE_BUY)?(long)ORDER_TYPE_BUY:(long)ORDER_TYPE_SELL;
+   double px=PositionGetDouble(POSITION_PRICE_OPEN);
+   double lt=PositionGetDouble(POSITION_VOLUME);
+   ulong exitDev=(ulong)MathMax(500,g_maxDev*10);   // get out even in a fast market
+   bool ok=g_trade.PositionClose(t,exitDev);
+   uint rc=g_trade.ResultRetcode();
+   LogOrder(ok?"DEV_REJECT_CLOSE":"DEV_REJECT_CLOSE_FAILED",ot,px,lt,t,rc,"Max Slippage Check exceeded");
+   YLog(ok?"Deviation reject: position closed #"+UL(t):"Deviation reject: close FAILED #"+UL(t)+" retcode "+IntegerToString((int)rc)+" (retrying)");
+   return ok;
+  }
+
+void RejectExecution(const ulong pid,const double dev)
+  {
+   PSet(pid,"CRC",4.0);
+   GlobalVariablesFlush();
+   YLog("Max Slippage Check exceeded ("+DoubleToString(dev,0)+" > "+IntegerToString(g_maxDev)+" pts): execution REJECTED - closing position "+UL(pid));
+   TgQueue("🚫 EXECUTION REJECTED (Maximum Deviation)\nSlippage: "+DoubleToString(dev,0)+" pts > max "+IntegerToString(g_maxDev)+" pts\nThe position is being closed; the risk sequence is unchanged.");
+   CloseRejected(pid);
+  }
+
+//+------------------------------------------------------------------+
+//| CRITICAL protection guard                                        |
+//| A Yetimmm position WITHOUT SL/TP is not a normal state: its risk |
+//| is unbounded. Detect -> freeze the sequence -> retry every       |
+//| second -> critical alert -> emergency close after a timeout.     |
+//+------------------------------------------------------------------+
+void ProtectionRestored()
+  {
+   if(!g_unprot) return;
+   g_unprot=false; g_unprotPid=0; g_unprotSinceMs=0; g_protTries=0; g_protNextMs=0;
+   ClearAlert("PROTFAIL");
+   if(StringFind(g_blockReason,"CRITICAL PROTECTION")==0) g_blockReason="";
+   YLog("Protection restored: the position carries SL and TP again.");
+   TgQueue("🟢 PROTECTION RESTORED\nThe Yetimmm position carries SL and TP again. Sequence resumed.");
+   g_dirty=true;
+  }
+
+bool EmergencyClose(const ulong pid,const string why)
+  {
+   ulong t=0;
+   if(!FindLive(pid,t)) return true;
+   if(NetTaintRefusesClose("the emergency close")) return false;
+   long ot=(PositionGetInteger(POSITION_TYPE)==POSITION_TYPE_BUY)?(long)ORDER_TYPE_BUY:(long)ORDER_TYPE_SELL;
+   double px=PositionGetDouble(POSITION_PRICE_OPEN);
+   double lt=PositionGetDouble(POSITION_VOLUME);
+   PSet(pid,"CRC",6.0);
+   GlobalVariablesFlush();
+   ulong exitDev=(ulong)MathMax(500,g_maxDev*10);   // get out even in a fast market
+   bool ok=g_trade.PositionClose(t,exitDev);
+   uint rc=g_trade.ResultRetcode();
+   LogOrder(ok?"PROTECTION_CLOSE":"PROTECTION_CLOSE_FAILED",ot,px,lt,t,rc,why);
+   YLog((ok?"Emergency close done #":"Emergency close FAILED #")+UL(t)+" retcode "+IntegerToString((int)rc)+" | "+why);
+   if(ok) TgQueue("🔴 EMERGENCY CLOSE (no SL/TP protection)\nTicket: #"+UL(t)+"\nReason: "+why+"\nThe risk sequence is unchanged. Enter levels to continue.");
+   return ok;
+  }
+
+//--- returns true when the position carries SL and TP (restoring them first when needed)
+bool ProtectPosition(const ulong pid)
+  {
+   ulong t=0;
+   if(!FindLive(pid,t))
+     {
+      if(g_unprot && g_unprotPid==pid) { g_unprot=false; g_unprotPid=0; ClearAlert("PROTFAIL"); }
+      return true;
+     }
+   bool buy=(PositionGetInteger(POSITION_TYPE)==POSITION_TYPE_BUY);
+   double sl=PositionGetDouble(POSITION_SL), tp=PositionGetDouble(POSITION_TP);
+   double ent=PositionGetDouble(POSITION_PRICE_OPEN);
+   if(sl>0.0 && tp>0.0)
+     {
+      if(g_unprot && g_unprotPid==pid) ProtectionRestored();
+      return true;
+     }
+   ulong nowMs=GetTickCount64();
+   string miss=(sl<=0.0 && tp<=0.0)?"SL and TP":(sl<=0.0?"SL":"TP");
+   if(!g_unprot || g_unprotPid!=pid)
+     {
+      g_unprot=true; g_unprotPid=pid; g_unprotSinceMs=nowMs; g_protTries=0; g_protNextMs=0;
+      g_blockReason="CRITICAL PROTECTION FAILURE: position without "+miss+" - sequence frozen";
+      YLog(g_blockReason);
+      RaiseAlert("PROTFAIL","🔴 CRITICAL PROTECTION FAILURE: Yetimmm position #"+UL(pid)+" has no "+miss+". Retrying every second; the sequence is frozen"+
+                 (InpProtectCloseSec>0?" and the position is closed after "+IntegerToString(InpProtectCloseSec)+" s if protection cannot be set.":"."),true,true);
+     }
+   if(nowMs<g_protNextMs) return false;
+   g_protNextMs=nowMs+1000;
+   g_protTries++;
+
+   //--- what the protection must be: the existing value, else the one stored at registration, else derived from the levels
+   double eSL=(sl>0.0)?sl:PGV(pid,"SLP",0.0);
+   double eTP=(tp>0.0)?tp:PGV(pid,"TPP",0.0);
+   double lvl=PGV(pid,"ENT",ent);
+   if(lvl<=0.0) lvl=ent;
+   if(eSL<=0.0) eSL=SLPrice(buy,lvl);
+   if(eTP<=0.0) eTP=TPPrice(buy,lvl);
+   if(eSL<=0.0 || eTP<=0.0)
+     {
+      EmergencyClose(pid,"SL/TP cannot be computed (levels missing)");
+      return false;
+     }
+   //--- a protection that the market has already passed cannot be set: leave the position
+   double bid=SymbolInfoDouble(g_sym,SYMBOL_BID), ask=SymbolInfoDouble(g_sym,SYMBOL_ASK);
+   if(sl<=0.0 && (buy?(bid<=eSL):(ask>=eSL)))
+     {
+      EmergencyClose(pid,"SL level "+PX(eSL)+" already crossed while the position had no SL");
+      return false;
+     }
+   if(tp<=0.0 && (buy?(bid>=eTP):(ask<=eTP)))
+     {
+      EmergencyClose(pid,"TP level "+PX(eTP)+" already reached while the position had no TP");
+      return false;
+     }
+   bool r=g_trade.PositionModify(t,eSL,eTP);
+   uint rc=g_trade.ResultRetcode();
+   bool ok=(r && (rc==TRADE_RETCODE_DONE || rc==TRADE_RETCODE_PLACED));
+   if(ok)
+     {
+      //--- the retcode is not proof: the position must really carry both values now
+      ok=false;
+      for(int w=0;w<6 && !ok;w++)
+        {
+         ulong t2=0;
+         if(FindLive(pid,t2) && PositionGetDouble(POSITION_SL)>0.0 && PositionGetDouble(POSITION_TP)>0.0) ok=true;
+         else Sleep(60);
+        }
+     }
+   if(ok)
+     {
+      PSet(pid,"SLP",eSL); PSet(pid,"TPP",eTP);
+      long ot=buy?(long)ORDER_TYPE_BUY:(long)ORDER_TYPE_SELL;
+      LogOrder("PROTECTION_RESTORED",ot,ent,0.0,t,rc,"SL "+PX(eSL)+" TP "+PX(eTP)+" after "+IntegerToString(g_protTries)+" attempt(s)");
+      YLog("SL/TP restored on position "+UL(pid)+" | SL "+PX(eSL)+" TP "+PX(eTP));
+      ProtectionRestored();
+      return true;
+     }
+   long ot2=buy?(long)ORDER_TYPE_BUY:(long)ORDER_TYPE_SELL;
+   LogOrder("PROTECTION_FAILED",ot2,ent,0.0,t,rc,"attempt "+IntegerToString(g_protTries)+": "+g_trade.ResultComment());
+   YLog("Protection attempt "+IntegerToString(g_protTries)+" FAILED on #"+UL(pid)+" retcode "+IntegerToString((int)rc)+" "+g_trade.ResultComment());
+   if(InpProtectCloseSec>0 && (nowMs-g_unprotSinceMs)>=(ulong)InpProtectCloseSec*1000)
+      EmergencyClose(pid,"protection could not be set for "+IntegerToString(InpProtectCloseSec)+" s");
+   return false;
+  }
+
+//+------------------------------------------------------------------+
+//| Trade registration (Trade Number assignment)                     |
+//+------------------------------------------------------------------+
+long RegisterPosition(const ulong pid)
+  {
+   if(PHas(pid,"N")) return (long)PGV(pid,"N",0);
+   if(IsLoggedPos(pid)) return 0;
+   double entry=0.0,vol=0.0,orderPrice=0.0,sl=0.0,tp=0.0;
+   long ptype=-1,otype=-1;
+   datetime topen=0;
+   ulong order=0,dealIn=0;
+   if(HistorySelectByPosition(pid))
+     {
+      int n=HistoryDealsTotal();
+      for(int i=0;i<n;i++)
+        {
+         ulong d=HistoryDealGetTicket(i);
+         if(d==0) continue;
+         if(HistoryDealGetInteger(d,DEAL_ENTRY)!=DEAL_ENTRY_IN) continue;
+         long dt=HistoryDealGetInteger(d,DEAL_TYPE);
+         if(dt!=DEAL_TYPE_BUY && dt!=DEAL_TYPE_SELL) continue;
+         //--- Netting merges foreign deals into the same position id: the registered lot counts ONLY this bot's deals,
+         //--- so a foreign volume that arrived before registration is still detected by NettingDriftCheck
+         if(g_netting && (long)HistoryDealGetInteger(d,DEAL_MAGIC)!=g_magic) continue;
+         vol+=HistoryDealGetDouble(d,DEAL_VOLUME);
+         if(order==0)
+           {
+            entry=HistoryDealGetDouble(d,DEAL_PRICE);
+            topen=(datetime)HistoryDealGetInteger(d,DEAL_TIME);
+            order=(ulong)HistoryDealGetInteger(d,DEAL_ORDER);
+            ptype=(dt==DEAL_TYPE_BUY)?(long)POSITION_TYPE_BUY:(long)POSITION_TYPE_SELL;
+            dealIn=d;
+           }
+        }
+     }
+   if(ptype<0) return 0; // history not ready yet, retried on the next sync
+   if(order!=0 && HistoryOrderSelect(order))
+     {
+      orderPrice=HistoryOrderGetDouble(order,ORDER_PRICE_OPEN);
+      sl=HistoryOrderGetDouble(order,ORDER_SL);
+      tp=HistoryOrderGetDouble(order,ORDER_TP);
+      otype=HistoryOrderGetInteger(order,ORDER_TYPE);
+     }
+   bool buy=(ptype==(long)POSITION_TYPE_BUY);
+   ulong live=0;
+   if(FindLive(pid,live))
+     {
+      sl=PositionGetDouble(POSITION_SL);
+      tp=PositionGetDouble(POSITION_TP);
+     }
+   double level=buy?g_buyLevel:g_sellLevel;
+   if(orderPrice<=0.0) orderPrice=(level>0.0)?level:entry;
+   double dev=MathAbs(entry-orderPrice)/g_point;
+   bool marketFill=(otype==(long)ORDER_TYPE_BUY || otype==(long)ORDER_TYPE_SELL);
+   if(marketFill)
+     {
+      //--- v2.11: REAL post-fill slippage of a market reversal = |actual fill - the price the lot and TP were sized from|
+      double expPx=GV("RVEXP",0.0);
+      dev=(expPx>0.0)?MathAbs(entry-expPx)/g_point:0.0;
+      GS("RVEXP",0.0);                          // consumed
+      //--- the SL/TP the reversal REQUESTED (computed from the real execution price) is the expected protection of this position
+      if(sl<=0.0) sl=GV("RVSL",0.0);
+      if(tp<=0.0) tp=GV("RVTP",0.0);
+      GS("RVSL",0.0); GS("RVTP",0.0);          // consumed (stored below as this position's expected protection)
+     }
+   double spread=(double)SymbolInfoInteger(g_sym,SYMBOL_SPREAD);
+
+   int priorMode=g_mode;                 // mode before this fill (needed to re-arm after a deviation reject)
+   g_tradeNo++;
+   SaveState();
+   PSet(pid,"N",(double)g_tradeNo);
+   PSet(pid,"R",g_curRisk);
+   PSet(pid,"AL",g_accLoss);
+   PSet(pid,"BB",AccountInfoDouble(ACCOUNT_BALANCE));
+   PSet(pid,"SP",spread);
+   PSet(pid,"DV",dev);
+   PSet(pid,"SLP",sl);
+   PSet(pid,"TPP",tp);
+   PSet(pid,"LOT",vol);
+   PSet(pid,"LB",g_buyLevel);
+   PSet(pid,"LS",g_sellLevel);
+   PSet(pid,"TY",(double)ptype);
+   PSet(pid,"ET",(double)otype);
+   PSet(pid,"ENT",orderPrice);
+   PSet(pid,"ORD",(double)order);
+   PSet(pid,"PM",(double)priorMode);
+   GlobalVariablesFlush();
+
+   //--- make sure the position is protected by SL/TP (a position without them is a CRITICAL failure: see ProtectPosition)
+   if(live!=0)
+     {
+      ProtectPosition(pid);
+      if(FindLive(pid,live)) { sl=PositionGetDouble(POSITION_SL); tp=PositionGetDouble(POSITION_TP); }
+     }
+
+   if(g_state!=YT_STOPPED)
+     {
+      g_state=buy?YT_BUY_ACTIVE:YT_SELL_ACTIVE;
+      g_mode=YM_NONE;
+     }
+   g_activeNoPosSince=0;
+   SaveState();
+   g_dirty=true;
+
+   YLog((buy?"Buy Activated":"Sell Activated")+" | Trade Number Assigned #"+TNo(g_tradeNo)+" | Entry "+PX(entry));
+   LogOrder("TRIGGERED",otype,orderPrice,vol,order,0,"Trade #"+TNo(g_tradeNo)+" fill "+PX(entry));
+   TgQueue((buy?"🟢 BUY ACTIVATED":"🔴 SELL ACTIVATED")+"\nTrade #: "+TNo(g_tradeNo)+"\nEntry: "+PX(entry)+"\nSL: "+PX(sl)+"\nTP: "+PX(tp)+"\nLot: "+LotS(vol)+
+           "\nRisk: $"+D2(g_curRisk)+"\nBuy Level: "+PX(g_buyLevel)+"\nSell Level: "+PX(g_sellLevel)+"\nTime: "+TimeToString(topen,TIME_DATE|TIME_SECONDS));
+   if(dev>(double)g_maxDev)
+     {
+      RaiseAlert("DEV","Deviation exceeded: fill slippage "+DoubleToString(dev,0)+" pts > max "+IntegerToString(g_maxDev)+" pts (Trade #"+TNo(g_tradeNo)+").",true,true);
+      if(InpDevAction==YT_DEV_REJECT && live!=0 && g_state!=YT_STOPPED) RejectExecution(pid,dev);
+     }
+   return g_tradeNo;
+  }
+
+void RegisterLivePositions()
+  {
+   ulong tk[];
+   int n=OwnPositions(tk);
+   for(int i=0;i<n;i++)
+     {
+      if(!PositionSelectByTicket(tk[i])) continue;
+      ulong pid=(ulong)PositionGetInteger(POSITION_IDENTIFIER);
+      if(!PHas(pid,"N") && !IsLoggedPos(pid)) RegisterPosition(pid);
+     }
+  }
+
+//+------------------------------------------------------------------+
+//| Closed position processing (SL / TP / other)                     |
+//+------------------------------------------------------------------+
+bool ProcessClosedPosition(const ulong pid)
+  {
+   if(IsLoggedPos(pid)) { ClearPosGV(pid); return true; }
+   if(!HistorySelectByPosition(pid)) return false;
+   int n=HistoryDealsTotal();
+   double inVol=0,outVol=0,gross=0,comm=0,swap=0,exitPrice=0,entryPrice=0;
+   datetime tOpen=0,tClose=0;
+   ulong dealIn=0,dealOut=0,orderIn=0;
+   long ptype=-1,reason=-1;
+   bool foreignIn=false;                                   // Netting: a foreign ENTRY deal merged into this position id
+   for(int i=0;i<n;i++)
+     {
+      ulong d=HistoryDealGetTicket(i);
+      if(d==0) continue;
+      long dtype=HistoryDealGetInteger(d,DEAL_TYPE);
+      if(dtype!=DEAL_TYPE_BUY && dtype!=DEAL_TYPE_SELL) continue;
+      long entry=HistoryDealGetInteger(d,DEAL_ENTRY);
+      if(g_netting && entry==DEAL_ENTRY_IN && (long)HistoryDealGetInteger(d,DEAL_MAGIC)!=g_magic) foreignIn=true;
+      double vol=HistoryDealGetDouble(d,DEAL_VOLUME);
+      double pr=HistoryDealGetDouble(d,DEAL_PRICE);
+      datetime tm=(datetime)HistoryDealGetInteger(d,DEAL_TIME);
+      comm+=HistoryDealGetDouble(d,DEAL_COMMISSION)+HistoryDealGetDouble(d,DEAL_FEE);
+      swap+=HistoryDealGetDouble(d,DEAL_SWAP);
+      if(entry==DEAL_ENTRY_IN)
+        {
+         inVol+=vol;
+         if(dealIn==0)
+           {
+            dealIn=d; tOpen=tm; entryPrice=pr;
+            orderIn=(ulong)HistoryDealGetInteger(d,DEAL_ORDER);
+            ptype=(dtype==DEAL_TYPE_BUY)?(long)POSITION_TYPE_BUY:(long)POSITION_TYPE_SELL;
+           }
+        }
+      else if(entry==DEAL_ENTRY_OUT || entry==DEAL_ENTRY_OUT_BY || entry==DEAL_ENTRY_INOUT)
+        {
+         outVol+=vol;
+         gross+=HistoryDealGetDouble(d,DEAL_PROFIT);
+         dealOut=d; tClose=tm; exitPrice=pr;
+         reason=HistoryDealGetInteger(d,DEAL_REASON);
+        }
+     }
+   if(inVol<=0.0 || dealOut==0) return false;             // history not ready yet
+   if(outVol<inVol-1e-8) return false;                     // not fully closed yet
+   if(IsLoggedDeal(dealOut)) { ClearPosGV(pid); return true; }
+
+   double net=gross+comm+swap;
+   bool buy=(ptype==(long)POSITION_TYPE_BUY);
+   long tno=(long)PGV(pid,"N",0);
+   double reqRisk=PGV(pid,"R",g_curRisk);
+   double accBefore=PGV(pid,"AL",g_accLoss);
+   double balBefore=PGV(pid,"BB",0);
+   double spread=PGV(pid,"SP",0);
+   double dev=PGV(pid,"DV",0);
+   double slp=PGV(pid,"SLP",0), tpp=PGV(pid,"TPP",0);
+   double lbuy=PGV(pid,"LB",g_buyLevel), lsell=PGV(pid,"LS",g_sellLevel);
+   long otype=(long)PGV(pid,"ET",-1);
+   long cmd=(long)PGV(pid,"CRC",0);
+
+   string rs;
+   if(reason==DEAL_REASON_SL) rs="SL";
+   else if(reason==DEAL_REASON_TP) rs="TP";
+   else if(cmd==1) rs="Manual Stop";
+   else if(cmd==2) rs="Telegram Stop";
+   else if(cmd==3) rs="Telegram Cancel";
+   else if(cmd==4) rs="Deviation Reject";
+   else if(cmd==5) rs="Extra Position Closed";
+   else if(cmd==6) rs="Protection Close";
+   else
+     {
+      double tol=MathMax(g_point*5.0,g_tick*3.0);
+      //--- v2.11: the price fallback applies ONLY when the reason is unknown; a manual / mobile / web / stop-out / EA close is never re-labelled SL or TP
+      bool reasonUnknown=(reason!=DEAL_REASON_CLIENT && reason!=DEAL_REASON_MOBILE && reason!=DEAL_REASON_WEB &&
+                          reason!=DEAL_REASON_SO && reason!=DEAL_REASON_EXPERT);
+      if(InpPriceFallback && reasonUnknown && slp>0.0 && MathAbs(exitPrice-slp)<=tol) rs="SL";
+      else if(InpPriceFallback && reasonUnknown && tpp>0.0 && MathAbs(exitPrice-tpp)<=tol) rs="TP";
+      else if(reason==DEAL_REASON_SO) rs="Stop Out";
+      else if(reason==DEAL_REASON_CLIENT || reason==DEAL_REASON_MOBILE || reason==DEAL_REASON_WEB) rs="Manual (External)";
+      else rs="Other";
+     }
+
+   double entryLevel=buy?lbuy:lsell;
+   if(entryLevel<=0.0) entryLevel=entryPrice;
+   //--- theoretical loss at SL from the levels this position was opened with (not from today's levels)
+   double theoSL=buy?lsell:lbuy;
+   double theoLoss=inVol*PerLotLossSL(buy,entryLevel,(theoSL>0.0 && theoSL!=entryLevel)?theoSL:SLPrice(buy,entryLevel));
+   double theoProfit=theoLoss*g_rr;
+
+   //--- Netting: a position that absorbed foreign volume has a P/L that is NOT purely this bot's.
+   //--- It is logged, but it never feeds the risk sequence (no accumulated loss, no risk step, no TP reset).
+   bool tainted=(g_netting && (foreignIn || PGV(pid,"TAINT",0.0)>0.5));
+   if(g_netting && foreignIn && PGV(pid,"TAINT",0.0)<=0.5)
+      YLog("Netting: position "+UL(pid)+" absorbed foreign volume (found in its history) - logged, but NOT counted in the risk sequence / statistics.");
+
+   //--- apply the risk logic exactly once for this position
+   bool bookkeeping=(g_state==YT_STOPPED || g_stopCleanup);
+   bool isSL=(rs=="SL" && !tainted), isTP=(rs=="TP" && !tainted), isDev=(rs=="Deviation Reject" && !tainted);
+   ulong rest[];
+   int others=OwnPositions(rest);
+   string nextInfo="";
+   double nextLot=0,nextEst=0; string lerr="";
+   if(!bookkeeping)
+     {
+      if(tainted)
+        {
+         if(others==0) { g_mode=YM_NONE; g_state=YT_IDLE; g_lastSLSide=0; }
+         g_failCount=0;
+        }
+      else if(isSL)
+        {
+         if(net<0.0) g_accLoss+=-net;
+         g_seq++;
+         g_curRisk=NextRiskFor(g_accLoss);
+         //--- v2.00: a VERIFIED Stop Loss closed the position -> BOTH stop orders are prepared again (Upper = Buy Stop, Lower = Sell Stop)
+         g_mode=YM_BOTH;
+         g_state=YT_WAITING_REENTRY;
+         g_lastSLSide=buy?1:2;
+         g_nextPlaceMs=0;
+         g_failCount=0;
+         //--- the ORIGINAL levels of the position that just stopped out are restored (its SL was the opposite level)
+         if(lbuy>0.0 && lsell>0.0 && (!PriceEq(g_buyLevel,lbuy) || !PriceEq(g_sellLevel,lsell)))
+           {
+            YLog("Original levels restored for re-arm: Buy "+PX(g_buyLevel)+" -> "+PX(lbuy)+" | Sell "+PX(g_sellLevel)+" -> "+PX(lsell));
+            g_buyLevel=lbuy; g_sellLevel=lsell;
+           }
+         double lvl=buy?g_sellLevel:g_buyLevel;   // the opposite direction is the next one (same SL distance on both sides)
+         if(!CalcLot(g_curRisk,!buy,lvl,nextLot,nextEst,lerr)) nextLot=0;
+        }
+      else if(isTP)
+        {
+         if(InpTpResetNetOnly && g_accLoss>1e-9 && net<g_accLoss-1e-6)
+           {
+            //--- v2.23: the TP did NOT repay the cycle's accumulated loss after commission/swap/slippage: the remaining debt is kept
+            double rem=g_accLoss-MathMax(net,0.0);
+            YLog("TP net "+D2(net)+" < accumulated loss "+D2(g_accLoss)+": cycle NOT recovered - remaining debt "+D2(rem)+" carried into the next risk");
+            g_accLoss=rem;
+            g_curRisk=NextRiskFor(g_accLoss);
+            RaiseAlert("TPPART"+IntegerToString((int)g_tradeNo),"TP closed with net "+D2(net)+" "+AccCcy()+" - the accumulated loss is not fully repaid yet (remaining "+D2(rem)+"). Risk sequence continues.",false,true);
+           }
+         else ResetRisk();
+         g_lastSLSide=0;
+         g_mode=YM_NONE;
+         if(g_fresh) { PromotePending(); g_state=YT_ARMED; g_mode=YM_BOTH; g_fresh=false; }
+         else g_state=YT_TP_RESET;
+        }
+      else if(isDev)
+        {
+         int pm=(int)PGV(pid,"PM",(double)YM_BOTH);
+         if(pm!=YM_BOTH && pm!=YM_BUY && pm!=YM_SELL) pm=YM_BOTH;
+         g_failCount=0;
+         g_nextPlaceMs=GetTickCount64()+30000;   // cooldown: no immediate re-fill / no repeated orders
+         if((otype==(long)ORDER_TYPE_BUY || otype==(long)ORDER_TYPE_SELL) && (g_lastSLSide==1 || g_lastSLSide==2))
+           {
+            //--- v2.11: a rejected MARKET reversal keeps its direction: back to WAITING_REENTRY (the reversal / pending pair is retried after the cooldown)
+            g_mode=YM_BOTH;
+            g_state=YT_WAITING_REENTRY;
+            g_nextRevMs=GetTickCount64()+30000;
+           }
+         else
+           {
+            g_mode=pm;
+            g_state=YT_ARMED;
+           }
+        }
+      else if(others==0)
+        {
+         if(g_fresh) PromotePending();
+         g_mode=YM_NONE;
+         g_state=YT_IDLE;
+        }
+     }
+   double accAfter=g_accLoss;
+   double nextRisk=g_curRisk;
+   if(!bookkeeping && !isSL && !isTP) nextRisk=g_curRisk;
+
+   //--- persistent trade log (once per position)
+   string line=IntegerToString(tno)+";"+UL(orderIn)+";"+UL(dealIn)+";"+UL(dealOut)+";"+UL(pid)+";"+(buy?"BUY":"SELL")+";"+OTypeStr(otype)+";"+
+               PX(entryPrice)+";"+PX(exitPrice)+";"+PX(slp)+";"+PX(tpp)+";"+LotS(inVol)+";"+D2(reqRisk)+";"+D2(theoLoss)+";"+D2(theoProfit)+";"+
+               D2(gross)+";"+D2(comm)+";"+D2(swap)+";"+D2(net)+";"+DoubleToString(spread,0)+";"+DoubleToString(dev,0)+";"+
+               TimeToString(tOpen,TIME_DATE|TIME_SECONDS)+";"+TimeToString(tClose,TIME_DATE|TIME_SECONDS)+";"+rs+";"+
+               D2(balBefore)+";"+D2(AccountInfoDouble(ACCOUNT_BALANCE))+";"+D2(accBefore)+";"+D2(accAfter)+";"+D2(reqRisk)+";"+D2(nextRisk)+";"+
+               PX(lbuy)+";"+PX(lsell)+";"+IntegerToString(g_magic)+";"+g_sym+";"+(tainted?"CLOSED_NET_TAINTED":"CLOSED")+";"+
+               Clean(tainted?"Netting: external volume merged - risk sequence NOT updated":(bookkeeping?"bookkeeping only":""));
+   AppendLine(TradeFile(),TRADE_HEADER,line);
+   MarkLogged(pid,dealOut);
+   if(!tainted) StatsAdd(net,comm,swap,buy?"BUY":"SELL",inVol,reqRisk,rs);
+   g_lastDeal=dealOut;
+   GS("LDT",(double)tClose);                 // time of the last processed closing deal (history-recovery fallback anchor)
+   SaveState();
+   ClearPosGV(pid);
+   g_dirty=true;
+   YLog("Trade History Updated: #"+TNo(tno)+" "+rs+" net "+D2(net));
+   YLog("Statistics Updated");
+
+   //--- notifications
+   if(isSL)
+     {
+      YLog("Stop Loss | New Risk Calculated "+D2(g_curRisk)+" | New Lot Calculated "+(nextLot>0?LotS(nextLot):"n/a"));
+      TgQueue("🔴 STOP LOSS\nTrade #: "+TNo(tno)+"\nType: "+(buy?"BUY":"SELL")+"\nEntry: "+PX(entryPrice)+"\nExit: "+PX(exitPrice)+"\nLot: "+LotS(inVol)+
+              "\nLoss: "+Money(net)+"\nAccumulated Loss: $"+D2(g_accLoss)+"\nNext Risk: $"+D2(g_curRisk)+"\nNext Lot: "+(nextLot>0?LotS(nextLot):"n/a ("+lerr+")")+
+              "\nRe-armed (both sides):\nBuy Stop: "+PX(g_buyLevel)+"\nSell Stop: "+PX(g_sellLevel));
+     }
+   else if(isTP)
+     {
+      YLog("Take Profit | Risk Reset");
+      TgQueue("🟢 TAKE PROFIT\nTrade #: "+TNo(tno)+"\nType: "+(buy?"BUY":"SELL")+"\nEntry: "+PX(entryPrice)+"\nExit: "+PX(exitPrice)+"\nProfit: "+Money(net)+
+              "\nRisk Sequence Reset ✅\nAccumulated Loss: $0\nNext Risk: $"+D2(g_initRisk)+"\nStatus:\n"+(g_state==YT_ARMED?"ARMED (new levels)":"WAITING FOR LEVELS"));
+     }
+   else if(isDev)
+     {
+      YLog("Execution rejected (Max Deviation) Trade #"+TNo(tno)+" net "+D2(net)+" | risk sequence unchanged, orders re-armed at the original levels");
+      TgQueue("🚫 EXECUTION REJECTED (Max Deviation)\nTrade #: "+TNo(tno)+"\nType: "+(buy?"BUY":"SELL")+"\nEntry: "+PX(entryPrice)+"\nExit: "+PX(exitPrice)+"\nNet P/L: "+Money(net)+
+              (bookkeeping?"":"\nRisk sequence unchanged. Orders re-armed at the original levels after a short cooldown."));
+     }
+   else
+     {
+      YLog("Position closed ("+rs+") Trade #"+TNo(tno)+" net "+D2(net)+(tainted?" | NETTING-TAINTED: not counted in the risk sequence / statistics":""));
+      TgQueue("⚪ POSITION CLOSED ("+rs+")\nTrade #: "+TNo(tno)+"\nType: "+(buy?"BUY":"SELL")+"\nEntry: "+PX(entryPrice)+"\nExit: "+PX(exitPrice)+"\nNet P/L: "+Money(net)+
+              (tainted?"\n⚠️ Netting: external volume was merged into this position. Its result is NOT counted in the risk sequence or statistics.":"")+
+              (bookkeeping?"":"\nRisk sequence unchanged. Waiting for levels (/set BUY SELL)."));
+      if(!bookkeeping && others==0)
+        {
+         if(tainted) RaiseAlert("NETTAINT","Netting-contaminated position closed ("+rs+"). Its result was NOT added to the risk sequence. Check the account, then enter new levels to continue.",true,true);
+         else        RaiseAlert("EXTCLOSE","Position closed outside SL/TP ("+rs+"). Enter new levels to continue.",true,false);
+        }
+     }
+   return true;
+  }
+
+void CheckClosures()
+  {
+   string prefix=GN("P");
+   int pl=StringLen(prefix);
+   int total=GlobalVariablesTotal();
+   if(total!=g_gvTotal)
+     {
+   g_gvTotal=total;
+   ArrayResize(g_pids,0);
+   for(int i=0;i<total;i++)
+     {
+      string nm=GlobalVariableName(i);
+      if(StringFind(nm,prefix)!=0) continue;
+      int L=StringLen(nm);
+      if(L<pl+3) continue;
+      if(StringSubstr(nm,L-2)!="_N") continue;
+      string mid=StringSubstr(nm,pl,L-pl-2);
+      bool digits=true;
+      for(int k=0;k<StringLen(mid);k++)
+        { ushort c=StringGetCharacter(mid,k); if(c<'0' || c>'9') { digits=false; break; } }
+      if(!digits || StringLen(mid)==0) continue;
+      ulong pid=(ulong)StringToInteger(mid);
+      int c2=ArraySize(g_pids);
+      ArrayResize(g_pids,c2+1);
+      g_pids[c2]=pid;
+     }
+     }
+   ulong ids[];
+   ArrayCopy(ids,g_pids);
+   for(int i=0;i<ArraySize(ids);i++)
+     {
+      ulong tk;
+      if(FindLive(ids[i],tk)) continue;
+      ProcessClosedPosition(ids[i]);
+     }
+  }
+
+//--- find trades opened (and maybe closed) while the EA/terminal was offline
+//--- v2.11: anchored on the last time the history was FULLY processed (LSCAN, fallback: last processed closing deal time LDT),
+//--- with a 6 h safety overlap. The marker advances only when every position found in the range has been registered, and positions are
+//--- registered AND processed one by one in chronological order (so several offline trades rebuild the risk sequence in the right order).
+void RecoverHistory()
+  {
+   datetime now=TimeCurrent();
+   datetime anchor=(datetime)GV("LSCAN",0);
+   if(anchor==0) anchor=(datetime)GV("LDT",0);
+   if(anchor==0) { GS("LSCAN",(double)now); return; }
+   datetime from=0;
+   if(anchor>(datetime)YT_SCAN_BUFFER_SEC) from=anchor-(datetime)YT_SCAN_BUFFER_SEC;
+   if(!HistorySelect(from,now+60)) return;
+   int n=HistoryDealsTotal();
+   ulong cand[];
+   for(int i=0;i<n;i++)
+     {
+      ulong d=HistoryDealGetTicket(i);
+      if(d==0) continue;
+      if(HistoryDealGetString(d,DEAL_SYMBOL)!=g_sym) continue;
+      if((long)HistoryDealGetInteger(d,DEAL_MAGIC)!=g_magic) continue;
+      if(HistoryDealGetInteger(d,DEAL_ENTRY)!=DEAL_ENTRY_IN) continue;
+      ulong pid=(ulong)HistoryDealGetInteger(d,DEAL_POSITION_ID);
+      if(PHas(pid,"N") || IsLoggedPos(pid)) continue;
+      bool dup=false;
+      for(int k=0;k<ArraySize(cand);k++) if(cand[k]==pid) { dup=true; break; }
+      if(dup) continue;
+      int c=ArraySize(cand);
+      ArrayResize(cand,c+1);
+      cand[c]=pid;
+     }
+   bool complete=true;
+   for(int i=0;i<ArraySize(cand);i++)
+     {
+      //--- history order == chronological order of the entry deals
+      if(RegisterPosition(cand[i])==0 && !PHas(cand[i],"N") && !IsLoggedPos(cand[i]))
+        {
+         complete=false;                       // history of this position is not ready yet: the marker must not pass it
+         continue;
+        }
+      ulong lt=0;
+      if(!FindLive(cand[i],lt)) ProcessClosedPosition(cand[i]);   // already closed (offline): apply it NOW, before the next one is registered
+     }
+   CheckClosures();
+   if(complete)
+     {
+      GS("LSCAN",(double)now);
+      GS("LSCANFAIL",0.0);
+     }
+   else
+     {
+      datetime f0=(datetime)GV("LSCANFAIL",0);
+      if(f0==0)
+        {
+         GS("LSCANFAIL",(double)now);
+         YLog("History recovery: a position could not be registered yet - the scan marker is NOT advanced (retried every 30 s).");
+        }
+      else if((long)(now-f0)>YT_SCAN_BUFFER_SEC)
+        {
+         GS("LSCAN",(double)now);
+         GS("LSCANFAIL",0.0);
+         RaiseAlert("RECOVERFAIL","History recovery could not register some position(s) for 6 hours - the scan marker was advanced. Check the Trades / Orders logs.",true,true);
+        }
+     }
+  }
+
+//+------------------------------------------------------------------+
+//| Order placement                                                  |
+//+------------------------------------------------------------------+
+void HandleLotError(const string err)
+  {
+   //--- v2.23: a volume / margin condition is a WAIT (WAITING_VOLUME / WAITING_MARGIN ...), never a fatal error and never a stop
+   string wc=WaitCodeOf(g_riskCode);
+   if(wc=="") wc="WAITING_BROKER";
+   g_wcode=wc;
+   g_waitReason=err;
+   g_nextPlaceMs=GetTickCount64()+30000;
+   YLog(wc+": "+err);
+   g_riskAlertKey="RISK"+g_riskCode;
+   RaiseAlert(g_riskAlertKey,err,false,true);        // one alert per re-arm window (throttled), no pop-up
+  }
+
+//--- true when every pending order wanted by the current mode really exists on the server
+bool AllNeededPlaced()
+  {
+   bool nb=(g_mode==YM_BOTH || g_mode==YM_BUY), ns=(g_mode==YM_BOTH || g_mode==YM_SELL);
+   bool hb=false, hs=false;
+   ulong t[];
+   int n=OwnOrders(t);
+   for(int i=0;i<n;i++)
+     {
+      if(!OrderSelect(t[i])) continue;
+      long ty=OrderGetInteger(ORDER_TYPE);
+      if(ty==ORDER_TYPE_BUY_STOP)  hb=true;
+      if(ty==ORDER_TYPE_SELL_STOP) hs=true;
+     }
+   return ((!nb || hb) && (!ns || hs));
+  }
+
+bool TryPlace(const bool buy,const double level)
+  {
+   int s=SideIdx(buy);
+   ulong nowMs=GetTickCount64();
+   if(nowMs<g_nextPlaceMs)
+     {
+      if(g_sync[s]==YS_CREATING) SetSync(buy,YS_WAITING,"Retry cooldown");
+      return false;
+     }
+   MqlTick tk;
+   if(!SymbolInfoTick(g_sym,tk) || tk.ask<=0.0 || tk.bid<=0.0)
+     {
+      SetSync(buy,YS_WAITING,"No market prices");
+      return false;
+     }
+   //--- broker / market rules: a request that the server would reject is never sent; the reason is shown (NOT PLACED)
+   string pwhy="";
+   int pst=PlacementState(buy,level,pwhy);
+   if(pst!=0)
+     {
+      //--- v2.16: the level is accepted and kept; the order is created automatically when the broker rules allow it
+      string wtxt=(pst==1)?WaitText(buy,level):pwhy;
+      g_waitReason=(g_state==YT_WAITING_REENTRY?"Re-entry: ":"")+wtxt;
+      SetSync(buy,YS_WAITING,g_waitReason);
+      g_raceCnt[s]=0;
+      g_trigMs[s]=0;
+      g_trig[s]=(pst==1)?WaitTrigger(buy,level):0.0;      // v2.17: cached; OnTick wakes the synchroniser the tick the price crosses it
+      if(pst==1) NoteDefer(buy,level,wtxt);
+      return false;
+     }
+   //--- v2.17: after a "market moved" race the side keeps a wider safety distance until the price is really clear of the level
+   if(g_waitBuf[s]>0.0)
+     {
+      double trg=WaitTrigger(buy,level);
+      if(buy?(tk.ask>trg+1e-9):(tk.bid<trg-1e-9))
+        {
+         g_trig[s]=trg;
+         g_waitReason=(g_state==YT_WAITING_REENTRY?"Re-entry: ":"")+WaitText(buy,level);
+         SetSync(buy,YS_WAITING,g_waitReason);
+         return false;
+        }
+     }
+   g_waitReason="";
+   if(!TerminalInfoInteger(TERMINAL_TRADE_ALLOWED) || !MQLInfoInteger(MQL_TRADE_ALLOWED) ||
+      !AccountInfoInteger(ACCOUNT_TRADE_ALLOWED) || !AccountInfoInteger(ACCOUNT_TRADE_EXPERT))
+     {
+      g_nextPlaceMs=nowMs+15000;
+      g_blockReason="AutoTrading / account trading disabled";
+      SetSync(buy,YS_WAITING,g_blockReason);
+      RaiseAlert("AUTOTR","Trading is not allowed (AutoTrading disabled or account restriction).",true,true);
+      return false;
+     }
+   double lot=0,est=0; string err="";
+   string spw="";
+   if(SpreadTooWide(spw)) { g_wcode="WAITING_SPREAD"; g_waitReason=spw; g_nextPlaceMs=nowMs+2000; SetSync(buy,YS_WAITING,spw); return false; }
+   string rgw="",rgc="";
+   if(RecoveryGuardBlocks(rgw,rgc))
+     {
+      g_wcode=rgc; g_waitReason=rgw; g_nextPlaceMs=nowMs+5000;
+      SetSync(buy,YS_WAITING,rgw);
+      RaiseAlert("RPGUARD"+rgc,rgw,false,true);
+      return false;
+     }
+   ClearAlert("RPGUARDWAITING_SEQCAP"); ClearAlert("RPGUARDWAITING_RISKCAP");
+   if(!CalcLot(g_curRisk,buy,level,lot,est,err)) { HandleLotError(err); SetSync(buy,YS_WAITING,err); return false; }
+   g_blockReason="";
+   g_wcode="";
+   if(StringLen(g_riskAlertKey)>0) { ClearAlert(g_riskAlertKey); g_riskAlertKey=""; }
+   ClearAlert("AUTOTR");
+   if(g_rk.clamped) YLog("CLAMP_TO_MIN: "+g_rk.text);
+
+   double slp=SLPrice(buy,level), tpp=TPPrice(buy,level);
+   SetSync(buy,YS_CREATING,"Placing "+PX(level));
+   UpdatePanel();                                    // the panel shows PLACING while the server works
+   g_trade.SetDeviationInPoints(g_maxDev);
+   {
+    string ocCode="", ocWhy=""; ulong ocCool=0;
+    if(!PendingOrderCheck(buy,lot,level,slp,tpp,ocCode,ocWhy,ocCool))
+      {
+       g_wcode=ocCode; g_waitReason=ocWhy; g_nextPlaceMs=GetTickCount64()+ocCool;
+       SetSync(buy,YS_WAITING,ocWhy);
+       return false;
+      }
+   }
+   datetime pxExp=0;
+   ENUM_ORDER_TYPE_TIME pxTT=PendingTimeType(pxExp);
+   bool r=buy?g_trade.BuyStop(lot,level,g_sym,slp,tpp,pxTT,pxExp,"Yetimmm")
+             :g_trade.SellStop(lot,level,g_sym,slp,tpp,pxTT,pxExp,"Yetimmm");
+   uint rc=g_trade.ResultRetcode();
+   bool ok=(r && (rc==TRADE_RETCODE_DONE || rc==TRADE_RETCODE_PLACED || rc==TRADE_RETCODE_DONE_PARTIAL));
+   long otype=buy?(long)ORDER_TYPE_BUY_STOP:(long)ORDER_TYPE_SELL_STOP;
+   if(ok)
+     {
+      ulong ticket=g_trade.ResultOrder();
+      g_failCount=0;
+      g_raceCnt[s]=0;
+      //--- the retcode alone is not proof: the order must exist on the server with the requested values
+      string vwhy="";
+      bool verified=VerifyPlaced(ticket,buy,level,lot,slp,tpp,vwhy);
+      if(!verified)
+        {
+         g_guardTk[s]=ticket;
+         g_guardMs[s]=GetTickCount64()+4000;
+         LogOrder("PLACED_UNVERIFIED",otype,level,lot,ticket,rc,vwhy);
+         YLog(SideName(buy)+" accepted by the server but NOT verified: "+vwhy);
+         SetSync(buy,YS_CREATING,"Awaiting server confirmation: "+vwhy);
+         g_dirty=true;
+         return false;
+        }
+      TrkTake(buy,ticket);
+      g_placedMs[s]=GetTickCount64();
+      if(g_deferLvl[s]>0.0) YLog(SideName(buy)+" was waiting for the market - the price allows it now, order placed");
+      g_deferLvl[s]=0.0;
+      g_trig[s]=0.0;
+      g_waitBuf[s]=(g_waitBuf[s]>(g_tick>0.0?g_tick:g_point)*1.5)?g_waitBuf[s]*0.5:0.0;   // the learned buffer decays after a success
+      ulong latMs=(g_trigMs[s]>0)?(GetTickCount64()-g_trigMs[s]):0;
+      g_trigMs[s]=0;
+      BrWaitActivated(buy,level,ticket,latMs);           // v2.17: the waiting command in the app log becomes "activated"
+      LogOrder("PLACED",otype,level,lot,ticket,rc,"Risk $"+D2(g_curRisk)+" SL "+PX(slp)+" TP "+PX(tpp));
+      SetSync(buy,YS_PLACED,"Ticket #"+UL(ticket));
+      PanelMsg(SideName(buy)+" PLACED #"+UL(ticket)+" @ "+PX(level),clrLime);
+      bool reentry=(g_state==YT_WAITING_REENTRY);
+      YLog(reentry?(buy?"Re-entry Order Placed: Buy Stop ":"Re-entry Order Placed: Sell Stop ")+PX(level)+" #"+UL(ticket):(buy?"Buy Stop Placed ":"Sell Stop Placed ")+PX(level)+" #"+UL(ticket));
+      if(reentry && AllNeededPlaced()) { g_state=YT_ARMED; SaveState(); }   // WAITING_REENTRY lasts until BOTH orders are on the server
+      TgQueue((reentry?"🔁 RE-ENTRY ORDER PLACED":(buy?"📌 BUY STOP PLACED":"📌 SELL STOP PLACED"))+"\nTicket: #"+UL(ticket)+"\n"+(buy?"Buy Stop: ":"Sell Stop: ")+PX(level)+
+              "\nLot: "+LotS(lot)+"\nRisk: $"+D2(g_curRisk)+"\nEstimated Loss at SL: $"+D2(est)+"\nSL: "+PX(slp)+"\nTP: "+PX(tpp)+(latMs>0?"\nExecution: "+UL(latMs)+" ms after the price reached the trigger":""));
+      return true;
+     }
+
+   //--- rejected
+   string cm=g_trade.ResultComment();
+   //--- v2.16: the market moved between the check and the request (price crossed the level / requote): this is NOT a failure.
+   //--- The level simply keeps waiting and the order is retried on the very next tick (bounded, then the normal error path applies)
+   //--- v2.17: it is never shown as a failure; the safety buffer of this side widens (bounded) and the retries back off
+   if((rc==TRADE_RETCODE_INVALID_STOPS || rc==TRADE_RETCODE_INVALID_PRICE || rc==TRADE_RETCODE_REQUOTE || rc==TRADE_RETCODE_PRICE_CHANGED) && g_raceCnt[s]<120)
+     {
+      g_raceCnt[s]++;
+      double stp=MathMax((double)SymbolInfoInteger(g_sym,SYMBOL_SPREAD)*g_point,(g_tick>0.0)?g_tick:g_point);
+      g_waitBuf[s]=MathMin(g_waitBuf[s]+stp,stp*8.0);
+      g_trig[s]=WaitTrigger(buy,level);
+      g_nextPlaceMs=nowMs+((g_raceCnt[s]<4)?250:(ulong)MathMin(3000.0,250.0*(g_raceCnt[s]-2)));
+      SetSync(buy,YS_WAITING,"Market moved while sending - waiting for a safer price");
+      if(g_raceCnt[s]==1 || g_raceCnt[s]%10==0)
+         YLog(SideName(buy)+" "+PX(level)+": market moved while sending (retcode "+IntegerToString((int)rc)+") - safety buffer "+PX(g_waitBuf[s])+", waiting (attempt "+IntegerToString(g_raceCnt[s])+")");
+      return false;
+     }
+   LogOrder("REJECTED",otype,level,lot,0,rc,cm);
+   SetSync(buy,YS_FAILED,"NOT PLACED: "+cm+" [retcode "+IntegerToString((int)rc)+"]");
+   PanelMsg(SideName(buy)+" NOT PLACED: "+cm,clrTomato);
+   YLog("Execution Rejected: retcode "+IntegerToString((int)rc)+" "+cm);
+   ulong delay=2000;
+   bool transient=false;
+   switch((int)rc)
+     {
+      case TRADE_RETCODE_NO_MONEY:         g_blockReason="Insufficient margin for required risk."; delay=30000; transient=true; break;
+      case TRADE_RETCODE_MARKET_CLOSED:    g_blockReason="Market closed"; delay=30000; transient=true; break;
+      case TRADE_RETCODE_TRADE_DISABLED:
+      case TRADE_RETCODE_CLIENT_DISABLES_AT:
+      case TRADE_RETCODE_SERVER_DISABLES_AT: g_blockReason="Trading disabled"; delay=15000; transient=true; break;
+      case TRADE_RETCODE_CONNECTION:       delay=5000; transient=true; break;
+      case TRADE_RETCODE_TOO_MANY_REQUESTS:delay=10000; transient=true; break;
+      case TRADE_RETCODE_INVALID_STOPS:
+      case TRADE_RETCODE_INVALID_PRICE:    delay=1500; transient=true; break;
+      default:
+         g_failCount++;
+         delay=(ulong)MathMin(60000.0,2000.0*MathPow(2.0,MathMin(g_failCount,5)));
+         break;
+     }
+   g_nextPlaceMs=nowMs+delay;
+   RaiseAlert("REJ"+IntegerToString((int)rc),"Order rejected (NOT PLACED) ("+(buy?"Buy Stop":"Sell Stop")+" "+PX(level)+"): "+cm+" [retcode "+IntegerToString((int)rc)+"]",true,true);
+   if(!transient && g_failCount>=8)
+     {
+      g_state=YT_ERROR;
+      GS("REVERR",0.0);                          // a placement error is not a reversal error: /start re-arms normally
+      SaveState();
+      RaiseAlert("ERRSTATE","Bot moved to ERROR state after repeated order failures. Fix the issue, then use /start or enter levels.",true,true);
+     }
+   return false;
+  }
+
+//+------------------------------------------------------------------+
+//| v2.00: ONE position at most. If more than one exists (e.g. both  |
+//| stop orders were triggered inside one price gap) the oldest is   |
+//| kept and the others are closed.                                  |
+//+------------------------------------------------------------------+
+void EnforceSinglePosition(const ulong &pos[],const int np)
+  {
+   ulong nowMs=GetTickCount64();
+   if(nowMs<g_nextExtraMs) return;
+   g_nextExtraMs=nowMs+2000;
+   ulong keep=0; long kt=0;
+   for(int i=0;i<np;i++)
+     {
+      if(!PositionSelectByTicket(pos[i])) continue;
+      long tm=PositionGetInteger(POSITION_TIME_MSC);
+      if(keep==0 || tm<kt) { keep=pos[i]; kt=tm; }
+     }
+   for(int i=0;i<np;i++)
+     {
+      if(pos[i]==keep) continue;
+      if(!PositionSelectByTicket(pos[i])) continue;
+      ulong pid=(ulong)PositionGetInteger(POSITION_IDENTIFIER);
+      long ot=(PositionGetInteger(POSITION_TYPE)==POSITION_TYPE_BUY)?(long)ORDER_TYPE_BUY:(long)ORDER_TYPE_SELL;
+      double px=PositionGetDouble(POSITION_PRICE_OPEN), lt=PositionGetDouble(POSITION_VOLUME);
+      PSet(pid,"CRC",5.0);
+      GlobalVariablesFlush();
+      ulong exitDev=(ulong)MathMax(500,g_maxDev*10);
+      bool ok=g_trade.PositionClose(pos[i],exitDev);
+      uint rc=g_trade.ResultRetcode();
+      LogOrder(ok?"EXTRA_POS_CLOSE":"EXTRA_POS_CLOSE_FAILED",ot,px,lt,pos[i],rc,"only one position is allowed");
+      YLog(ok?"Extra position closed #"+UL(pos[i])+" (only one position is allowed)":"Extra position close FAILED #"+UL(pos[i])+" retcode "+IntegerToString((int)rc)+" (retrying)");
+     }
+  }
+
+//+------------------------------------------------------------------+
+//| v2.00 (BREACH_MARKET): the Stop-Loss itself already crossed the  |
+//| opposite level, so a stop order cannot exist there. The opposite |
+//| direction is opened at market (SL/TP from the same two levels).  |
+//| returns true while this pass is consumed by the reversal.        |
+//+------------------------------------------------------------------+
+//--- v2.11: failure classes of a market reversal
+//--- transient: can clear by itself (market closed, connection, requote ...) - never counted towards the ERROR threshold
+bool RevRetcodeTransient(const uint rc)
+  {
+   switch((int)rc)
+     {
+      case TRADE_RETCODE_MARKET_CLOSED:
+      case TRADE_RETCODE_CONNECTION:
+      case TRADE_RETCODE_TOO_MANY_REQUESTS:
+      case TRADE_RETCODE_REQUOTE:
+      case TRADE_RETCODE_PRICE_CHANGED:
+      case TRADE_RETCODE_PRICE_OFF:
+      case TRADE_RETCODE_TIMEOUT:
+         return true;
+     }
+   return false;
+  }
+
+//--- permanent: retrying cannot help, the cause must be fixed by the user
+bool RevRetcodePermanent(const uint rc)
+  {
+   switch((int)rc)
+     {
+      case TRADE_RETCODE_INVALID_VOLUME:
+      case TRADE_RETCODE_LONG_ONLY:
+      case TRADE_RETCODE_SHORT_ONLY:
+      case TRADE_RETCODE_CLOSE_ONLY:
+      case TRADE_RETCODE_LIMIT_VOLUME:
+         return true;
+     }
+   return false;
+  }
+
+//--- the reversal cannot be executed: stop retrying, ERROR / MANUAL ACTION (resumed by /start or by new levels)
+void RevEnterError(const string why)
+  {
+   //--- v2.23: a reversal that cannot be executed is a WAIT, not a fatal state: no ERROR, no MANUAL ACTION. Retry slowly.
+   g_revFails=0; g_revHard=0;
+   g_nextRevMs=GetTickCount64()+60000;
+   g_wcode="WAITING_REENTRY";
+   g_waitReason="Market reversal paused ("+why+") - retrying every 60 s";
+   YLog("WAITING_REENTRY: "+g_waitReason);
+   RaiseAlert("REVWAIT","Market reversal is waiting: "+why+". The bot keeps retrying by itself (no action required).",false,true);
+   g_dirty=true;
+  }
+
+bool TryMarketReverse(const int force=0)   // force: 0 = reversal after an SL, 1 = virtual-entry BUY, 2 = virtual-entry SELL
+  {
+   if(force==0 && g_lastSLSide!=1 && g_lastSLSide!=2) return false;
+   bool revBuy=(force!=0)?(force==1):(g_lastSLSide==2);                 // a Sell was stopped -> Buy next; a Buy was stopped -> Sell next
+   double lvl=revBuy?g_buyLevel:g_sellLevel;      // the level that would have been the stop-order entry
+   double slLvl=revBuy?g_sellLevel:g_buyLevel;    // SL of the new trade = the opposite level
+   if(lvl<=0.0 || slLvl<=0.0 || g_buyLevel<=g_sellLevel) return false;
+   MqlTick tk;
+   if(!SymbolInfoTick(g_sym,tk) || tk.ask<=0.0 || tk.bid<=0.0) return false;
+   bool breached=(force!=0)?true:(revBuy?(tk.ask>=lvl):(tk.bid<=lvl));
+   if(!breached) { g_revHard=0; return false; }   // level still ahead of the price: a normal pending order is used
+   ulong nowMs=GetTickCount64();
+   if(nowMs<g_nextRevMs) return true;
+   string why;
+   if(!TradingAllowedNow(why)) { g_waitReason="Market reversal waiting: "+why; g_nextRevMs=nowMs+3000; return true; }
+
+   //--- 1) REAL execution price, SL = the opposite level, TP from the REAL entry and the REAL SL distance
+   //---    (so profit at TP = risk x R/R exactly as the recovery maths assumes, even after a gap)
+   double entry=revBuy?tk.ask:tk.bid;
+   double slp=RoundTick(slLvl);
+   double realDist=MathAbs(entry-slp);
+   double tpp=RoundTick(revBuy?entry+realDist*g_rr:entry-realDist*g_rr);
+   //--- v2.23 MAX REVERSAL DISTANCE: a market entry far beyond the level is a different trade (different SL distance / lot): do not take it
+   if(force==0 && InpMaxRevGap>0.0 && MathAbs(entry-lvl)>InpMaxRevGap)
+     {
+      g_wcode="WAITING_REENTRY";
+      g_waitReason="Market reversal skipped: price is "+PX(MathAbs(entry-lvl))+" beyond the level (Max Reversal Gap "+PX(InpMaxRevGap)+") - waiting for the pending pair";
+      g_nextRevMs=nowMs+2000;
+      return false;
+     }
+
+   //--- 2) PRE-FLIGHT against the real market: SL/TP on the correct side and outside the Stops Level
+   if(!MarketPreflight(revBuy,slp,tpp,why))
+     {
+      g_revFails++;
+      g_revHard++;
+      g_waitReason="Market reversal blocked: "+why;
+      g_nextRevMs=nowMs+(ulong)MathMin(15000.0,2000.0*g_revFails);
+      LogOrder("MARKET_REVERSAL_BLOCKED",revBuy?(long)ORDER_TYPE_BUY:(long)ORDER_TYPE_SELL,entry,0.0,0,0,why);
+      YLog("Market reversal blocked by pre-flight: "+why+" (attempt "+IntegerToString(g_revFails)+")");
+      RaiseAlert("REVBLOCK","Market reversal NOT sent (pre-flight): "+why+". Retrying; the opposite trade is not open yet.",true,true);
+      if(g_revHard>=YT_REV_MAX_HARD) RevEnterError("pre-flight keeps failing: "+why);
+      return true;
+     }
+
+   //--- 3) lot from the REAL entry to the SL (a gap makes the SL farther -> a smaller lot; the risk stays = requested risk)
+   double lot=0,est=0; string err="";
+   string rgw="",rgc="";
+   if(RecoveryGuardBlocks(rgw,rgc))
+     {
+      g_wcode=rgc; g_waitReason=rgw; g_nextRevMs=nowMs+5000;
+      RaiseAlert("RPGUARD"+rgc,rgw,false,true);
+      return true;
+     }
+   if(!CalcLotSL(g_curRisk,revBuy,entry,slp,lot,est,err))
+     {
+      //--- v2.23: no legal volume at THIS price is a WAIT (the price may move to a better entry), never a hard failure
+      HandleLotError(err);
+      g_nextRevMs=nowMs+5000;
+      return true;
+     }
+
+   //--- 4) one-position rule: no pending order may survive next to the market order
+   ulong od[];
+   int no=OwnOrders(od);
+   for(int i=0;i<no;i++)
+      if(!DeleteOrder(od[i],"Market reversal: pending orders removed")) { g_nextRevMs=nowMs+2000; return true; }
+
+   //--- 5) send; the expected protection AND the expected price are remembered:
+   //---    SL/TP -> repaired by the protection guard if missing; price -> REAL slippage is measured after the fill (RegisterPosition)
+   GS("RVSL",slp); GS("RVTP",tpp); GS("RVEXP",entry);
+   g_trade.SetDeviationInPoints(g_maxDev);
+   //--- the expected price is sent with the request, so Max Slippage Check also works as a PRICE GUARD (a requote / reject instead of a bad fill)
+   bool r=revBuy?g_trade.Buy(lot,g_sym,entry,slp,tpp,"Yetimmm"):g_trade.Sell(lot,g_sym,entry,slp,tpp,"Yetimmm");
+   uint rc=g_trade.ResultRetcode();
+   bool ok=(r && (rc==TRADE_RETCODE_DONE || rc==TRADE_RETCODE_PLACED || rc==TRADE_RETCODE_DONE_PARTIAL));
+   long ot=revBuy?(long)ORDER_TYPE_BUY:(long)ORDER_TYPE_SELL;
+   if(ok)
+     {
+      g_revFails=0;
+      g_revHard=0;
+      g_waitReason="";
+      double gapPts=MathAbs(entry-lvl)/g_point;
+      LogOrder("MARKET_REVERSAL",ot,entry,lot,g_trade.ResultOrder(),rc,"level "+PX(lvl)+" already crossed (gap "+DoubleToString(gapPts,0)+" pts) | SL "+PX(slp)+" TP "+PX(tpp)+" | est. loss at SL $"+D2(est));
+      YLog(string(revBuy?"Buy":"Sell")+" opened at market @ "+PX(entry)+" (level "+PX(lvl)+" already crossed after the Stop Loss) | lot "+LotS(lot)+" | est. loss at SL $"+D2(est));
+      TgQueue("🔁 MARKET REVERSAL\n"+(revBuy?"BUY":"SELL")+" opened at market\nLevel crossed: "+PX(lvl)+" | Expected entry: "+PX(entry)+"\nLot: "+LotS(lot)+" (risk $"+D2(g_curRisk)+", est. loss at SL $"+D2(est)+")\nSL: "+PX(slp)+"\nTP: "+PX(tpp));
+      g_dirty=true;
+      return true;
+     }
+   GS("RVSL",0.0); GS("RVTP",0.0); GS("RVEXP",0.0);
+   string cm=g_trade.ResultComment();
+   g_revFails++;
+   if(!RevRetcodeTransient(rc)) g_revHard++;
+   LogOrder("MARKET_REVERSAL_FAILED",ot,entry,lot,0,rc,cm);
+   YLog("Market reversal rejected: retcode "+IntegerToString((int)rc)+" "+cm+" (attempt "+IntegerToString(g_revFails)+")");
+   g_nextRevMs=nowMs+(ulong)MathMin(15000.0,2000.0*g_revFails);
+   if(g_revFails>=5) RaiseAlert("REVFAIL","Market reversal keeps failing ("+cm+" [retcode "+IntegerToString((int)rc)+"]). The opposite trade is NOT open - check the account / market.",true,true);
+   if(RevRetcodePermanent(rc) || g_revHard>=YT_REV_MAX_HARD)
+      RevEnterError(cm+" [retcode "+IntegerToString((int)rc)+"]");
+   return true;
+  }
+
+//+------------------------------------------------------------------+
+//| v2.22 VIRTUAL ENTRY: the zone is stored in the EA; no pending     |
+//| order exists. Edge trigger like a real Stop order: the price must |
+//| first be INSIDE the zone, then crossing the upper level = BUY and |
+//| crossing the lower level = SELL, executed at market with the SL   |
+//| at the opposite level. Both levels are always honoured, so there  |
+//| is no zone gate, no Stops-Level window and no lone order.         |
+//+------------------------------------------------------------------+
+bool VirtualInside()
+  {
+   MqlTick tk;
+   if(!SymbolInfoTick(g_sym,tk) || tk.ask<=0.0 || tk.bid<=0.0 || g_buyLevel<=g_sellLevel) return false;
+   return (tk.bid>g_sellLevel && tk.ask<g_buyLevel);
+  }
+
+bool VirtualWake()
+  {
+   if(InpEntryMode!=ENTRY_VIRTUAL) return false;
+   if(g_state!=YT_ARMED && g_state!=YT_WAITING_REENTRY) return false;
+   if(g_mode!=YM_BOTH || g_buyLevel<=0.0 || g_sellLevel<=0.0 || g_buyLevel<=g_sellLevel) return false;
+   MqlTick tk;
+   if(!SymbolInfoTick(g_sym,tk) || tk.ask<=0.0 || tk.bid<=0.0) return false;
+   if(!g_vArmed) return (tk.bid>g_sellLevel && tk.ask<g_buyLevel);
+   return (tk.ask>=g_buyLevel || tk.bid<=g_sellLevel);
+  }
+
+void VirtualEntryPass()
+  {
+   g_zoneGate=false; g_trig[0]=0.0; g_trig[1]=0.0;
+   //--- no pending order is wanted in this mode (leftovers of PENDING mode are removed)
+   ulong od[];
+   int no=OwnOrders(od);
+   if(no>0 && GetTickCount64()>=g_nextDelMs)
+      for(int i=0;i<no;i++)
+         if(!DeleteOrder(od[i],"Virtual entry mode: no pending order is wanted")) g_nextDelMs=GetTickCount64()+2000;
+   string vt=g_vArmed?"Virtual trigger armed: BUY when Ask >= "+PX(g_buyLevel)+" | SELL when Bid <= "+PX(g_sellLevel)
+                     :"Waiting for the price to enter the zone ("+PX(g_sellLevel)+" - "+PX(g_buyLevel)+")";
+   g_waitReason=vt;
+   SetSync(true, YS_WAITING,vt);
+   SetSync(false,YS_WAITING,vt);
+   MqlTick tk;
+   if(!SymbolInfoTick(g_sym,tk) || tk.ask<=0.0 || tk.bid<=0.0) return;
+   if(!g_vArmed)
+     {
+      if(tk.bid>g_sellLevel && tk.ask<g_buyLevel)
+        {
+         g_vArmed=true;
+         if(g_state==YT_WAITING_REENTRY) { g_state=YT_ARMED; SaveState(); }
+         YLog("Virtual entry armed: the price is inside the zone ("+PX(g_sellLevel)+" - "+PX(g_buyLevel)+")");
+        }
+      return;
+     }
+   if(tk.ask>=g_buyLevel)       TryMarketReverse(1);
+   else if(tk.bid<=g_sellLevel) TryMarketReverse(2);
+  }
+
+//+------------------------------------------------------------------+
+//| Reconcile: keep real account state == bot state (idempotent)     |
+//+------------------------------------------------------------------+
+void Reconcile()
+  {
+   if(!g_connected) return;
+   ulong pos[];
+   int np=OwnPositions(pos);
+   if(np>0)
+     {
+      g_vArmed=false;
+      g_activeNoPosSince=0;
+      if(g_state!=YT_STOPPED)
+        {
+         ulong newest=pos[np-1];
+         if(PositionSelectByTicket(newest))
+           {
+            ENUM_YT_STATE want=(PositionGetInteger(POSITION_TYPE)==POSITION_TYPE_BUY)?YT_BUY_ACTIVE:YT_SELL_ACTIVE;
+            if(g_state!=want) { g_state=want; g_mode=YM_NONE; SaveState(); }
+           }
+        }
+      //--- the pending order that MT5 triggered is now a REAL position (FILLED); the opposite pending order must really disappear
+      bool fillBuy=true, haveFill=false;
+      if(PositionSelectByTicket(pos[np-1])) { fillBuy=(PositionGetInteger(POSITION_TYPE)==POSITION_TYPE_BUY); haveFill=true; }
+      int fIdx=SideIdx(fillBuy), oIdx=SideIdx(!fillBuy);
+      bool hadFill=(g_stopTicket[fIdx]!=0), hadOpp=(g_stopTicket[oIdx]!=0);
+      if(hadFill)
+        {
+         TrkDrop(fIdx);
+         if(haveFill) SetSync(fillBuy,YS_FILLED,"Pending order triggered by MT5 - real position");
+        }
+      ulong od[];
+      int no=OwnOrders(od);
+      for(int i=0;i<no;i++)
+        {
+         if(DeleteOrder(od[i],"Opposite Order Deleted"))
+            TgQueue("🗑 OPPOSITE ORDER DELETED\nTicket: "+UL(od[i]));
+        }
+      if(haveFill && (hadOpp || no>0))
+        {
+         ulong rest[];
+         if(OwnOrders(rest)==0) SetSync(!fillBuy,YS_REMOVED,"Opposite pending order deleted (verified on the server)");
+         else SetSync(!fillBuy,YS_FAILED,"Opposite pending order is still on the server");
+        }
+      if(np>1)
+        {
+         if(np!=g_lastPosCount)
+           {
+            YLog("Unexpected Multiple Positions: "+IntegerToString(np));
+            RaiseAlert("MULTIPOS","Unexpected Multiple Positions ("+IntegerToString(np)+") on "+g_sym+" with this Magic Number. Only ONE position is allowed: the oldest is kept, the others are closed.",true,true);
+           }
+         EnforceSinglePosition(pos,np);
+        }
+      if(g_netting) NettingDriftCheck(pos[np-1]);
+      //--- CRITICAL: every own position must carry SL and TP (retry / alert / emergency close inside ProtectPosition)
+      for(int pq=0;pq<np;pq++)
+        {
+         if(!PositionSelectByTicket(pos[pq])) continue;
+         ProtectPosition((ulong)PositionGetInteger(POSITION_IDENTIFIER));
+        }
+      //--- a fill that exceeded Max Slippage Check is closed; keep retrying until it is really closed
+      for(int q=0;q<np;q++)
+        {
+         if(!PositionSelectByTicket(pos[q])) continue;
+         ulong qpid=(ulong)PositionGetInteger(POSITION_IDENTIFIER);
+         if((long)PGV(qpid,"CRC",0)==4 && GetTickCount64()>=g_nextDevCloseMs)
+           {
+            g_nextDevCloseMs=GetTickCount64()+2000;
+            CloseRejected(qpid);
+           }
+        }
+      g_lastPosCount=np;
+      return;
+     }
+   g_lastPosCount=0;
+   if(g_unprot) { g_unprot=false; g_unprotPid=0; ClearAlert("PROTFAIL"); if(StringFind(g_blockReason,"CRITICAL PROTECTION")==0) g_blockReason=""; }
+   if(g_netTaint) { g_netTaint=false; ClearAlert("NETDRIFT"); }          // no own position left: nothing is contaminated any more
+   if(NettingBlocked()) return;
+
+   if(g_state==YT_BUY_ACTIVE || g_state==YT_SELL_ACTIVE)
+     {
+      //--- the closing deal has not been processed yet; never create orders before it is
+      if(g_activeNoPosSince==0) g_activeNoPosSince=TimeCurrent();
+      else if(TimeCurrent()-g_activeNoPosSince>20)
+        {
+         g_state=YT_IDLE; g_mode=YM_NONE; g_activeNoPosSince=0;
+         SaveState();
+         RaiseAlert("INCONS","Position vanished without a processed closing deal. Bot is waiting for levels.",true,true);
+        }
+      return;
+     }
+   if(g_state!=YT_ARMED && g_state!=YT_WAITING_REENTRY)
+     {
+      //--- no pending order is wanted in IDLE / TP_RESET / STOPPED: a leftover (e.g. the opposite order of a fast fill+TP) is removed
+      if(g_state==YT_IDLE || g_state==YT_TP_RESET || g_state==YT_STOPPED)
+        {
+         ulong lo[];
+         int ln=OwnOrders(lo);
+         if(ln>0 && GetTickCount64()>=g_nextDelMs)
+            for(int q=0;q<ln;q++)
+               if(!DeleteOrder(lo[q],"No pending order is wanted in this state")) g_nextDelMs=GetTickCount64()+2000;
+        }
+      TrkPrune(); SetSync(true,YS_IDLE); SetSync(false,YS_IDLE); return;
+     }
+   if(g_mode==YM_NONE) { TrkPrune(); SetSync(true,YS_IDLE); SetSync(false,YS_IDLE); return; }
+
+   bool needBuy=(g_mode==YM_BOTH || g_mode==YM_BUY);
+   bool needSell=(g_mode==YM_BOTH || g_mode==YM_SELL);
+   if(!needBuy)  SetSync(true,YS_IDLE);
+   if(!needSell) SetSync(false,YS_IDLE);
+   if((needBuy && g_buyLevel<=0.0) || (needSell && g_sellLevel<=0.0)) return;
+
+   //--- v2.00: optional market reversal when the stop-out already crossed the opposite level
+   if(g_state==YT_WAITING_REENTRY && (InpBreachPolicy==BREACH_MARKET || InpEntryMode==ENTRY_VIRTUAL) && TryMarketReverse()) return;
+   if(InpEntryMode==ENTRY_VIRTUAL && needBuy && needSell && g_buyLevel>g_sellLevel) { VirtualEntryPass(); return; }
+
+   //--- 0) manual changes in MT5 are DETECTED first (moved / deleted / SL-TP edited), then handled by the explicit policy
+   bool held[2]={false,false};
+   held[0]=ExternalCheck(true, needBuy, g_buyLevel);
+   held[1]=ExternalCheck(false,needSell,g_sellLevel);
+   if(g_restartPass) { g_restartPass=false; g_dirty=true; return; }   // state changed by a fill: re-evaluate from scratch
+
+   double expBuy=0,expSell=0,e1,e2; string er;
+   bool okB=needBuy && CalcLot(g_curRisk,true,g_buyLevel,expBuy,e1,er);
+   bool okS=needSell && CalcLot(g_curRisk,false,g_sellLevel,expSell,e2,er);
+
+   //--- 1) identity = Symbol + Magic + Order Type: pick ONE order per side to keep
+   //---    (CanonicalTicket: tracked ticket, then exact desired price, then lowest ticket); everything else is a duplicate / not wanted
+   ulong od[];
+   int no=OwnOrders(od);
+   ulong keepT[2]={0,0};
+   if(needBuy)  keepT[0]=CanonicalTicket(true, g_buyLevel);     // same function the panel uses
+   if(needSell) keepT[1]=CanonicalTicket(false,g_sellLevel);
+
+   //--- 2) REMOVE: duplicates and orders that are no longer desired
+   if(GetTickCount64()>=g_nextDelMs)
+     {
+      for(int i=0;i<no;i++)
+        {
+         if(od[i]==keepT[0] || od[i]==keepT[1]) continue;
+         if(!OrderSelect(od[i])) continue;
+         long type=OrderGetInteger(ORDER_TYPE);
+         bool isB=(type==ORDER_TYPE_BUY_STOP), isS=(type==ORDER_TYPE_SELL_STOP);
+         bool dup=((isB && needBuy) || (isS && needSell));
+         bool notWanted=(!dup && (isB || isS));
+         string why=dup?"Duplicate Order Prevented":"Unexpected pending order / not required";
+         if(notWanted) SetSync(isB,YS_REMOVING,why);
+         if(dup) YLog("Duplicate Order Prevented");
+         if(DeleteOrder(od[i],why))
+           {
+            if(notWanted) SetSync(isB,YS_IDLE);
+           }
+         else
+           {
+            g_nextDelMs=GetTickCount64()+2000;
+            if(notWanted) SetSync(isB,YS_FAILED,"REMOVE FAILED: "+why);
+           }
+        }
+     }
+
+   //--- 3) per side: KEEP / MODIFY / REPLACE (lot change only) / CREATE
+   //--- v2.11: COMBINED margin. Both stop orders are required; the orders that are still MISSING are sent only when the margin of ALL of them
+   //--- is available, so the bot never ends with "one side placed, the other rejected for NO MONEY". Existing orders are still verified / modified.
+   bool cmHold=false;
+   if(InpCombinedMargin && needBuy && needSell && okB && okS && (keepT[0]==0 || keepT[1]==0))
+     {
+      double mB=0.0,mS=0.0,mNeed=0.0;
+      if(keepT[0]==0 && OrderCalcMargin(ORDER_TYPE_BUY, g_sym,expBuy, g_buyLevel, mB)) mNeed+=mB;
+      if(keepT[1]==0 && OrderCalcMargin(ORDER_TYPE_SELL,g_sym,expSell,g_sellLevel,mS)) mNeed+=mS;
+      double mFree=AccountInfoDouble(ACCOUNT_MARGIN_FREE);
+      if(mNeed>mFree+1e-9)
+        {
+         cmHold=true;
+         string cmMsg="Insufficient COMBINED margin: the missing pending order(s) need $"+D2(mNeed)+", free margin is $"+D2(mFree);
+         g_waitReason=cmMsg;
+         if(keepT[0]==0) SetSync(true, YS_WAITING,cmMsg);
+         if(keepT[1]==0) SetSync(false,YS_WAITING,cmMsg);
+         if(!g_cmWarned)
+           {
+            g_cmWarned=true;
+            YLog(cmMsg+" - the missing order(s) are NOT sent until the margin allows both.");
+            RaiseAlert("COMBMARGIN","⚠️ "+cmMsg+". Both stop orders are required; the missing one(s) will be sent as soon as the margin allows.",true,true);
+           }
+        }
+     }
+   if(!cmHold && g_cmWarned)
+     {
+      g_cmWarned=false;
+      ClearAlert("COMBMARGIN");
+      if(StringFind(g_waitReason,"COMBINED margin")>=0) g_waitReason="";
+     }
+   //--- v2.18 ZONE GATE: both orders are missing and the market is outside the zone -> neither is sent. The bot remembers both levels,
+   //--- caches both trigger prices and OnTick wakes the placement the tick the price is inside the zone: both orders are then placed together.
+   bool zoneHold=false;
+   if(InpZoneGate && !cmHold && needBuy && needSell && keepT[0]==0 && keepT[1]==0 && !held[0] && !held[1])
+     {
+      string zw1,zw2;
+      int zB=PlacementState(true, g_buyLevel, zw1);
+      int zS=PlacementState(false,g_sellLevel,zw2);
+      if(zB!=2 && zS!=2 && (zB==1 || zS==1))
+        {
+         zoneHold=true;
+         g_trig[0]=WaitTrigger(true, g_buyLevel);
+         g_trig[1]=WaitTrigger(false,g_sellLevel);
+         string zt="Zone gate: waiting for the price to enter the zone (Sell "+PX(g_sellLevel)+" - Buy "+PX(g_buyLevel)+"); both orders are placed together";
+         //--- v2.22: the zone must be wider than both broker gaps + the spread, otherwise both orders can NEVER exist together
+         double zNeed=WaitGap(true)+WaitGap(false)+LiveSpread();
+         if(g_buyLevel-g_sellLevel<zNeed)
+           {
+            zt="⚠️ ZONE TOO NARROW: width "+PX(g_buyLevel-g_sellLevel)+" < minimum "+PX(zNeed)+" (Stops Level x2 + spread). Both orders can never be placed together - widen the zone.";
+            RaiseAlert("ZONENARROW",zt,true,true);
+           }
+         else ClearAlert("ZONENARROW");
+         g_waitReason=zt;
+         SetSync(true, YS_WAITING,(zB==1)?WaitText(true, g_buyLevel):zt);
+         SetSync(false,YS_WAITING,(zS==1)?WaitText(false,g_sellLevel):zt);
+         if(zB==1) NoteDefer(true, g_buyLevel, WaitText(true, g_buyLevel));
+         if(zS==1) NoteDefer(false,g_sellLevel,WaitText(false,g_sellLevel));
+        }
+     }
+   if(g_zoneGate && !zoneHold) YLog("Zone gate released: the price is inside the zone, placing both orders");
+   g_zoneGate=zoneHold;
+   if(!zoneHold)
+     {
+      if(needBuy  && !held[0] && !(cmHold && keepT[0]==0)) ReconcileSide(true, g_buyLevel, expBuy, okB,keepT[0]);
+      if(needSell && !held[1] && !(cmHold && keepT[1]==0)) ReconcileSide(false,g_sellLevel,expSell,okS,keepT[1]);
+      //--- v2.22 ATOMIC PAIR: the two stop orders are one unit. If this pass started with BOTH missing and ended with only ONE on the server because the
+      //--- other side is still only WAITING for the market (price moved while sending), the lone order is withdrawn and the zone gate holds both again.
+      //--- (before: a lone Sell Stop / Buy Stop stayed alone while the other side waited for a price that had already left the zone)
+      if(InpZoneGate && !cmHold && needBuy && needSell && keepT[0]==0 && keepT[1]==0 && !held[0] && !held[1] && GetTickCount64()>=g_nextDelMs)
+        {
+         ulong ro[];
+         if(OwnOrders(ro)==1 && OrderSelect(ro[0]))
+           {
+            bool haveBuy=(OrderGetInteger(ORDER_TYPE)==ORDER_TYPE_BUY_STOP);
+            if(g_sync[SideIdx(!haveBuy)]==YS_WAITING)
+              {
+               string rbWhy=string(haveBuy?"Sell":"Buy")+" Stop could not be placed together with it";
+               if(DeleteOrder(ro[0],"Pair rollback: "+rbWhy))
+                 {
+                  SetSync(haveBuy,YS_WAITING,"Pair rollback: both orders are placed together when the price is inside the zone");
+                  g_nextPlaceMs=GetTickCount64()+400;
+                  g_dirty=true;
+                  YLog("Atomic pair: lone "+SideName(haveBuy)+" withdrawn ("+rbWhy+"); both orders wait for the zone again");
+                 }
+               else g_nextDelMs=GetTickCount64()+2000;
+              }
+           }
+        }
+     }
+  }
+
+void SyncAll()
+  {
+   if(g_busy) return;
+   g_busy=true;
+   RegisterLivePositions();
+   CheckClosures();
+   Reconcile();
+   g_busy=false;
+   g_lastSyncMs=GetTickCount64();
+  }
+
+//+------------------------------------------------------------------+
+//| Levels / Start / Stop / Cancel                                   |
+//+------------------------------------------------------------------+
+//--- true while a risk sequence is running: its ORIGINAL levels are frozen
+bool SequenceLocked()
+  {
+   ulong tk[];
+   if(OwnPositions(tk)>0) return true;                                  // a real position is open: there is no pending order to move
+   if(g_state==YT_BUY_ACTIVE || g_state==YT_SELL_ACTIVE) return true;
+   if(InpSeqPolicy==YT_SEQ_APPLY_NOW) return false;                     // pending orders of a running sequence follow APPLY immediately
+   if(g_state==YT_WAITING_REENTRY) return true;
+   if((g_state==YT_ARMED || g_state==YT_ERROR) && (g_mode==YM_BUY || g_mode==YM_SELL)) return true;
+   return false;
+  }
+
+//--- levels entered during a sequence become active only after the sequence ends
+void PromotePending()
+  {
+   if(g_pendBuy>0.0 && g_pendSell>0.0)
+     {
+      g_buyLevel=g_pendBuy;
+      g_sellLevel=g_pendSell;
+      YLog("Pending levels now active: Buy "+PX(g_buyLevel)+" Sell "+PX(g_sellLevel));
+     }
+   g_pendBuy=0.0;
+   g_pendSell=0.0;
+   g_fresh=false;
+  }
+
+bool ApplyLevels(const double buy,const double sell,const double risk,const string src,string &err)
+  {
+   err=ValidateLevels(buy,sell);
+   if(err=="" && risk>0.0) err=ValidateRisk(risk);
+   if(err!="")
+     {
+      YLog("Invalid Configuration ("+src+"): "+err);
+      if(src!="Telegram") RaiseAlert("INVALID","Invalid Price Configuration: "+err,true,true);
+      return false;
+     }
+   g_applyNote="";
+   const bool locked=SequenceLocked();
+   bool riskSame=(risk<=0.0 || MathAbs(risk-g_initRisk)<1e-9);
+
+   //--- a live order that has to be MODIFIED must accept its new price right now (stops level / freeze level)
+   if(!locked)
+     {
+      string pre=CheckApplicable(buy,sell,risk);
+      if(pre!="")
+        {
+         err=pre;
+         YLog("Invalid Configuration ("+src+"): "+err);
+         if(src!="Telegram") RaiseAlert("INVALID","Cannot apply levels: "+err,true,true);
+         return false;
+        }
+     }
+
+   //--- APPLY with an identical desired state: nothing to send, the real orders are just verified
+   bool same=locked?(g_fresh && PriceEq(g_pendBuy,buy) && PriceEq(g_pendSell,sell) && riskSame)
+                   :((g_state==YT_ARMED || g_state==YT_WAITING_REENTRY) && g_mode!=YM_NONE && PriceEq(g_buyLevel,buy) && PriceEq(g_sellLevel,sell) && riskSame);
+   ResetSyncBackoff();
+   if(same)
+     {
+      YLog("APPLY ("+src+"): desired levels are already active - nothing to change");
+      g_dirty=true;
+      SyncAll();
+      bool allOk=true;
+      if(!locked)
+         for(int k=0;k<2;k++)
+           {
+            bool sb=(k==0);
+            double dl;
+            if(SideDesired(sb,dl) && SideStatusShown(sb)!=YS_SYNCED && SideStatusShown(sb)!=YS_PLACED) allOk=false;
+           }
+      g_applyNote=allOk?"NOTHING TO DO":"";
+      return true;
+     }
+
+   if(risk>0.0) g_initRisk=risk;
+   g_failCount=0; g_nextPlaceMs=0; g_blockReason="";
+
+   //--- a sequence is running: it keeps its ORIGINAL levels, the new ones wait for the next TP
+   if(locked)
+     {
+      g_pendBuy=buy;
+      g_pendSell=sell;
+      g_fresh=true;
+      YLog("New levels ("+src+") stored as PENDING: Buy "+PX(buy)+" Sell "+PX(sell)+" | running sequence keeps ORIGINAL levels Buy "+PX(g_buyLevel)+" Sell "+PX(g_sellLevel));
+      if(g_state==YT_ERROR && (g_mode==YM_BUY || g_mode==YM_SELL)) g_state=YT_WAITING_REENTRY;
+      if(g_accLoss<=1e-9) g_curRisk=g_initRisk;
+      SaveState();
+      g_dirty=true;
+      SyncAll();
+      g_applyNote="QUEUED";
+      return true;
+     }
+
+   g_pendBuy=0.0; g_pendSell=0.0; g_fresh=false;
+   g_buyLevel=buy;
+   g_sellLevel=sell;
+   YLog("New Buy/Sell Levels ("+src+"): Buy "+PX(buy)+" Sell "+PX(sell)+" Risk "+D2(g_initRisk));
+   switch(g_state)
+     {
+      case YT_STOPPED:
+         if(InpResetRiskOnStart) ResetRisk();
+         g_state=YT_ARMED; g_mode=YM_BOTH; g_stopCleanup=false;
+         break;
+      case YT_ERROR:
+         if(GV("REVERR",0.0)>0.5 && (g_lastSLSide==1 || g_lastSLSide==2))
+           {
+            //--- v2.11: a failed market reversal resumes as a REVERSAL at the new levels (direction kept)
+            g_state=YT_WAITING_REENTRY; g_mode=YM_BOTH;
+            g_revFails=0; g_revHard=0; g_nextRevMs=0;
+           }
+         else
+           {
+            g_state=YT_ARMED; if(g_mode==YM_NONE) g_mode=YM_BOTH;
+           }
+         GS("REVERR",0.0);
+         break;
+      case YT_WAITING_REENTRY:
+         if(g_mode==YM_NONE) g_mode=YM_BOTH;           // a running sequence keeps its state / side; only the levels move
+         break;
+      default:
+         g_state=YT_ARMED;
+         if(g_mode!=YM_BUY && g_mode!=YM_SELL) g_mode=YM_BOTH;   // ARMED single-side (sequence) keeps its side
+         break;
+     }
+   if(g_accLoss<=1e-9) g_curRisk=g_initRisk;
+   SaveState();
+   g_dirty=true;
+   SyncAll();
+   return true;
+  }
+
+string LevelsAcceptedText()
+  {
+   string t;
+   if(g_fresh && g_pendBuy>0.0 && g_pendSell>0.0)
+      t="✅ LEVELS ACCEPTED (PENDING)\nA sequence is running and keeps its ORIGINAL levels:\nBuy Stop: "+PX(g_buyLevel)+"\nSell Stop: "+PX(g_sellLevel)+
+        "\nNew levels start after the next TP:\nBuy Stop: "+PX(g_pendBuy)+"\nSell Stop: "+PX(g_pendSell)+"\nInitial Risk: $"+D2(g_initRisk)+"\nStatus: "+StateText();
+   else
+     {
+      string dn=DeferText();
+      t=(dn!=""?"✅ LEVELS ACCEPTED (waiting for price)":"✅ LEVELS ACCEPTED")+"\nBuy Stop: "+PX(g_buyLevel)+"\nSell Stop: "+PX(g_sellLevel)+"\nInitial Risk: $"+D2(g_initRisk)+"\nStatus: "+StateText();
+      if(dn!="") t+="\n⏳ "+dn;
+     }
+   return t;
+  }
+
+string DoStart(const string src)
+  {
+   if(StringFind(g_sym,"XAUUSD")<0) return "❌ START FAILED\nReason: Symbol is not XAUUSD.";
+   if(!g_connected) return "❌ START FAILED\nReason: No connection to the trade server.";
+   if(!TerminalInfoInteger(TERMINAL_TRADE_ALLOWED) || !MQLInfoInteger(MQL_TRADE_ALLOWED)) return "❌ START FAILED\nReason: AutoTrading is disabled.";
+   if(!AccountInfoInteger(ACCOUNT_TRADE_ALLOWED) || !AccountInfoInteger(ACCOUNT_TRADE_EXPERT)) return "❌ START FAILED\nReason: Trading not allowed on this account.";
+   if(g_netting && ExternalPositionVolume()>0.0)
+      return "❌ START FAILED\nReason: Netting account and an external "+g_sym+" position exists. Yetimmm will not run until it is closed.";
+   if(g_state==YT_BUY_ACTIVE || g_state==YT_SELL_ACTIVE || g_state==YT_ARMED || g_state==YT_WAITING_REENTRY)
+     {
+      SyncAll();
+      return "✅ Yetimmm is already RUNNING\nState: "+StateText()+"\nBuy Stop: "+PX(g_buyLevel)+"\nSell Stop: "+PX(g_sellLevel);
+     }
+   if(g_state==YT_TP_RESET)
+      return "ℹ️ Yetimmm is RUNNING\nStatus: WAITING FOR LEVELS\nSend /set BUY SELL [RISK] to continue.";
+   if(g_fresh) PromotePending();
+   string err=ValidateLevels(g_buyLevel,g_sellLevel);
+   if(err!="") return "❌ START FAILED\nReason:\nInvalid Buy/Sell levels. "+err;
+   if(g_state==YT_STOPPED && InpResetRiskOnStart) ResetRisk();
+   //--- v2.11: after a market-reversal ERROR the REVERSAL is resumed (WAITING_REENTRY keeps the direction); every other start re-arms normally
+   bool resumeRev=(g_state==YT_ERROR && GV("REVERR",0.0)>0.5 && (g_lastSLSide==1 || g_lastSLSide==2));
+   GS("REVERR",0.0);
+   g_revFails=0; g_revHard=0; g_nextRevMs=0;
+   if(resumeRev) { g_state=YT_WAITING_REENTRY; g_mode=YM_BOTH; }
+   else { g_state=YT_ARMED; if(g_mode==YM_NONE) g_mode=YM_BOTH; }
+   g_stopCleanup=false; g_failCount=0; g_nextPlaceMs=0; g_blockReason="";
+   g_deferLvl[0]=0.0; g_deferLvl[1]=0.0;
+   ResetSyncBackoff();
+   SaveState();
+   YLog("EA Started ("+src+")");
+   SyncAll();
+   if(g_state==YT_ERROR) return "❌ START FAILED\nReason: Bot entered ERROR state. See Journal.";
+   ulong od[]; int no=OwnOrders(od);
+   string t="✅ START EXECUTED\nYetimmm is now RUNNING.\nBuy Stop: "+PX(g_buyLevel)+"\nSell Stop: "+PX(g_sellLevel)+"\nRisk: $"+D2(g_curRisk)+"\nPending orders: "+IntegerToString(no)+"\nSync: "+SyncSummary();
+   if(StringLen(g_blockReason)>0) t+="\n⚠️ "+g_blockReason;
+   string wn=WaitNote();
+   if(StringLen(wn)>0) t+="\n⏳ "+wn;
+   return t;
+  }
+
+bool CleanupPositions(const int code)
+  {
+   if(g_netting && g_netTaint)
+     {
+      YLog("Netting: close refused - the position contains external volume.");
+      RaiseAlert("NETCLOSE","Netting account: the Yetimmm position contains external volume, so it was NOT closed automatically. Close it manually.",true,true);
+      return false;
+     }
+   ulong tk[];
+   int n=OwnPositions(tk);
+   for(int i=0;i<n;i++)
+     {
+      if(!PositionSelectByTicket(tk[i])) continue;
+      ulong pid=(ulong)PositionGetInteger(POSITION_IDENTIFIER);
+      PSet(pid,"CRC",(double)code);
+      if(!g_trade.PositionClose(tk[i]))
+         YLog("Close position failed #"+UL(tk[i])+" retcode "+IntegerToString((int)g_trade.ResultRetcode()));
+     }
+   return OwnPositions(tk)==0;
+  }
+
+bool CleanupOrders(const string reason)
+  {
+   ulong od[];
+   int n=OwnOrders(od);
+   for(int i=0;i<n;i++) DeleteOrder(od[i],reason);
+   return OwnOrders(od)==0;
+  }
+
+//--- race-free cleanup: pending orders are deleted FIRST (nothing can trigger afterwards), then positions are closed
+//--- (including one that filled during the deletion), and BOTH are re-verified before success is reported
+bool StopSweep(const int code,const string reason)
+  {
+   for(int pass=0;pass<4;pass++)
+     {
+      CleanupOrders(reason);
+      CleanupPositions(code);
+      ulong a[],b[];
+      if(OwnOrders(a)==0 && OwnPositions(b)==0) return true;
+      if(g_netting && g_netTaint) break;
+      Sleep(150);
+     }
+   return false;
+  }
+
+//--- STOP: no new orders, delete own orders first, then close own trades (verified)
+bool ExecStop(const int code,const long chat)
+  {
+   if(g_fresh) PromotePending();
+   g_state=YT_STOPPED;
+   g_frzBid=SymbolInfoDouble(g_sym,SYMBOL_BID); g_frzAsk=SymbolInfoDouble(g_sym,SYMBOL_ASK); g_frzTs=(long)TimeCurrent();
+   g_mode=YM_NONE;
+   g_fresh=false;
+   g_deferLvl[0]=0.0; g_deferLvl[1]=0.0;
+   SaveState();
+   YLog(code==2?"Telegram Stop":"Manual Stop");
+   bool done=StopSweep(code,code==2?"Telegram Stop":"Manual Stop");
+   if(done)
+     {
+      g_stopCleanup=false;
+      CheckClosures();
+      return true;
+     }
+   g_stopCleanup=true; g_stopTries=0; g_stopCode=code; g_stopChat=chat; g_stopLastTry=TimeLocal();
+   return false;
+  }
+
+void StopCleanupTick()
+  {
+   if(!g_stopCleanup) return;
+   if(TimeLocal()-g_stopLastTry<2) return;
+   g_stopLastTry=TimeLocal();
+   g_stopTries++;
+   bool done=StopSweep(g_stopCode,"Stop cleanup");
+   if(done)
+     {
+      g_stopCleanup=false;
+      CheckClosures();
+      YLog("Stop completed after retries");
+      TgQueue("✅ STOP EXECUTED\nYetimmm is now STOPPED. All Yetimmm trades closed and orders deleted.",g_stopChat);
+     }
+   else if(g_stopTries>=30)
+     {
+      g_stopCleanup=false;
+      RaiseAlert("STOPFAIL","STOP FAILED: could not close/delete all Yetimmm trades and orders. Manual action required.",true,true);
+     }
+  }
+
+string StopResultText(const bool done)
+  {
+   if(done) return "✅ STOP EXECUTED\nYetimmm is now STOPPED.\nYetimmm trades closed and pending orders deleted. Other trades untouched.";
+   return "⏳ STOP IN PROGRESS\nBot is STOPPED; closing remaining Yetimmm trades/orders. A confirmation follows when verified.";
+  }
+
+string ExecCancel(const bool closePos)
+  {
+   g_mode=YM_NONE;
+   if(g_state==YT_ARMED || g_state==YT_WAITING_REENTRY) g_state=YT_IDLE;
+   ulong ctk[];
+   if(g_state==YT_IDLE && g_fresh && OwnPositions(ctk)==0) PromotePending();
+   SaveState();
+   bool o=CleanupOrders("Cancelled by user");
+   string t="";
+   if(o) t="✅ Pending orders cancelled.";
+   else t="❌ Could not delete all pending orders.";
+   ulong tk[];
+   if(OwnPositions(tk)>0)
+     {
+      if(closePos)
+        {
+         bool p=StopSweep(3,"Cancelled by user");
+         t+=p?"\n✅ Open position closed.":"\n❌ Could not close the open position.";
+         CheckClosures();
+        }
+      else t+="\n⚠️ Open position kept.";
+     }
+   YLog("Telegram Cancel / Cancel executed");
+   g_dirty=true;
+   return t;
+  }
+
+//+------------------------------------------------------------------+
+//| Telegram command handling                                        |
+//+------------------------------------------------------------------+
+double ParseNum(string s)
+  {
+   StringReplace(s,",",".");
+   return StringToDouble(s);
+  }
+
+string NewNonce() { return IntegerToString((long)(GetTickCount64()%1000000))+IntegerToString(MathRand()%1000); }
+
+void TgCommand(const string text,const long chat,const long from)
+  {
+   string t=text;
+   StringTrimLeft(t); StringTrimRight(t);
+   if(StringLen(t)==0 || StringGetCharacter(t,0)!='/') return;
+   string raw[];
+   int rn=StringSplit(t,' ',raw);
+   string a[];
+   for(int i=0;i<rn;i++)
+      if(StringLen(raw[i])>0) { int k=ArraySize(a); ArrayResize(a,k+1); a[k]=raw[i]; }
+   int argc=ArraySize(a);
+   if(argc==0) return;
+   string cmd=a[0];
+   StringToLower(cmd);
+   int at=StringFind(cmd,"@");
+   if(at>0) cmd=StringSubstr(cmd,0,at);
+
+   YLog("Telegram Command Received: "+cmd);
+   if(!g_tgCtl)
+     {
+      YLog("Telegram Command Rejected: control disabled");
+      TgQueue("⛔ Telegram control is disabled in the EA settings.",chat);
+      return;
+     }
+
+   //--- duplicate protection for state-changing commands
+   bool mutating=(cmd=="/start" || cmd=="/stop" || cmd=="/set" || cmd=="/cancel");
+   if(mutating)
+     {
+      string key=IntegerToString(from)+"|"+t;
+      if(key==g_lastCmdKey && TimeLocal()-g_lastCmdTime<=6)
+        {
+         YLog("Telegram Command Rejected: duplicate");
+         TgQueue("⚠️ Command already processed.",chat);
+         return;
+        }
+      g_lastCmdKey=key;
+      g_lastCmdTime=TimeLocal();
+     }
+
+   if(cmd=="/start")
+     {
+      TgQueue(DoStart("Telegram"),chat,MenuMarkup());
+     }
+   else if(cmd=="/stop")
+     {
+      ulong tk[];
+      if(OwnPositions(tk)>0)
+        {
+         ulong tkt,pid; bool buy; double vol,entry,sl,tp,pr;
+         string info="";
+         if(OwnPosInfo(tkt,pid,buy,vol,entry,sl,tp,pr)) info="\nTrade #"+TNo((long)PGV(pid,"N",0))+"\n"+(buy?"BUY":"SELL")+"\nP/L: "+Money(pr);
+         g_confAction="STOP"; g_confNonce=NewNonce(); g_confExpire=TimeLocal()+60;
+         TgQueue("⚠️ يوجد Position مفتوح."+info+"\nهل تريد الإغلاق وإيقاف البوت؟",chat,ConfirmMarkup(g_confNonce,"✅ CONFIRM","✖ CANCEL"));
+        }
+      else
+        {
+         bool done=ExecStop(2,chat);
+         TgQueue(StopResultText(done),chat);
+        }
+     }
+   else if(cmd=="/cancel")
+     {
+      ulong tk[];
+      bool hasPos=(OwnPositions(tk)>0);
+      string res=ExecCancel(false);
+      TgQueue("⚠️ سيتم إلغاء أوامر Yetimmm المعلقة.\n"+res,chat);
+      if(hasPos)
+        {
+         g_confAction="CANCELCLOSE"; g_confNonce=NewNonce(); g_confExpire=TimeLocal()+60;
+         TgQueue("⚠️ توجد صفقة مفتوحة. هل تريد إغلاقها أيضاً؟",chat,ConfirmMarkup(g_confNonce,"✅ CLOSE POSITION","✖ KEEP"));
+        }
+     }
+   else if(cmd=="/set")
+     {
+      if(argc<3 || argc>4) { TgQueue("Usage: /set BUY SELL [RISK]\nExample: /set 4138 4137 1",chat); return; }
+      double b=ParseNum(a[1]), s=ParseNum(a[2]);
+      double r=(argc==4)?ParseNum(a[3]):0.0;
+      if(argc==4 && r<=0.0) { TgQueue("❌ Invalid Price Configuration\nRisk must be a positive number.",chat); return; }
+      string err;
+      if(ApplyLevels(b,s,r,"Telegram",err)) TgQueue(LevelsAcceptedText(),chat);
+      else TgQueue("❌ Invalid Price Configuration\n"+err,chat);
+     }
+   else if(cmd=="/status") TgQueue(StatusText(),chat,MenuMarkup());
+   else if(cmd=="/open")   TgQueue(OpenText(),chat);
+   else if(cmd=="/orders") TgQueue(OrdersText(),chat);
+   else if(cmd=="/history")
+     {
+      int c=(argc>=2)?(int)StringToInteger(a[1]):10;
+      int sk=(argc>=3)?(int)StringToInteger(a[2]):0;
+      TgQueue(HistoryText(c,sk),chat);
+     }
+   else if(cmd=="/last")     TgQueue(LastText(),chat);
+   else if(cmd=="/stats")    TgQueue(StatsText(),chat);
+   else if(cmd=="/risk")     TgQueue(RiskText(),chat);
+   else if(cmd=="/settings") TgQueue(SettingsText(),chat);
+   else if(cmd=="/menu")     TgQueue("🤖 Yetimmm\nStatus: "+RunStatus(),chat,MenuKeyboard());
+   else if(cmd=="/help")     TgQueue(HelpText(),chat,MenuMarkup());
+   else TgQueue("Unknown command. Send /help",chat);
+  }
+
+void TgCallbackBody(const string data,const long chat,const long from)
+  {
+   if(StringFind(data,"CMD:")==0)
+     {
+      TgCommand("/"+StringSubstr(data,4),chat,from);
+      return;
+     }
+   bool yes=(StringFind(data,"C1:")==0);
+   bool no=(StringFind(data,"C0:")==0);
+   if(!yes && !no) return;
+   string nonce=StringSubstr(data,3);
+   if(g_confNonce=="" || nonce!=g_confNonce || TimeLocal()>g_confExpire)
+     {
+      TgQueue("⚠️ Command already processed (or confirmation expired).",chat);
+      return;
+     }
+   string action=g_confAction;
+   g_confNonce=""; g_confAction="";
+   if(no) { TgQueue("Cancelled. No action taken.",chat); return; }
+   if(action=="STOP")
+     {
+      bool done=ExecStop(2,chat);
+      TgQueue(StopResultText(done),chat);
+     }
+   else if(action=="CANCELCLOSE")
+     {
+      bool p=CleanupPositions(3);
+      CheckClosures();
+      TgQueue(p?"✅ Open position closed.":"❌ Could not close the open position.",chat);
+     }
+  }
+
+//--- v2.13: the button action is EXECUTED first; the (slow) answerCallbackQuery round-trip comes after it
+void TgCallback(const string cbId,const string data,const long chat,const long from)
+  {
+   TgCallbackBody(data,chat,from);
+   string resp;
+   TgCall("answerCallbackQuery","callback_query_id="+UrlEnc(cbId),resp);
+  }
+
+string SecFile() { return "Yetimmm_"+IntegerToString(g_magic)+"_Security.csv"; }
+
+void SecurityLog(const long from,const long chat,const string what)
+  {
+   string w=Clean(what);
+   if(StringLen(w)>60) w=StringSubstr(w,0,60);
+   AppendLine(SecFile(),"Time;FromID;ChatID;Event;Content",
+              TimeToString(TimeCurrent(),TIME_DATE|TIME_SECONDS)+";"+IntegerToString(from)+";"+IntegerToString(chat)+";UNAUTHORIZED_REJECTED;"+w);
+  }
+
+//--- one poller per bot token inside this terminal (several charts with the same EA no longer collide)
+string TgLeadKey()
+  {
+   long h=0;
+   for(int i=0;i<StringLen(g_tgTok);i++) h=(h*31+(long)StringGetCharacter(g_tgTok,i))%2147483647;
+   return "YTLEAD_"+IntegerToString((int)h);
+  }
+
+bool TgIsLeader()
+  {
+   if(!InpTgAutoHeal) return true;
+   string k=TgLeadKey();
+   string kid=k+"_ID", kt=k+"_T";
+   double me=(double)ChartID();
+   datetime now=TimeLocal();
+   if(GlobalVariableCheck(kid) && GlobalVariableCheck(kt))
+     {
+      double owner=GlobalVariableGet(kid);
+      datetime t=(datetime)(long)GlobalVariableGet(kt);
+      if(owner!=me && now-t<=10) return false;   // another chart polls this token
+     }
+   GlobalVariableSet(kid,me);
+   GlobalVariableSet(kt,(double)(long)now);
+   return true;
+  }
+
+void TgPoll()
+  {
+   if(!TgActive() || !g_connected) return;
+   if(BrShared()) return;              // v3 shared bot: notifications only, no getUpdates
+   if(g_tgPausedUntil>0 && TimeLocal()<g_tgPausedUntil) return;   // another instance owns the token
+   if(!TgIsLeader()) return;
+   ulong nowMs=GetTickCount64();
+   if(nowMs<g_tgBackoffUntil) return;   // back off after a failed poll instead of hammering Telegram
+   if(nowMs-g_tgLastPollMs<(ulong)MathMax(100,MathMin(2000,InpTgPollMs))) return;
+   g_tgLastPollMs=nowMs;
+   bool any=false;                      // v2.13: something new arrived in this poll
+   bool baseline=!GHas("TGINIT");
+   string body;
+   if(baseline) body="offset=-1&timeout=0";
+   else body="offset="+IntegerToString(g_tgLast+1)+"&timeout=0&allowed_updates="+UrlEnc("[\"message\",\"callback_query\"]");
+   string resp;
+   if(!TgCall("getUpdates",body,resp))
+     {
+      g_tgBackoffUntil=GetTickCount64()+(g_tgLastCode==409?15000:5000);
+      if(InpTgAutoHeal && g_tgLastCode==409)
+        {
+         g_tg409++;
+         string r2;
+         if(TimeLocal()-g_tgWhTry>=600)    // 1) a leftover webhook is the most common cause: clear it once
+           {
+            g_tgWhTry=TimeLocal();
+            if(TgCall("deleteWebhook","drop_pending_updates=false",r2)) YLog("Telegram Self-Heal: webhook cleared, retrying.");
+           }
+         if(g_tg409>=3)                    // 2) still conflicting: another PC/VPS/program polls this token
+           {
+            g_tgPausedUntil=TimeLocal()+600;
+            g_tg409=0;
+            YLog("Telegram Self-Heal: another instance is polling this Bot Token (VPS/PC/other chart). Polling paused 10 min - notifications keep working, commands are handled by the other instance.");
+           }
+        }
+      return;
+     }
+   g_tg409=0;
+   string marker="\"update_id\":";
+   int mlen=StringLen(marker);
+   int p=0;
+   while(true)
+     {
+      int a=StringFind(resp,marker,p);
+      if(a<0) break;
+      int b=StringFind(resp,marker,a+mlen);
+      string seg=(b<0)?StringSubstr(resp,a):StringSubstr(resp,a,b-a);
+      bool f;
+      long uid=JNum(seg,marker,f);
+      if(f && uid>g_tgLast)
+        {
+         any=true;
+         g_tgLast=uid;                       // persist before executing (at-most-once)
+         GS("TGLAST",(double)g_tgLast);
+         if(!baseline)
+           {
+            bool isCb=(StringFind(seg,"\"callback_query\":")>=0);
+            bool f1,f2;
+            long from=JNum(seg,"\"from\":{\"id\":",f1);
+            long chat=JNum(seg,"\"chat\":{\"id\":",f2);
+            if(!f2) chat=from;
+            if(!f1 || !TgAuthorized(from))
+              {
+               string uText=isCb?JStr(seg,"\"data\":\""):JStr(seg,"\"text\":\"");
+               YLog("Telegram User Unauthorized (id "+IntegerToString(from)+") - command rejected, no action taken");
+               SecurityLog(from,chat,uText);
+               if(AlertThrottle("UNAUTH"+IntegerToString(from),300))
+                  TgQueue("🚫 UNAUTHORIZED TELEGRAM ACCESS ATTEMPT\nID: "+IntegerToString(from)+"\nThe command was rejected; no trading action was taken.");
+              }
+            else if(isCb)
+              {
+               string cid=JStr(seg,"\"callback_query\":{\"id\":\"");
+               string data=JStr(seg,"\"data\":\"");
+               TgCallback(cid,data,chat,from);
+              }
+            else
+              {
+               string text=JStr(seg,"\"text\":\"");
+               TgCommand(text,chat,from);
+              }
+           }
+        }
+      if(b<0) break;
+      p=b;
+     }
+   if(baseline) GS("TGINIT",1.0);
+   if(any || baseline) GlobalVariablesFlush();   // v2.13: no disk flush on an empty poll
+   if(any) TgFlush();                             // v2.13: the reply leaves right after the command was executed
+  }
+
+//+------------------------------------------------------------------+
+//| Monitors                                                         |
+//+------------------------------------------------------------------+
+void MonitorConnection()
+  {
+   bool c=(bool)TerminalInfoInteger(TERMINAL_CONNECTED);
+   if(c && !g_connected)
+     {
+      g_connected=true;
+      YLog("Connection Restored");
+      RecoverHistory();
+      g_dirty=true;
+      SyncAll();
+      if(AlertThrottle("CONNOK",300)) TgQueue("🔌 CONNECTION RESTORED\nAccount state checked: positions, orders and last deal verified.\nStatus: "+RunStatus());
+     }
+   else if(!c && g_connected)
+     {
+      g_connected=false;
+      YLog("Connection Lost");
+      RaiseAlert("CONN","Connection Lost: no new orders will be sent until it is restored.",true,true);
+     }
+  }
+
+void MonitorSpread()
+  {
+   double sp=(double)SymbolInfoInteger(g_sym,SYMBOL_SPREAD);
+   if(sp>(double)g_warn)
+     {
+      if(!g_spreadWarned)
+        {
+         g_spreadWarned=true;
+         YLog("Spread Warning: "+DoubleToString(sp,0)+" pts");
+         RaiseAlert("SPREAD","Spread Warning: "+DoubleToString(sp,0)+" pts > "+IntegerToString(g_warn)+" pts (trading NOT blocked).",true,true);
+        }
+     }
+   else if(sp<=(double)g_warn*0.8) g_spreadWarned=false;
+  }
+
+//+------------------------------------------------------------------+
+//| Panel                                                            |
+//+------------------------------------------------------------------+
+void UI_Rect(const string n,const int x,const int y,const int w,const int h,const color bg,const color bd)
+  {
+   if(ObjectFind(0,n)<0) ObjectCreate(0,n,OBJ_RECTANGLE_LABEL,0,0,0);
+   ObjectSetInteger(0,n,OBJPROP_CORNER,CORNER_LEFT_UPPER);
+   ObjectSetInteger(0,n,OBJPROP_XDISTANCE,x);
+   ObjectSetInteger(0,n,OBJPROP_YDISTANCE,y);
+   ObjectSetInteger(0,n,OBJPROP_XSIZE,w);
+   ObjectSetInteger(0,n,OBJPROP_YSIZE,h);
+   ObjectSetInteger(0,n,OBJPROP_BGCOLOR,bg);
+   ObjectSetInteger(0,n,OBJPROP_BORDER_TYPE,BORDER_FLAT);
+   ObjectSetInteger(0,n,OBJPROP_COLOR,bd);
+   ObjectSetInteger(0,n,OBJPROP_SELECTABLE,false);
+   ObjectSetInteger(0,n,OBJPROP_HIDDEN,true);
+  }
+
+void UI_Label(const string n,const int x,const int y,const string txt,const color c,const int fs)
+  {
+   if(ObjectFind(0,n)<0) ObjectCreate(0,n,OBJ_LABEL,0,0,0);
+   ObjectSetInteger(0,n,OBJPROP_CORNER,CORNER_LEFT_UPPER);
+   ObjectSetInteger(0,n,OBJPROP_ANCHOR,ANCHOR_LEFT_UPPER);
+   ObjectSetInteger(0,n,OBJPROP_XDISTANCE,x);
+   ObjectSetInteger(0,n,OBJPROP_YDISTANCE,y);
+   ObjectSetInteger(0,n,OBJPROP_COLOR,c);
+   ObjectSetInteger(0,n,OBJPROP_FONTSIZE,fs);
+   ObjectSetString(0,n,OBJPROP_FONT,"Arial");
+   ObjectSetString(0,n,OBJPROP_TEXT,txt);
+   ObjectSetInteger(0,n,OBJPROP_SELECTABLE,false);
+   ObjectSetInteger(0,n,OBJPROP_HIDDEN,true);
+  }
+
+void UI_Edit(const string n,const int x,const int y,const int w,const int h,const string txt)
+  {
+   if(ObjectFind(0,n)<0) ObjectCreate(0,n,OBJ_EDIT,0,0,0);
+   ObjectSetInteger(0,n,OBJPROP_CORNER,CORNER_LEFT_UPPER);
+   ObjectSetInteger(0,n,OBJPROP_XDISTANCE,x);
+   ObjectSetInteger(0,n,OBJPROP_YDISTANCE,y);
+   ObjectSetInteger(0,n,OBJPROP_XSIZE,w);
+   ObjectSetInteger(0,n,OBJPROP_YSIZE,h);
+   ObjectSetInteger(0,n,OBJPROP_BGCOLOR,C'40,46,58');
+   ObjectSetInteger(0,n,OBJPROP_COLOR,clrWhite);
+   ObjectSetInteger(0,n,OBJPROP_BORDER_COLOR,C'90,100,120');
+   ObjectSetInteger(0,n,OBJPROP_ALIGN,ALIGN_CENTER);
+   ObjectSetInteger(0,n,OBJPROP_FONTSIZE,9);
+   ObjectSetString(0,n,OBJPROP_TEXT,txt);
+   ObjectSetInteger(0,n,OBJPROP_SELECTABLE,false);
+   ObjectSetInteger(0,n,OBJPROP_HIDDEN,true);
+  }
+
+void UI_Button(const string n,const int x,const int y,const int w,const int h,const string txt,const color bg)
+  {
+   if(ObjectFind(0,n)<0) ObjectCreate(0,n,OBJ_BUTTON,0,0,0);
+   ObjectSetInteger(0,n,OBJPROP_CORNER,CORNER_LEFT_UPPER);
+   ObjectSetInteger(0,n,OBJPROP_XDISTANCE,x);
+   ObjectSetInteger(0,n,OBJPROP_YDISTANCE,y);
+   ObjectSetInteger(0,n,OBJPROP_XSIZE,w);
+   ObjectSetInteger(0,n,OBJPROP_YSIZE,h);
+   ObjectSetInteger(0,n,OBJPROP_BGCOLOR,bg);
+   ObjectSetInteger(0,n,OBJPROP_COLOR,clrWhite);
+   ObjectSetInteger(0,n,OBJPROP_FONTSIZE,8);
+   ObjectSetString(0,n,OBJPROP_TEXT,txt);
+   ObjectSetInteger(0,n,OBJPROP_STATE,false);
+   ObjectSetInteger(0,n,OBJPROP_SELECTABLE,false);
+   ObjectSetInteger(0,n,OBJPROP_HIDDEN,true);
+  }
+
+void UI_ToggleSet(const string n,const bool on)
+  {
+   color bg=C'150,50,50';
+   if(on) bg=C'30,130,60';
+   ObjectSetString(0,n,OBJPROP_TEXT,on?"ON":"OFF");
+   ObjectSetInteger(0,n,OBJPROP_BGCOLOR,bg);
+   ObjectSetInteger(0,n,OBJPROP_STATE,false);
+  }
+
+void SettingRow(const string key,const int x,const int ry,const string label,const string val)
+  {
+   UI_Label(UI+"SL_"+key,x+12,ry+4,label,clrSilver,9);
+   UI_Edit(UI+"S_"+key,x+190,ry,140,20,val);
+  }
+
+void ToggleRow(const string key,const int x,const int ry,const string label,const bool on)
+  {
+   UI_Label(UI+"SL_"+key,x+12,ry+4,label,clrSilver,9);
+   UI_Button(UI+"BTN_"+key,x+190,ry,140,20,"",C'150,50,50');
+   UI_ToggleSet(UI+"BTN_"+key,on);
+  }
+
+//--- page 1: every configurable value (the trading levels / risk are on page 0)
+void CreateSettingsPage()
+  {
+   int x=10,y=25,w=350,rowH=26;
+   int h=48+9*rowH+70;
+   UI_Rect(UI+"BG",x,y,w,h,C'22,26,34',C'212,175,55');
+   UI_Label(UI+"TITLE",x+12,y+6,"Yetimmm",clrGold,15);
+   UI_Label(UI+"SUB",x+110,y+13,"Settings",C'150,160,175',8);
+   int ry=y+40;
+   SettingRow("TARGET",x,ry,"Recovery Target ($, next risk)",D2(g_target)); ry+=rowH;
+   SettingRow("RR",x,ry,"Risk/Reward (1:x)",DoubleToString(g_rr,2)); ry+=rowH;
+   SettingRow("SLD",x,ry,"SL = Upper-Lower ($, auto)",DoubleToString(SLDist(),g_digits));
+   ObjectSetInteger(0,UI+"S_SLD",OBJPROP_READONLY,true);
+   ObjectSetInteger(0,UI+"S_SLD",OBJPROP_BGCOLOR,C'30,34,44');
+   ry+=rowH;
+   SettingRow("MAXDEV",x,ry,"Max Slippage Check (pts, post-fill)",IntegerToString(g_maxDev)); ry+=rowH;
+   SettingRow("WARN",x,ry,"Spread Alert (pts, alert only)",IntegerToString(g_warn)); ry+=rowH;
+   SettingRow("MAGIC",x,ry,"Magic Number (locked)",IntegerToString(g_magic));
+   ObjectSetInteger(0,UI+"S_MAGIC",OBJPROP_READONLY,true);
+   ObjectSetInteger(0,UI+"S_MAGIC",OBJPROP_BGCOLOR,C'30,34,44');
+   ry+=rowH;
+   ToggleRow("TGEN",x,ry,"Telegram Enable",g_uiTgEn); ry+=rowH;
+   ToggleRow("TGNOT",x,ry,"Notifications",g_uiTgNot); ry+=rowH;
+   ToggleRow("TGCTL",x,ry,"Telegram Control",g_uiTgCtl); ry+=rowH+6;
+   UI_Button(UI+"BTN_SAVE",x+10,ry,160,24,"SAVE SETTINGS",C'30,130,60');
+   UI_Button(UI+"BTN_BACK",x+180,ry,160,24,"< BACK",C'60,70,95');
+   ry+=30;
+   UI_Label(UI+"INFO",x+12,ry,"Contract Size: "+DoubleToString(g_contract,2)+"  |  "+(g_netting?"NETTING":"HEDGING"),C'150,160,175',8);
+  }
+
+void CreatePanel()
+  {
+   if(!InpShowPanel || MQLInfoInteger(MQL_OPTIMIZATION)) return;
+   ObjectsDeleteAll(0,UI);
+   if(g_page==1)
+     {
+      CreateSettingsPage();
+      ChartRedraw(0);
+      return;
+     }
+   int x=10,y=25,w=400;
+   int rows=ArraySize(g_rowKeys);
+   ArrayResize(g_uiTxt,rows);                        // value cache: UpdatePanel writes only the rows that changed
+   ArrayResize(g_uiCol,rows);
+   for(int c=0;c<rows;c++) { g_uiTxt[c]="~~~"; g_uiCol[c]=clrNONE; }
+   int h=48+3*24+34+30+rows*15+12;
+   UI_Rect(UI+"BG",x,y,w,h,C'22,26,34',C'212,175,55');
+   UI_Label(UI+"TITLE",x+12,y+6,"Yetimmm",clrGold,15);
+   UI_Label(UI+"SUB",x+110,y+13,"XAUUSD | Risk Sequence EA",C'150,160,175',8);
+   int ry=y+40;
+   UI_Label(UI+"L_BUY",x+12,ry+4,"Buy Stop Price",clrSilver,9);
+   UI_Edit(UI+"ED_BUY",x+190,ry,140,20,g_edHave?g_edBuy:(g_buyLevel>0?PX(g_buyLevel):""));
+   ry+=24;
+   UI_Label(UI+"L_SELL",x+12,ry+4,"Sell Stop Price",clrSilver,9);
+   UI_Edit(UI+"ED_SELL",x+190,ry,140,20,g_edHave?g_edSell:(g_sellLevel>0?PX(g_sellLevel):""));
+   ry+=24;
+   UI_Label(UI+"L_RISK",x+12,ry+4,"Initial Risk ($)",clrSilver,9);
+   UI_Edit(UI+"ED_RISK",x+190,ry,140,20,g_edHave?g_edRisk:D2(g_initRisk));
+   ry+=28;
+   UI_Button(UI+"BTN_APPLY",x+10,ry,80,24,"APPLY",C'30,90,160');
+   UI_Button(UI+"BTN_START",x+95,ry,80,24,"START",C'30,130,60');
+   UI_Button(UI+"BTN_STOP",x+180,ry,80,24,"STOP",C'170,40,40');
+   UI_Button(UI+"BTN_CANCEL",x+265,ry,75,24,"CANCEL",C'160,110,20');
+   ry+=30;
+   UI_Button(UI+"BTN_SET",x+10,ry,330,22,"SETTINGS  >",C'60,70,95');
+   ry+=34;
+   for(int i=0;i<rows;i++)
+     {
+      UI_Label(UI+"K"+IntegerToString(i),x+12,ry+i*15,g_rowKeys[i],C'150,160,175',8);
+      UI_Label(UI+"V"+IntegerToString(i),x+170,ry+i*15,"-",clrWhite,8);
+     }
+  }
+
+void UI_Val(const int i,const string txt,const color c=clrWhite)
+  {
+   if(i<0 || i>=ArraySize(g_uiTxt)) return;
+   if(g_uiTxt[i]==txt && g_uiCol[i]==c) return;      // unchanged: no object call at all
+   string n=UI+"V"+IntegerToString(i);
+   if(ObjectFind(0,n)<0) return;
+   ObjectSetString(0,n,OBJPROP_TEXT,txt);
+   ObjectSetInteger(0,n,OBJPROP_COLOR,c);
+   g_uiTxt[i]=txt;
+   g_uiCol[i]=c;
+   g_uiChanged=true;
+  }
+
+//--- incremental refresh: only rows whose text/colour changed are written, and the chart is redrawn only then
+void UpdatePanel()
+  {
+   if(!InpShowPanel || MQLInfoInteger(MQL_OPTIMIZATION)) return;
+   if(ObjectFind(0,UI+"BG")<0) CreatePanel();
+   if(g_page!=0) return;            // settings page has no live values
+   g_uiChanged=false;
+   color sc=clrLime;
+   if(g_state==YT_STOPPED || g_state==YT_ERROR) sc=clrTomato;
+   else if(g_state==YT_IDLE || g_state==YT_TP_RESET) sc=clrGold;
+   UI_Val(0,RunStatus()+" ["+StateText()+"]",sc);
+   UI_Val(1,g_sym);
+
+   //--- BUY STOP / SELL STOP: Desired (what the bot wants) vs Actual (what the server holds) vs Status
+   for(int k=0;k<2;k++)
+     {
+      bool b=(k==0);
+      int base=b?2:5;
+      double dl;
+      bool want=SideDesired(b,dl);
+      double pend=b?g_pendBuy:g_pendSell;
+      string nxt=(g_fresh && pend>0.0)?"  (next: "+PX(pend)+")":"";
+      UI_Val(base,(want?PX(dl):"-")+nxt);
+      ulong oTk; double ap;
+      bool have=SideActual(b,oTk,ap);
+      string det="-";
+      if(have && OrderSelect(oTk))
+         det="SL "+PX(OrderGetDouble(ORDER_SL))+"  TP "+PX(OrderGetDouble(ORDER_TP))+"  Lot "+LotS(OrderGetDouble(ORDER_VOLUME_CURRENT));
+      UI_Val(b?29:30,det);
+      UI_Val(base+1,have?PX(ap)+"  #"+UL(oTk):"-",(have && want && PriceEq(ap,dl))?clrLime:clrWhite);
+      int st=SideStatusShown(b);
+      UI_Val(base+2,SyncText(st),SyncColor(st));
+     }
+
+   ulong tk,pid; bool buy; double vol,entry,sl,tp,pr;
+   if(OwnPosInfo(tk,pid,buy,vol,entry,sl,tp,pr))
+     {
+      UI_Val(8,(buy?"BUY ":"SELL ")+LotS(vol)+" @ "+PX(entry)+"  P/L "+Money(pr),buy?clrLime:clrTomato);
+      UI_Val(31,"SL "+PX(sl)+"  TP "+PX(tp)+"  #"+UL(tk));
+     }
+   else { UI_Val(8,"None",clrSilver); UI_Val(31,"-"); }
+   ulong od[]; int no=OwnOrders(od);
+   string os="";
+   for(int i=0;i<no;i++)
+      if(OrderSelect(od[i])) os+=(OrderGetInteger(ORDER_TYPE)==ORDER_TYPE_BUY_STOP?"BuyStop ":"SellStop ")+PX(OrderGetDouble(ORDER_PRICE_OPEN))+"  ";
+   if(os=="") { string wn=WaitNote(); os=(StringLen(wn)>0)?wn:((StringLen(g_blockReason)>0)?g_blockReason:"None"); if(StringLen(os)>70) os=StringSubstr(os,0,70)+"..."; }
+   UI_Val(9,os);
+   string lm=g_uiMsg;
+   if(StringLen(lm)>56) lm=StringSubstr(lm,0,56)+"..";
+   UI_Val(10,(lm=="")?"-":lm,g_uiMsgCol);
+   UI_Val(11,IntegerToString(g_seq));
+   UI_Val(12,"$"+D2(g_curRisk));
+   double lot,est; string err;
+   bool ok=CurrentLotInfo(lot,est,err);
+   string lotTxt=ok?LotS(lot)+"  (est. loss $"+D2(est)+")":"n/a: "+err;
+   color lotCol=ok?clrWhite:clrTomato;
+   if(ok)
+     {
+      //--- the panel lot must equal the volume of the REAL pending order
+      ulong lotTk; double lotPx;
+      if(SideActual(g_mode!=YM_SELL,lotTk,lotPx) && OrderSelect(lotTk))
+        {
+         double mv=OrderGetDouble(ORDER_VOLUME_CURRENT);
+         double vst=SymbolInfoDouble(g_sym,SYMBOL_VOLUME_STEP);
+         if(vst<=0.0) vst=0.01;
+         lotTxt+="  MT5 "+LotS(mv);
+         if(MathAbs(mv-lot)>vst/2.0) lotCol=clrTomato;
+        }
+     }
+   UI_Val(13,lotTxt,lotCol);
+   UI_Val(14,"$"+D2(g_accLoss));
+   UI_Val(15,"$"+D2(NextRiskFor(g_accLoss+(ok?est:g_curRisk))));
+   UI_Val(16,ok?"$"+D2(est*g_rr):"n/a");
+   UI_Val(17,"1:"+DoubleToString(g_rr,0));
+   UI_Val(18,g_connected?"ONLINE":"OFFLINE",g_connected?clrLime:clrTomato);
+   double sp=(double)SymbolInfoInteger(g_sym,SYMBOL_SPREAD);
+   UI_Val(19,DoubleToString(sp,0)+" pts",sp>(double)g_warn?clrTomato:clrWhite);
+   UI_Val(20,g_tradeNo>0?"#"+TNo(g_tradeNo):"-");
+   UI_Val(21,IntegerToString(g_st.total));
+   UI_Val(22,IntegerToString(g_st.wins));
+   UI_Val(23,IntegerToString(g_st.losses));
+   UI_Val(24,Money(g_st.totProfit));
+   UI_Val(25,Money(-g_st.totLoss));
+   UI_Val(26,Money(g_st.net),g_st.net>=0?clrLime:clrTomato);
+   UI_Val(27,D2(g_st.winRate)+"%");
+   UI_Val(28,TgStateText(),g_tgOk?clrLime:clrSilver);
+   if(g_uiChanged) ChartRedraw(0);
+  }
+
+//--- smart APPLY: Validate -> Compare Desired vs Actual -> NOTHING TO DO / MODIFY / CREATE / REMOVE -> verify
+void PanelApply()
+  {
+   double b=ParseNum(ObjectGetString(0,UI+"ED_BUY",OBJPROP_TEXT));
+   double s=ParseNum(ObjectGetString(0,UI+"ED_SELL",OBJPROP_TEXT));
+   double r=ParseNum(ObjectGetString(0,UI+"ED_RISK",OBJPROP_TEXT));
+   string err;
+   if(ApplyLevels(b,s,r,"Panel",err))
+     {
+      g_edHave=false;
+      if(g_applyNote=="NOTHING TO DO")
+         PanelMsg("APPLY: NOTHING TO DO (already synced)",clrSilver);
+      else if(g_applyNote=="QUEUED")
+        {
+         PanelMsg("APPLY: saved for NEXT sequence (active trade untouched)",clrGold);
+         TgQueue(LevelsAcceptedText());
+        }
+      else
+        {
+         bool allGood=true;
+         for(int k=0;k<2;k++)
+           {
+            bool sb=(k==0);
+            double dl;
+            if(!SideDesired(sb,dl)) continue;
+            int sst=SideStatusShown(sb);
+            if(sst==YS_FAILED || sst==YS_WAITING || sst==YS_MISSING || sst==YS_EXTERNAL) allGood=false;
+           }
+         PanelMsg("APPLY: "+SyncSummary(),allGood?clrWhite:clrTomato);
+         TgQueue(LevelsAcceptedText()+"\nSync: "+SyncSummary());
+        }
+      YLog("Levels accepted from panel ("+(g_applyNote==""?"applied":g_applyNote)+") | "+SyncSummary());
+     }
+   else PanelMsg("APPLY REJECTED: "+err,clrTomato);
+  }
+
+//--- every id must be a non-zero integer (negative ids = groups/channels)
+//--- validate EVERYTHING first; apply all-or-nothing
+void PanelSaveSettings()
+  {
+   double nt =ParseNum(ObjectGetString(0,UI+"S_TARGET",OBJPROP_TEXT));
+   double rr =ParseNum(ObjectGetString(0,UI+"S_RR",OBJPROP_TEXT));
+   double mdv=ParseNum(ObjectGetString(0,UI+"S_MAXDEV",OBJPROP_TEXT));
+   double wnv=ParseNum(ObjectGetString(0,UI+"S_WARN",OBJPROP_TEXT));
+
+   string err="";
+   double stopsLvl=(double)SymbolInfoInteger(g_sym,SYMBOL_TRADE_STOPS_LEVEL)*g_point;
+   if(!MathIsValidNumber(nt) || nt<0.0)                          err="Recovery Target must be zero or positive.";
+   else if(!MathIsValidNumber(rr) || rr<=0.0)                    err="Risk/Reward must be greater than zero.";
+   else if(!MathIsValidNumber(mdv) || mdv<0.0 || mdv>100000.0)   err="Max Slippage Check must be between 0 and 100000 points.";
+   else if(!MathIsValidNumber(wnv) || wnv<0.0 || wnv>100000.0)   err="Spread Alert must be between 0 and 100000 points.";
+
+   bool tradeChanged=(MathAbs(nt-g_target)>1e-9 || MathAbs(rr-g_rr)>1e-9);
+   if(err=="" && tradeChanged)
+     {
+      ulong tk[];
+      if(OwnPositions(tk)>0) err="Recovery Target / Risk-Reward cannot change while a Yetimmm position is open.";
+     }
+   if(err!="")
+     {
+      YLog("Settings NOT saved: "+err);
+      Alert("Yetimmm: settings NOT saved - ",err);
+      return;
+     }
+
+   string oldTok=g_tgTok;
+   bool wasActive=TgActive();
+
+   g_target=nt; g_rr=rr;
+   g_maxDev=(int)MathRound(mdv);
+   g_warn=(int)MathRound(wnv);
+   g_tgEn=g_uiTgEn; g_tgNot=g_uiTgNot; g_tgCtl=g_uiTgCtl;
+   g_trade.SetDeviationInPoints(g_maxDev);
+
+   if(tradeChanged)
+     {
+      g_curRisk=(g_accLoss>1e-9)?NextRiskFor(g_accLoss):g_initRisk;
+      g_nextPlaceMs=0;
+      ResetSyncBackoff();
+     }
+   //--- never execute commands that piled up while Telegram was off or the bot changed
+   if((!wasActive && TgActive()) || oldTok!=g_tgTok)
+     {
+      GlobalVariableDel(GN("TGINIT"));
+      g_tgOk=false;
+     }
+   CfgPutAll();
+   CfgSaveFile();
+   SaveState();
+   g_dirty=true;
+   YLog("Settings saved from panel | Target "+D2(g_target)+" | R:R 1:"+DoubleToString(g_rr,2)+" | SL (Upper-Lower) "+D2(SLDist())+" | MaxSlippage "+IntegerToString(g_maxDev)+" | SpreadAlert "+IntegerToString(g_warn)+
+        " | Telegram "+(g_tgEn?"ON":"OFF")+" | Notify "+(g_tgNot?"ON":"OFF")+" | Control "+(g_tgCtl?"ON":"OFF"));
+   if(tradeChanged)
+     {
+      SyncAll();                        // SL / RR / target change the REAL orders now, not on the next tick
+      UpdatePanel();
+      PanelMsg("SETTINGS: "+SyncSummary(),clrWhite);
+     }
+   Alert("Yetimmm: settings saved."+(tradeChanged?" "+SyncSummary():""));
+   TgQueue("⚙️ SETTINGS UPDATED (panel)\n"+SettingsText());
+  }
+
+void OnChartEvent(const int id,const long &lparam,const double &dparam,const string &sparam)
+  {
+   if(id!=CHARTEVENT_OBJECT_CLICK) return;
+   if(StringFind(sparam,UI)!=0) return;
+   if(sparam==UI+"BTN_APPLY")
+     {
+      ObjectSetInteger(0,sparam,OBJPROP_STATE,false);
+      PanelApply();
+     }
+   else if(sparam==UI+"BTN_START")
+     {
+      ObjectSetInteger(0,sparam,OBJPROP_STATE,false);
+      string r=DoStart("Panel");
+      Alert("Yetimmm: ",r);
+      TgQueue(r);
+     }
+   else if(sparam==UI+"BTN_STOP")
+     {
+      ObjectSetInteger(0,sparam,OBJPROP_STATE,false);
+      ulong tk[];
+      bool go=true;
+      if(OwnPositions(tk)>0 && !MQLInfoInteger(MQL_TESTER))
+         go=(MessageBox("An open Yetimmm position exists.\nClose it, delete orders and STOP the bot?","Yetimmm STOP",MB_YESNO|MB_ICONWARNING)==IDYES);
+      if(go)
+        {
+         bool done=ExecStop(1,0);
+         string r=StopResultText(done);
+         Alert("Yetimmm: ",r);
+         TgQueue(r);
+        }
+     }
+   else if(sparam==UI+"BTN_CANCEL")
+     {
+      ObjectSetInteger(0,sparam,OBJPROP_STATE,false);
+      ulong tk[];
+      bool closeToo=false;
+      if(OwnPositions(tk)>0 && !MQLInfoInteger(MQL_TESTER))
+         closeToo=(MessageBox("An open Yetimmm position exists.\nYES = cancel orders AND close the position.\nNO = cancel orders only.","Yetimmm CANCEL",MB_YESNO|MB_ICONWARNING)==IDYES);
+      string r=ExecCancel(closeToo);
+      Alert("Yetimmm: ",r);
+      TgQueue(r);
+     }
+   else if(sparam==UI+"BTN_SET")
+     {
+      ObjectSetInteger(0,sparam,OBJPROP_STATE,false);
+      g_edBuy=ObjectGetString(0,UI+"ED_BUY",OBJPROP_TEXT);      // keep unsaved level edits
+      g_edSell=ObjectGetString(0,UI+"ED_SELL",OBJPROP_TEXT);
+      g_edRisk=ObjectGetString(0,UI+"ED_RISK",OBJPROP_TEXT);
+      g_edHave=true;
+      g_uiTgEn=g_tgEn; g_uiTgNot=g_tgNot; g_uiTgCtl=g_tgCtl;
+      g_page=1;
+      CreatePanel();
+     }
+   else if(sparam==UI+"BTN_BACK")
+     {
+      g_page=0;
+      CreatePanel();
+     }
+   else if(sparam==UI+"BTN_SAVE")
+     {
+      ObjectSetInteger(0,sparam,OBJPROP_STATE,false);
+      PanelSaveSettings();
+     }
+   else if(sparam==UI+"BTN_TGEN")   { g_uiTgEn=!g_uiTgEn;   UI_ToggleSet(sparam,g_uiTgEn); }
+   else if(sparam==UI+"BTN_TGNOT")  { g_uiTgNot=!g_uiTgNot; UI_ToggleSet(sparam,g_uiTgNot); }
+   else if(sparam==UI+"BTN_TGCTL")  { g_uiTgCtl=!g_uiTgCtl; UI_ToggleSet(sparam,g_uiTgCtl); }
+   g_dirty=true;
+   UpdatePanel();
+   ChartRedraw(0);
+  }
+
+//+------------------------------------------------------------------+
+//| Expert events                                                    |
+//+------------------------------------------------------------------+
+//--- log the symbol specification that drives the lot calculation (Contract Size included)
+void LogSpecs()
+  {
+   YLog("Specs | Contract Size "+DoubleToString(g_contract,2)+" | Tick Size "+DoubleToString(g_tick,g_digits)+" | Tick Value "+DoubleToString(SymbolInfoDouble(g_sym,SYMBOL_TRADE_TICK_VALUE),4)+
+        " | Volume Min "+DoubleToString(SymbolInfoDouble(g_sym,SYMBOL_VOLUME_MIN),g_lotDigits)+" Max "+DoubleToString(SymbolInfoDouble(g_sym,SYMBOL_VOLUME_MAX),g_lotDigits)+
+        " Step "+DoubleToString(SymbolInfoDouble(g_sym,SYMBOL_VOLUME_STEP),g_lotDigits)+" | Digits "+IntegerToString(g_digits));
+   if(g_contract<=0.0)
+      RaiseAlert("CSIZE0","Broker reports Contract Size = 0 for "+g_sym+": loss per lot relies on OrderCalcProfit / Tick Value only.",true,false);
+   double px=SymbolInfoDouble(g_sym,SYMBOL_BID);
+   if(px>0.0) PerLotLossSL(true,px,px-1.0);   // triggers the Contract Size cross-check once at start-up (1.00 test distance)
+  }
+
+//+------------------------------------------------------------------+
+//| Magic Number guard                                               |
+//| Positions/orders are identified by Symbol + Magic. If the Magic  |
+//| was changed while Yetimmm orders/positions of the OLD Magic still|
+//| exist, the new instance would never manage them: they would stay |
+//| alive on the server. Detect -> strong warning -> do not start.   |
+//+------------------------------------------------------------------+
+string MagicKey() { return "YTX_"+g_sym+"_LASTMAGIC"; }
+
+bool IsYetimmmComment(const string c) { return (StringFind(c,"Yetimmm")>=0); }
+
+//--- counts Yetimmm-tagged pending orders / positions on this symbol that belong to ANOTHER magic
+int CountOrphans(string &detail)
+  {
+   int cnt=0;
+   detail="";
+   int no=OrdersTotal();
+   for(int i=0;i<no;i++)
+     {
+      ulong t=OrderGetTicket(i);
+      if(t==0) continue;
+      if(OrderGetString(ORDER_SYMBOL)!=g_sym) continue;
+      long mg=(long)OrderGetInteger(ORDER_MAGIC);
+      if(mg==g_magic) continue;
+      if(!IsYetimmmComment(OrderGetString(ORDER_COMMENT))) continue;
+      cnt++;
+      if(StringLen(detail)<180) detail+=" order#"+UL(t)+"(magic "+IntegerToString((int)mg)+")";
+     }
+   int np=PositionsTotal();
+   for(int i=0;i<np;i++)
+     {
+      ulong t=PositionGetTicket(i);
+      if(t==0) continue;
+      if(PositionGetString(POSITION_SYMBOL)!=g_sym) continue;
+      long mg=(long)PositionGetInteger(POSITION_MAGIC);
+      if(mg==g_magic) continue;
+      if(!IsYetimmmComment(PositionGetString(POSITION_COMMENT))) continue;
+      cnt++;
+      if(StringLen(detail)<180) detail+=" position#"+UL(t)+"(magic "+IntegerToString((int)mg)+")";
+     }
+   return cnt;
+  }
+
+//--- returns false when the start must be refused
+bool MagicGuardOk()
+  {
+   string key=MagicKey();
+   bool changed=(GlobalVariableCheck(key) && (long)GlobalVariableGet(key)!=g_magic);
+   string det="";
+   int orph=CountOrphans(det);
+   if(orph>0 && changed && !InpIgnoreOrphans)
+     {
+      string m="MAGIC NUMBER CHANGED ("+IntegerToString((int)(long)GlobalVariableGet(key))+" -> "+IntegerToString((int)g_magic)+") while "+IntegerToString(orph)+
+               " Yetimmm order(s)/position(s) of another Magic still exist on "+g_sym+":"+det+
+               ". They are NOT managed by this instance. Close/delete them or restore the old Magic, then re-attach (or set InpIgnoreOrphans=true).";
+      YLog("INIT REFUSED: "+m);
+      Alert("Yetimmm refused to start: ",m);
+      return false;
+     }
+   if(orph>0 && !changed)
+      YLog("WARNING: "+IntegerToString(orph)+" Yetimmm-tagged order(s)/position(s) of another Magic on "+g_sym+":"+det+" (not managed by this instance).");
+   if(orph>0 && InpIgnoreOrphans)
+      YLog("Magic guard bypassed by InpIgnoreOrphans.");
+   GlobalVariableSet(key,(double)g_magic);
+   return true;
+  }
+
+//+------------------------------------------------------------------+
+//| Mini App bridge (Cloudflare Worker)                              |
+//| One WebRequest per cycle: push state + ack done commands +       |
+//| receive pending commands. Commands reuse the SAME functions as   |
+//| the Telegram commands (DoStart / ExecStop / ApplyLevels ...).    |
+//+------------------------------------------------------------------+
+string g_brSec="";
+bool   g_brFresh=true;             // first sync after (re)start (an EA restart no longer signs anybody out; only reset / a changed MT5 server does)
+bool   g_brShared=false, g_brSharedLoaded=false;
+// v3: private secret generated once by the EA itself (invisible to the user) - proves "this is the same EA" to the Worker
+bool   g_brPairLoaded=false, g_brPairNeed=true;   // v2.21: true until the Worker confirmed the pairing (then the minted secret alone authenticates)
+string YtSha256Hex(const string src)
+  {
+   uchar inb[],outb[],keyb[];
+   int n=StringToCharArray(src,inb,0,WHOLE_ARRAY,CP_UTF8);
+   if(n>1) ArrayResize(inb,n-1);
+   ArrayResize(keyb,0);
+   if(CryptEncode(CRYPT_HASH_SHA256,inb,keyb,outb)<=0) return "";
+   string h="";
+   for(int i=0;i<ArraySize(outb);i++) h+=StringFormat("%02x",outb[i]);
+   return h;
+  }
+// The secret is now a BOOTSTRAP value only: the Worker mints the real one (CSPRNG) when the pairing code is accepted and the EA stores it ("es" in the sync reply).
+// The local value mixes several entropy sources through SHA-256 (MathRand alone is not a cryptographic generator).
+string BrKeyEff()
+  {
+   if(StringLen(g_brSec)>=16) return g_brSec;
+   string s=CfgGet("brsec","");
+   if(StringLen(s)<16)
+     {
+      ulong mix=GetMicrosecondCount() ^ (ulong)GetTickCount64() ^ ((ulong)TimeLocal()<<20) ^ (ulong)AccountInfoInteger(ACCOUNT_LOGIN);
+      MathSrand((int)(mix%2147483647));
+      string seed=IntegerToString((long)mix)+"|"+IntegerToString((long)TerminalInfoInteger(TERMINAL_MEMORY_USED))+"|"+IntegerToString((long)TerminalInfoInteger(TERMINAL_PING_LAST))+"|"+
+                  DoubleToString(SymbolInfoDouble(_Symbol,SYMBOL_BID),8)+"|"+TerminalInfoString(TERMINAL_PATH)+"|"+TerminalInfoString(TERMINAL_DATA_PATH);
+      for(int k=0;k<16;k++) seed+="|"+IntegerToString(MathRand());
+      s=YtSha256Hex(seed);
+      if(StringLen(s)<32)               // SHA-256 unavailable: legacy generator (the Worker mints the real secret anyway)
+        {
+         s="";
+         for(int i=0;i<32;i++) s+=StringSubstr("0123456789abcdef",MathRand()%16,1);
+        }
+      CfgSet("brsec",s);
+      CfgSaveFile();
+     }
+   g_brSec=s;
+   return s;
+  }
+// v3: one shared bot -> the EA only SENDS notifications; commands come from the app (several EAs polling one token would conflict)
+bool BrShared()
+  {
+   if(!g_brSharedLoaded) { g_brShared=(CfgGet("brshared","0")=="1"); g_brSharedLoaded=true; }
+   return g_brShared;
+  }
+int      g_brCv=0;                 // v2.19b: version of the Telegram config received from the Worker
+bool     g_brCvLoaded=false;
+datetime g_brLast=0;
+datetime g_brErrLog=0;
+bool     g_brOk=false;
+bool     g_brFirst=true;          // first successful sync: queued commands are discarded, never executed
+string   g_brAck[];
+string   g_brDone[];
+int      g_brHistTotal=-1;
+string   g_brHistJson="[]";
+string   g_brLastId="";
+string   g_brLastText="";
+bool     g_brLastOk=true;
+
+string JEsc(const string s)
+  {
+   string r=s;
+   StringReplace(r,"\\","\\\\");
+   StringReplace(r,"\"","\\\"");
+   StringReplace(r,"\r"," ");
+   StringReplace(r,"\n"," | ");
+   StringReplace(r,"\t"," ");
+   return r;
+  }
+
+//+------------------------------------------------------------------+
+//| v2.20: MT5 built-in economic calendar -> Worker                   |
+//| The logged-in MT5 account is the news source: it carries the REAL |
+//| Actual values and the broker's own server time. The EA sends only |
+//| a tiny content hash every sync; the full table travels only when  |
+//| the content changed (or the Worker asks for it). Times are UTC.   |
+//+------------------------------------------------------------------+
+string   g_calJson="";           // rows array (JSON) of this week
+string   g_calHash="";           // content hash of g_calJson
+string   g_calSent="";           // last hash the Worker received
+bool     g_calNeed=false;        // the Worker asked for the table
+bool     g_calHot=false;         // an event is due / just released and still has no Actual -> refresh fast
+datetime g_calBuilt=0;
+
+// broker server time minus GMT, rounded to 15 min (DST of the broker is followed automatically)
+int BrTzOffset()
+  {
+   long d=(long)(TimeTradeServer()-TimeGMT());
+   long r=(long)MathRound((double)d/900.0)*900;
+   if(r>50400 || r<-50400) r=0;
+   return (int)r;
+  }
+
+string CalHash(const string s)
+  {
+   ulong h=5381;
+   int n=StringLen(s);
+   for(int i=0;i<n;i++) h=((h<<5)+h)+(ulong)StringGetCharacter(s,i);
+   return StringFormat("%I64x",h);
+  }
+
+string CalFmt(const double v,const MqlCalendarEvent &ev)
+  {
+   if(!MathIsValidNumber(v)) return "";
+   string suf="";
+   switch(ev.multiplier)
+     {
+      case CALENDAR_MULTIPLIER_THOUSANDS: suf="K"; break;
+      case CALENDAR_MULTIPLIER_MILLIONS:  suf="M"; break;
+      case CALENDAR_MULTIPLIER_BILLIONS:  suf="B"; break;
+      case CALENDAR_MULTIPLIER_TRILLIONS: suf="T"; break;
+      default: break;
+     }
+   if(ev.unit==CALENDAR_UNIT_PERCENT) suf+="%";
+   int dg=(int)ev.digits;
+   if(dg>6) dg=6;
+   return DoubleToString(v,dg)+suf;
+  }
+
+bool CalBuild()
+  {
+   string cur[]={"USD","EUR","GBP","JPY","AUD","CAD","CHF","NZD","CNY"};
+   datetime st=TimeTradeServer();
+   MqlDateTime dt;
+   TimeToStruct(st,dt);
+   datetime day0=st-(datetime)(dt.hour*3600+dt.min*60+dt.sec);
+   datetime mon=day0-(datetime)(((dt.day_of_week+6)%7)*86400);      // Monday 00:00 (server time) of this week
+   datetime from=mon, to=mon+7*86400;
+   if(dt.day_of_week==0 || dt.day_of_week==6) to=mon+14*86400;     // weekend: also show next week so "next event" is never empty
+   int off=BrTzOffset();
+   string rows="";
+   int cnt=0;
+   bool hot=false;
+   for(int c=0;c<ArraySize(cur) && cnt<450;c++)
+     {
+      MqlCalendarValue vals[];
+      ResetLastError();
+      int n=CalendarValueHistory(vals,from,to,NULL,cur[c]);
+      if(n<=0) continue;
+      for(int i=0;i<n && cnt<450;i++)
+        {
+         MqlCalendarEvent ev;
+         if(!CalendarEventById(vals[i].event_id,ev)) continue;
+         MqlCalendarCountry co;
+         if(!CalendarCountryById(ev.country_id,co)) continue;
+         string imp="";
+         if(ev.type==CALENDAR_TYPE_HOLIDAY) imp="holiday";
+         else if(ev.importance==CALENDAR_IMPORTANCE_HIGH) imp="high";
+         else if(ev.importance==CALENDAR_IMPORTANCE_MODERATE) imp="medium";
+         else if(ev.importance==CALENDAR_IMPORTANCE_LOW) imp="low";
+         else continue;
+         if(ev.type!=CALENDAR_TYPE_HOLIDAY && (ev.time_mode==CALENDAR_TIMEMODE_NOTIME || ev.time_mode==CALENDAR_TIMEMODE_TENTATIVE)) continue;   // no exact time: an alert would be a guess
+         bool euCountry=(cur[c]=="EUR" && co.code!="EU");
+         if(euCountry && (imp=="low" || imp=="holiday")) continue;   // keep the euro list readable: member-state noise only when it matters
+         string a="",f="",p="";
+         if(vals[i].HasActualValue())   a=CalFmt(vals[i].GetActualValue(),ev);
+         if(vals[i].HasForecastValue()) f=CalFmt(vals[i].GetForecastValue(),ev);
+         if(vals[i].HasRevisedValue())       p=CalFmt(vals[i].GetRevisedValue(),ev);
+         else if(vals[i].HasPreviousValue()) p=CalFmt(vals[i].GetPreviousValue(),ev);
+         if(imp!="holiday" && a=="" && vals[i].time>=st-1800 && vals[i].time<=st+180) hot=true;
+         string nm=ev.name;
+         if(euCountry) nm=co.code+" "+nm;
+         if(StringLen(nm)>90) nm=StringSubstr(nm,0,90);
+         long utc=(long)vals[i].time-(long)off;
+         rows+=(cnt>0?",":"")+"{\"t\":\""+JEsc(nm)+"\",\"c\":\""+cur[c]+"\",\"s\":"+IntegerToString(utc)+",\"m\":\""+imp+"\",\"p\":\""+JEsc(p)+"\",\"f\":\""+JEsc(f)+"\",\"a\":\""+JEsc(a)+"\"}";
+         cnt++;
+        }
+     }
+   g_calHot=hot;
+   if(cnt==0) return false;                      // calendar not synchronised yet / no data: keep what we had
+   g_calJson="["+rows+"]";
+   g_calHash=CalHash(g_calJson);
+   return true;
+  }
+
+void CalTick()
+  {
+   if(MQLInfoInteger(MQL_TESTER)) return;
+   int every=g_calHot?4:60;                      // fast only around a release, so Actual reaches the app within seconds
+   if(g_calBuilt!=0 && TimeLocal()-g_calBuilt<every) return;
+   g_calBuilt=TimeLocal();
+   if(!CalBuild() && StringLen(g_calHash)==0) g_calBuilt=TimeLocal()-50;   // first data not ready: retry in ~10 s
+  }
+
+bool JDbl(const string seg,const string key,double &v)
+  {
+   v=0.0;
+   string mk="\""+key+"\":";
+   int a=StringFind(seg,mk);
+   if(a<0) return false;
+   int i=a+StringLen(mk);
+   int L=StringLen(seg);
+   string s="";
+   while(i<L)
+     {
+      ushort c=StringGetCharacter(seg,i);
+      if((c>='0' && c<='9') || c=='.' || c=='-' || c=='+' || c=='e' || c=='E') { s+=ShortToString(c); i++; }
+      else break;
+     }
+   if(s=="") return false;
+   v=StringToDouble(s);
+   return true;
+  }
+
+bool BrSeen(const string id)
+  {
+   for(int i=0;i<ArraySize(g_brDone);i++) if(g_brDone[i]==id) return true;
+   return false;
+  }
+
+void BrRemember(const string id)
+  {
+   int n=ArraySize(g_brDone);
+   if(n>=40)
+     {
+      for(int i=1;i<n;i++) g_brDone[i-1]=g_brDone[i];
+      n--;
+     }
+   ArrayResize(g_brDone,n+1);
+   g_brDone[n]=id;
+  }
+
+void BrAckAdd(const string id)
+  {
+   int n=ArraySize(g_brAck);
+   ArrayResize(g_brAck,n+1);
+   g_brAck[n]=id;
+  }
+
+//--- v2.14: Mini App command log (kept in memory + Yetimmm_<magic>_Commands.csv, sent to the app inside the state)
+#define BR_CMD_MAX 25
+#define CMD_HEADER "Time;Source;Id;Command;Details;Result;OK;Ts;State;WB;WS;Act"
+string g_cmId[],g_cmCmd[],g_cmDet[],g_cmTxt[],g_cmSt[];
+bool   g_cmOk[],g_cmAct[];
+long   g_cmTs[];
+double g_cmWB[],g_cmWS[];               // v2.17: levels of this command that still wait for the market (0 = none / resolved)
+string g_cmJson="[]";
+bool   g_cmDirty=true;
+
+string CmdFile() { return "Yetimmm_"+IntegerToString(g_magic)+"_Commands.csv"; }
+
+int BrCmdFind(const string id)
+  {
+   for(int i=ArraySize(g_cmId)-1;i>=0;i--) if(g_cmId[i]==id) return i;
+   return -1;
+  }
+
+void BrCmdPush(const string id,const string cmd,const string det,const string txt,const bool ok,const long ts,
+               const string st="",const double wb=0.0,const double ws=0.0,const bool act=false)
+  {
+   int n=ArraySize(g_cmId);
+   if(n>=BR_CMD_MAX)
+     {
+      for(int i=1;i<n;i++)
+        {
+         g_cmId[i-1]=g_cmId[i]; g_cmCmd[i-1]=g_cmCmd[i]; g_cmDet[i-1]=g_cmDet[i]; g_cmTxt[i-1]=g_cmTxt[i]; g_cmOk[i-1]=g_cmOk[i]; g_cmTs[i-1]=g_cmTs[i];
+         g_cmSt[i-1]=g_cmSt[i]; g_cmWB[i-1]=g_cmWB[i]; g_cmWS[i-1]=g_cmWS[i]; g_cmAct[i-1]=g_cmAct[i];
+        }
+      n--;
+     }
+   ArrayResize(g_cmId,n+1); ArrayResize(g_cmCmd,n+1); ArrayResize(g_cmDet,n+1);
+   ArrayResize(g_cmTxt,n+1); ArrayResize(g_cmOk,n+1); ArrayResize(g_cmTs,n+1);
+   ArrayResize(g_cmSt,n+1); ArrayResize(g_cmWB,n+1); ArrayResize(g_cmWS,n+1); ArrayResize(g_cmAct,n+1);
+   g_cmId[n]=id; g_cmCmd[n]=cmd; g_cmDet[n]=det; g_cmTxt[n]=txt; g_cmOk[n]=ok; g_cmTs[n]=ts;
+   g_cmSt[n]=(StringLen(st)>0)?st:(ok?"ok":"fail");
+   g_cmWB[n]=wb; g_cmWS[n]=ws; g_cmAct[n]=act;
+   g_cmDirty=true;
+  }
+
+//--- one line of the commands CSV (append-only): a later line with the same Id UPDATES the earlier one when the file is loaded
+void BrCmdSave(const int i)
+  {
+   AppendLine(CmdFile(),CMD_HEADER,
+              TimeToString((datetime)g_cmTs[i],TIME_DATE|TIME_SECONDS)+";MiniApp;"+Clean(g_cmId[i])+";"+Clean(g_cmCmd[i])+";"+Clean(g_cmDet[i])+";"+Clean(g_cmTxt[i])+";"+
+              (g_cmOk[i]?"1":"0")+";"+IntegerToString(g_cmTs[i])+";"+g_cmSt[i]+";"+DoubleToString(g_cmWB[i],g_digits)+";"+DoubleToString(g_cmWS[i],g_digits)+";"+(g_cmAct[i]?"1":"0"));
+  }
+
+//--- v2.17: the level of this side if it is ACCEPTED but still waits for the market right now, else 0
+double WaitLevelNow(const bool buy)
+  {
+   double lv;
+   if(!SideDesired(buy,lv)) return 0.0;
+   ulong tk; double ap;
+   if(SideActual(buy,tk,ap)) return 0.0;
+   string why;
+   return (PlacementState(buy,lv,why)==1)?lv:0.0;
+  }
+
+void BrCmdAdd(const string id,const string cmd,const string det,const string result,const bool ok)
+  {
+   string one=result;
+   StringReplace(one,"\n"," | ");
+   StringReplace(one,"✅ ",""); StringReplace(one,"❌ ",""); StringReplace(one,"⚠️ ","");
+   StringReplace(one,"ℹ️ ",""); StringReplace(one,"⏳ ",""); StringReplace(one,"✅",""); StringReplace(one,"❌","");
+   if(StringLen(one)>140) one=StringSubstr(one,0,140);
+   datetime now=TimeCurrent();
+   //--- v2.17: an accepted command whose level waits for the market stays "wait" until it is activated / superseded / cancelled
+   double wb=0.0,ws=0.0;
+   if(ok && (cmd=="apply" || cmd=="settings" || cmd=="place" || cmd=="modify"))
+     {
+      wb=WaitLevelNow(true);
+      ws=WaitLevelNow(false);
+     }
+   string st=!ok?"fail":((wb>0.0 || ws>0.0)?"wait":"ok");
+   BrCmdPush(id,cmd,det,one,ok,(long)now,st,wb,ws,false);
+   BrCmdSave(ArraySize(g_cmId)-1);
+  }
+
+//--- v2.17: one waiting side of a command is resolved. kind: 1 = activated, 2 = superseded by a newer level, 3 = cancelled
+void BrWaitSide(const int i,const bool buy,const int kind,const string note)
+  {
+   if(buy) g_cmWB[i]=0.0; else g_cmWS[i]=0.0;
+   if(kind==1) g_cmAct[i]=true;
+   bool first=(StringFind(g_cmTxt[i],"Activated:")<0 && StringFind(g_cmTxt[i],"Superseded:")<0 && StringFind(g_cmTxt[i],"Cancelled:")<0);
+   g_cmTxt[i]=first?note:g_cmTxt[i]+" | "+note;
+   if(g_cmWB[i]<=0.0 && g_cmWS[i]<=0.0)
+      g_cmSt[i]=g_cmAct[i]?"done":((kind==3)?"cancel":"sup");
+   g_cmDirty=true;
+   BrCmdSave(i);
+  }
+
+void BrWaitActivated(const bool buy,const double level,const ulong ticket,const ulong latMs)
+  {
+   for(int i=ArraySize(g_cmId)-1;i>=0;i--)
+     {
+      if(g_cmSt[i]!="wait") continue;
+      double lv=buy?g_cmWB[i]:g_cmWS[i];
+      if(lv>0.0 && PriceEq(lv,level))
+         BrWaitSide(i,buy,1,"Activated: "+(buy?"Buy":"Sell")+" Stop #"+UL(ticket)+" @ "+PX(level)+" at "+TimeToString(TimeCurrent(),TIME_SECONDS)+
+                         (latMs>0?" ("+UL(latMs)+" ms after the price reached the trigger)":""));
+     }
+  }
+
+//--- v2.17: once per second: a waiting command whose level is no longer wanted is closed with the real reason
+void BrWaitTrack()
+  {
+   int n=ArraySize(g_cmId);
+   for(int i=0;i<n;i++)
+     {
+      if(g_cmSt[i]!="wait") continue;
+      for(int k=0;k<2;k++)
+        {
+         bool b=(k==0);
+         double lv0=b?g_cmWB[i]:g_cmWS[i];
+         if(lv0<=0.0) continue;
+         ulong tk; double ap;
+         if(SideActual(b,tk,ap) && PriceEq(ap,lv0))
+           { BrWaitSide(i,b,1,"Activated: "+(b?"Buy":"Sell")+" Stop #"+UL(tk)+" @ "+PX(lv0)+" at "+TimeToString(TimeCurrent(),TIME_SECONDS)); continue; }
+         double lv;
+         if(SideDesired(b,lv) && PriceEq(lv,lv0)) continue;             // still waiting
+         bool stopped=(g_state==YT_STOPPED || g_state==YT_IDLE || g_state==YT_TP_RESET || g_mode==YM_NONE);
+         BrWaitSide(i,b,stopped?3:2,stopped?"Cancelled: "+(b?"Buy":"Sell")+" Stop "+PX(lv0)+" (bot stopped / orders cancelled)"
+                                           :"Superseded: "+(b?"Buy":"Sell")+" Stop "+PX(lv0)+" replaced by a newer level");
+        }
+     }
+  }
+
+void BrCmdLoad()
+  {
+   int h=FileOpen(CmdFile(),FILE_READ|FILE_TXT|FILE_ANSI|FILE_SHARE_READ|FILE_SHARE_WRITE);
+   if(h==INVALID_HANDLE) return;
+   bool first=true;
+   while(!FileIsEnding(h))
+     {
+      string line=FileReadString(h);
+      if(StringLen(line)==0) continue;
+      if(first) { first=false; continue; }
+      string f[];
+      if(StringSplit(line,';',f)<8) continue;
+      bool ok=(f[6]=="1");
+      string st=(ArraySize(f)>=9 && StringLen(f[8])>0)?f[8]:(ok?"ok":"fail");
+      double wb=(ArraySize(f)>=11)?StringToDouble(f[9]):0.0;
+      double ws=(ArraySize(f)>=11)?StringToDouble(f[10]):0.0;
+      bool act=(ArraySize(f)>=12 && f[11]=="1");
+      int ix=BrCmdFind(f[2]);
+      if(ix>=0)                                    // an UPDATE line of an earlier command
+        {
+         g_cmTxt[ix]=f[5]; g_cmSt[ix]=st; g_cmWB[ix]=wb; g_cmWS[ix]=ws; g_cmAct[ix]=act; g_cmOk[ix]=ok;
+         g_cmDirty=true;
+        }
+      else BrCmdPush(f[2],f[3],f[4],f[5],ok,StringToInteger(f[7]),st,wb,ws,act);
+     }
+   FileClose(h);
+  }
+
+string BrCmdsJson()
+  {
+   if(!g_cmDirty) return g_cmJson;
+   string out="[";
+   int n=ArraySize(g_cmId);
+   for(int i=n-1;i>=0;i--)                       // newest first
+     {
+      if(i<n-1) out+=",";
+      out+="{\"id\":\""+JEsc(g_cmId[i])+"\",\"cmd\":\""+JEsc(g_cmCmd[i])+"\",\"det\":\""+JEsc(g_cmDet[i])+"\",\"text\":\""+JEsc(g_cmTxt[i])+
+           "\",\"ok\":"+(g_cmOk[i]?"true":"false")+",\"st\":\""+g_cmSt[i]+"\",\"wb\":"+DoubleToString(g_cmWB[i],g_digits)+",\"ws\":"+DoubleToString(g_cmWS[i],g_digits)+
+           ",\"ts\":"+IntegerToString(g_cmTs[i])+",\"t\":\""+TimeToString((datetime)g_cmTs[i],TIME_SECONDS)+"\"}";
+     }
+   out+="]";
+   g_cmJson=out;
+   g_cmDirty=false;
+   return out;
+  }
+
+//--- short human description of a command's parameters, taken BEFORE it runs
+string BrCmdDetail(const string cmd,const string seg)
+  {
+   double a,b,c,e,r;
+   string d="";
+   if(cmd=="apply" || cmd=="settings")
+     {
+      if(JDbl(seg,"buy",a))    d+="Buy "+PX(a);
+      if(JDbl(seg,"sell",b))   d+=(d!=""?" / ":"")+"Sell "+PX(b);
+      if(JDbl(seg,"risk",c))   d+=(d!=""?" / ":"")+"Risk $"+D2(c);
+      if(JDbl(seg,"target",e)) d+=(d!=""?" / ":"")+"Target $"+D2(e);
+      if(JDbl(seg,"rr",r))     d+=(d!=""?" / ":"")+"RR 1:"+DoubleToString(r,2);
+      return d;
+     }
+   if(cmd=="modify" || cmd=="place")
+     {
+      if(JDbl(seg,"ticket",a)) d="#"+UL((ulong)a);
+      string sd2=JStr(seg,"\"side\":\"");
+      if(StringLen(sd2)>0) d=sd2+" Stop";
+      if(JDbl(seg,"price",b)) d+=(d!=""?" @ ":"@ ")+PX(b);
+      return d;
+     }
+   if(cmd=="delete")
+     {
+      string side=JStr(seg,"\"side\":\"");
+      if(StringLen(side)>0) d=side+" Stop";
+      if(JDbl(seg,"ticket",a)) d+=(d!=""?" ":"")+"#"+UL((ulong)a);
+      return d;
+     }
+   return d;
+  }
+
+//--- the pending Stop orders that really exist on the server (the app shows them with a delete button)
+string BrOrdersJson()
+  {
+   ulong od[];
+   int n=OwnOrders(od);
+   string out="[";
+   int c=0;
+   for(int i=0;i<n;i++)
+     {
+      if(!OrderSelect(od[i])) continue;
+      long ty=OrderGetInteger(ORDER_TYPE);
+      if(ty!=ORDER_TYPE_BUY_STOP && ty!=ORDER_TYPE_SELL_STOP) continue;
+      if(c>0) out+=",";
+      out+="{\"ticket\":"+UL(od[i])+",\"side\":\""+(ty==ORDER_TYPE_BUY_STOP?"BUY":"SELL")+"\",\"price\":"+DoubleToString(OrderGetDouble(ORDER_PRICE_OPEN),g_digits)+
+           ",\"lot\":"+DoubleToString(OrderGetDouble(ORDER_VOLUME_CURRENT),2)+",\"sl\":"+DoubleToString(OrderGetDouble(ORDER_SL),g_digits)+
+           ",\"tp\":"+DoubleToString(OrderGetDouble(ORDER_TP),g_digits)+"}";
+      c++;
+     }
+   out+="]";
+   return out;
+  }
+
+//--- v2.14: delete ONE pending Stop order of this bot from MT5. The wanted state is changed FIRST, so the
+//--- synchroniser never re-creates it: BOTH -> the other side only; the last remaining order -> IDLE (like /cancel).
+string ExecDeleteOrder(const ulong ticket,const string src)
+  {
+   ulong od[];
+   int n=OwnOrders(od);
+   bool mine=false;
+   for(int i=0;i<n;i++) if(od[i]==ticket) { mine=true; break; }
+   if(!mine || !OrderSelect(ticket)) return "❌ Order #"+UL(ticket)+" not found (already filled or deleted).";
+   long ty=OrderGetInteger(ORDER_TYPE);
+   bool isBuy=(ty==ORDER_TYPE_BUY_STOP), isSell=(ty==ORDER_TYPE_SELL_STOP);
+   if(!isBuy && !isSell) return "❌ Only Buy Stop / Sell Stop orders can be deleted.";
+   if(g_state!=YT_ARMED || g_mode==YM_NONE) return "❌ Order cannot be deleted in the current state ("+StateText()+").";
+   double px=OrderGetDouble(ORDER_PRICE_OPEN);
+   int oldMode=g_mode;
+   int newMode=g_mode;
+   if(g_mode==YM_BOTH) newMode=isBuy?YM_SELL:YM_BUY;
+   else if((g_mode==YM_BUY && isBuy) || (g_mode==YM_SELL && isSell)) newMode=YM_NONE;
+   g_mode=newMode;
+   if(newMode==YM_NONE)
+     {
+      g_state=YT_IDLE;
+      ulong ct[];
+      if(g_fresh && OwnPositions(ct)==0) PromotePending();
+     }
+   SaveState();
+   bool ok=DeleteOrder(ticket,src+" Delete");
+   if(!ok)
+     {
+      g_mode=oldMode;
+      g_state=YT_ARMED;
+      SaveState();
+      g_dirty=true;
+      if(g_delFilled) return "❌ Order #"+UL(ticket)+" was already FILLED by MT5 - a position exists, nothing was deleted.";
+      return "❌ Could not delete order #"+UL(ticket)+". See Journal.";
+     }
+   YLog("Order #"+UL(ticket)+" deleted by "+src);
+   g_dirty=true;
+   SyncAll();
+   string modeTxt=(newMode==YM_NONE)?"IDLE (no pending orders left)":(newMode==YM_BUY?"BUY STOP only":"SELL STOP only");
+   return "✅ ORDER DELETED\n"+(isBuy?"Buy Stop":"Sell Stop")+" #"+UL(ticket)+" @ "+PX(px)+"\nBot mode: "+modeTxt;
+  }
+
+//--- v2.19: delete a level that is still WAITING for the price (no ticket exists yet); a live order is deleted through ExecDeleteOrder
+string ExecDeleteLevel(const bool isBuy,const string src)
+  {
+   if(g_state!=YT_ARMED || g_mode==YM_NONE) return "❌ Level cannot be deleted in the current state ("+StateText()+").";
+   bool has=(g_mode==YM_BOTH || (isBuy && g_mode==YM_BUY) || (!isBuy && g_mode==YM_SELL));
+   if(!has) return "❌ That level does not exist.";
+   ulong tk=0; double ap=0.0;
+   if(SideActual(isBuy,tk,ap)) return ExecDeleteOrder(tk,src);
+   double px=isBuy?g_buyLevel:g_sellLevel;
+   if(g_mode==YM_BOTH) g_mode=isBuy?YM_SELL:YM_BUY;
+   else g_mode=YM_NONE;
+   if(g_mode==YM_NONE) g_state=YT_IDLE;
+   int s=SideIdx(isBuy);
+   g_trig[s]=0.0; g_deferLvl[s]=0.0;
+   SetSync(isBuy,YS_IDLE,"");
+   SaveState();
+   YLog("Waiting level deleted by "+src+": "+(isBuy?"Buy":"Sell")+" "+PX(px));
+   g_dirty=true;
+   SyncAll();
+   return "✅ LEVEL DELETED\n"+(isBuy?"Buy Stop @ ":"Sell Stop @ ")+PX(px)+" (was waiting for the price)";
+  }
+
+//--- last closed trades (newest first), rebuilt only when the trade count changes
+string BrHistJson()
+  {
+   if(g_st.total==g_brHistTotal) return g_brHistJson;
+   string lines[];
+   int n=ReadTradeLines(lines);
+   string out="[";
+   int cnt=0;
+   for(int i=n-1;i>=0 && cnt<40;i--)
+     {
+      string f[];
+      if(StringSplit(lines[i],';',f)<30) continue;
+      string tm=f[22];
+      int sp=StringFind(tm," ");
+      if(sp>=0) tm=StringSubstr(tm,sp+1);
+      if(cnt>0) out+=",";
+      out+="{\"no\":"+IntegerToString(StringToInteger(f[0]))+",\"side\":\""+JEsc(f[5])+"\",\"entry\":"+DoubleToString(StringToDouble(f[7]),g_digits)+
+           ",\"exit\":"+DoubleToString(StringToDouble(f[8]),g_digits)+",\"lot\":"+DoubleToString(StringToDouble(f[11]),2)+
+           ",\"pnl\":"+DoubleToString(StringToDouble(f[18]),2)+",\"reason\":\""+JEsc(f[23])+"\",\"t\":\""+JEsc(tm)+"\",\"ts\":"+IntegerToString((long)StringToTime(f[22]))+"}";
+      cnt++;
+     }
+   out+="]";
+   g_brHistJson=out;
+   g_brHistTotal=g_st.total;
+   return out;
+  }
+
+//--- account-wide open volume (all open positions of the account) for the app's account card
+double BrOpenVolume(int &cnt)
+  {
+   double v=0.0; cnt=0;
+   for(int i=PositionsTotal()-1;i>=0;i--)
+     {
+      ulong tk=PositionGetTicket(i);
+      if(tk==0) continue;
+      v+=PositionGetDouble(POSITION_VOLUME); cnt++;
+     }
+   return v;
+  }
+
+//--- v2.23 live BrokerSpec -> Mini App (the EA is the authority; the Mini App never assumes contract / step / min / max / digits)
+string JNum8(const double v) { return DoubleToString(v,8); }
+
+string BsJson()
+  {
+   MqlTick t;
+   double bid=0.0, ask=0.0;
+   if(SymbolInfoTick(g_sym,t)) { bid=t.bid; ask=t.ask; }
+   double tvl=SymbolInfoDouble(g_sym,SYMBOL_TRADE_TICK_VALUE_LOSS), tvp=SymbolInfoDouble(g_sym,SYMBOL_TRADE_TICK_VALUE_PROFIT);
+   double vmin=SymbolInfoDouble(g_sym,SYMBOL_VOLUME_MIN), vmax=SymbolInfoDouble(g_sym,SYMBOL_VOLUME_MAX), vst=SymbolInfoDouble(g_sym,SYMBOL_VOLUME_STEP), vlm=SymbolInfoDouble(g_sym,SYMBOL_VOLUME_LIMIT);
+   long stops=SymbolInfoInteger(g_sym,SYMBOL_TRADE_STOPS_LEVEL), frz=SymbolInfoInteger(g_sym,SYMBOL_TRADE_FREEZE_LEVEL);
+   long exe=SymbolInfoInteger(g_sym,SYMBOL_TRADE_EXEMODE), fil=SymbolInfoInteger(g_sym,SYMBOL_FILLING_MODE), exm=SymbolInfoInteger(g_sym,SYMBOL_EXPIRATION_MODE), tm=SymbolInfoInteger(g_sym,SYMBOL_TRADE_MODE);
+   double contract=SymbolInfoDouble(g_sym,SYMBOL_TRADE_CONTRACT_SIZE);
+   //--- change detection: brokers may change these (news, session switch) - log it once, the next calculation already uses the new values
+   string sig=JNum8(vmin)+"|"+JNum8(vmax)+"|"+JNum8(vst)+"|"+JNum8(vlm)+"|"+IntegerToString((int)stops)+"|"+IntegerToString((int)frz)+"|"+JNum8(tvl)+"|"+JNum8(contract)+"|"+IntegerToString((int)exe)+"|"+IntegerToString((int)exm)+"|"+IntegerToString((int)tm);
+   if(sig!=g_bsSig)
+     {
+      if(StringLen(g_bsSig)>0) YLog("BrokerSpec changed: now "+sig+" | was "+g_bsSig);
+      g_bsSig=sig;
+     }
+   string j="{\"vmin\":"+JNum8(vmin)+",\"vmax\":"+JNum8(vmax)+",\"vstep\":"+JNum8(vst)+",\"vlimit\":"+JNum8(vlm)+",\"vdig\":"+IntegerToString(g_lotDigits);
+   j+=",\"contract\":"+JNum8(contract)+",\"tick\":"+JNum8(g_tick)+",\"tvl\":"+JNum8(tvl)+",\"tvp\":"+JNum8(tvp)+",\"point\":"+JNum8(g_point)+",\"digits\":"+IntegerToString(g_digits);
+   j+=",\"stops\":"+IntegerToString((int)stops)+",\"freeze\":"+IntegerToString((int)frz)+",\"exe\":"+IntegerToString((int)exe)+",\"fill\":"+IntegerToString((int)fil)+",\"expm\":"+IntegerToString((int)exm)+",\"tmode\":"+IntegerToString((int)tm);
+   j+=",\"ccy\":\""+JEsc(AccCcy())+"\",\"pccy\":\""+JEsc(SymbolInfoString(g_sym,SYMBOL_CURRENCY_PROFIT))+"\",\"hedge\":"+(AccountInfoInteger(ACCOUNT_MARGIN_MODE)==ACCOUNT_MARGIN_MODE_RETAIL_HEDGING?"true":"false");
+   j+=",\"bid\":"+DoubleToString(bid,g_digits)+",\"ask\":"+DoubleToString(ask,g_digits)+",\"spr\":"+DoubleToString((ask>=bid&&bid>0.0)?ask-bid:0.0,g_digits)+",\"maxSpr\":"+IntegerToString(InpMaxSpread)+"}";
+   return j;
+  }
+
+//--- the risk decision for the level the bot would trade next (Requested vs Effective risk, min risk, policy, status)
+string RkJson()
+  {
+   if(g_buyLevel<=0.0 || g_sellLevel<=0.0 || g_buyLevel<=g_sellLevel) return "null";
+   bool b=(g_mode!=YM_SELL);
+   double lvl=b?g_buyLevel:g_sellLevel;
+   SRiskResult r;
+   RiskCompute(g_curRisk,b,lvl,SLPrice(b,lvl),r);
+   string st="OK";
+   if(!r.valid)
+     {
+      if(r.code=="RISK_BELOW_MIN_VOLUME") st="BELOW_MIN";
+      else if(r.code=="RISK_ABOVE_MAX_VOLUME") st="ABOVE_MAX";
+      else if(r.code=="RISK_ABOVE_VOLUME_LIMIT") st="ABOVE_LIMIT";
+      else if(r.code=="RISK_NO_MARGIN") st="NO_MARGIN";
+      else st="NO_SPEC";
+     }
+   else if(r.clamped) st="CLAMPED";
+   string j="{\"side\":\""+(b?"BUY":"SELL")+"\",\"req\":"+D2(r.requested)+",\"raw\":"+JNum8(r.rawVol)+",\"vol\":"+JNum8(r.vol)+",\"vmin\":"+JNum8(r.minVol)+",\"eff\":"+D2(r.effective)+",\"minRisk\":"+D2(r.minRisk)+",\"perLot\":"+D2(r.perLot);
+   j+=",\"margin\":"+D2(r.margin)+",\"policy\":\""+r.policy+"\",\"status\":\""+st+"\",\"clamped\":"+(r.clamped?"true":"false")+",\"ccy\":\""+JEsc(AccCcy())+"\"}";
+   return j;
+  }
+
+string BrStateJson()
+  {
+   string s="{";
+   bool frz=(g_state==YT_STOPPED);
+   if(!frz) { g_frzBid=0.0; g_frzAsk=0.0; g_frzTs=0; }
+   else if(g_frzBid<=0.0) { g_frzBid=SymbolInfoDouble(g_sym,SYMBOL_BID); g_frzAsk=SymbolInfoDouble(g_sym,SYMBOL_ASK); g_frzTs=(long)TimeCurrent(); }
+   s+="\"price\":"+DoubleToString(frz?g_frzBid:SymbolInfoDouble(g_sym,SYMBOL_BID),g_digits);
+   s+=",\"ask\":"+DoubleToString(frz?g_frzAsk:SymbolInfoDouble(g_sym,SYMBOL_ASK),g_digits)+",\"minDist\":"+DoubleToString(SymbolInfoInteger(g_sym,SYMBOL_TRADE_STOPS_LEVEL)*SymbolInfoDouble(g_sym,SYMBOL_POINT),g_digits);
+   s+=",\"run\":"+(g_state==YT_STOPPED?"false":"true");
+   s+=",\"frz\":"+(frz?"true":"false")+",\"frzT\":"+IntegerToString(g_frzTs);
+   s+=",\"state\":\""+StateText()+"\"";
+   string msg=g_blockReason;
+   if(StringLen(msg)==0) msg=WaitNote();
+   s+=",\"msg\":\""+JEsc(msg)+"\"";
+   s+=",\"ver\":\""+YT_VER+"\",\"proto\":2,\"evp\":1,\"sym\":\""+JEsc(g_sym)+"\",\"waits\":"+WaitsJson();
+   s+=",\"tick\":"+DoubleToString(g_tick,g_digits)+",\"pt\":"+DoubleToString(g_point,g_digits);   // symbol precision: the Worker matches order alerts with 3 ticks / Max Deviation, never a % of price
+   s+=",\"mt\":{\"conn\":"+(TerminalInfoInteger(TERMINAL_CONNECTED)?"true":"false")+",\"auto\":"+(TerminalInfoInteger(TERMINAL_TRADE_ALLOWED)?"true":"false")+
+      ",\"exp\":"+(MQLInfoInteger(MQL_TRADE_ALLOWED)?"true":"false")+",\"acc\":"+(AccountInfoInteger(ACCOUNT_TRADE_ALLOWED)?"true":"false")+
+      ",\"ea\":"+(AccountInfoInteger(ACCOUNT_TRADE_EXPERT)?"true":"false")+",\"tm\":"+(SymbolInfoInteger(g_sym,SYMBOL_TRADE_MODE)==SYMBOL_TRADE_MODE_FULL?"true":"false")+
+      ",\"ping\":"+IntegerToString((int)(TerminalInfoInteger(TERMINAL_PING_LAST)/1000))+"}";
+   s+=",\"buy\":"+DoubleToString(g_buyLevel,g_digits)+",\"sell\":"+DoubleToString(g_sellLevel,g_digits);
+   s+=",\"risk\":"+D2(g_initRisk)+",\"cur\":"+D2(g_curRisk)+",\"acc\":"+D2(g_accLoss);
+   s+=",\"seq\":"+IntegerToString(g_seq)+",\"no\":"+IntegerToString(g_tradeNo);
+   s+=",\"target\":"+D2(g_target)+",\"rr\":"+DoubleToString(g_rr,2);
+   s+=",\"maxDev\":"+IntegerToString(g_maxDev)+",\"warn\":"+IntegerToString(g_warn);
+   s+=",\"breach\":\""+(InpBreachPolicy==BREACH_MARKET?"MARKET":"WAIT")+"\",\"entry\":\""+(InpEntryMode==ENTRY_PENDING?"PENDING":"VIRTUAL")+"\"";
+   s+=",\"wcode\":\""+(frz?"":g_wcode)+"\",\"bs\":"+BsJson()+",\"rk\":"+RkJson();
+   s+=",\"spread\":"+IntegerToString((int)SymbolInfoInteger(g_sym,SYMBOL_SPREAD));
+   if(g_fresh && g_pendBuy>0.0 && g_pendSell>0.0)
+      s+=",\"pend\":{\"buy\":"+DoubleToString(g_pendBuy,g_digits)+",\"sell\":"+DoubleToString(g_pendSell,g_digits)+",\"risk\":"+D2(g_initRisk)+",\"target\":"+D2(g_target)+",\"rr\":"+DoubleToString(g_rr,2)+"}";
+   else s+=",\"pend\":null";
+   ulong tk,pid; bool buy; double vol,entry,sl,tp,pr;
+   if(OwnPosInfo(tk,pid,buy,vol,entry,sl,tp,pr))
+      s+=",\"pos\":{\"pid\":"+IntegerToString((long)pid)+",\"side\":\""+(buy?"BUY":"SELL")+"\",\"entry\":"+DoubleToString(entry,g_digits)+",\"sl\":"+DoubleToString(sl,g_digits)+",\"tp\":"+DoubleToString(tp,g_digits)+
+         ",\"lot\":"+DoubleToString(vol,g_lotDigits)+",\"est\":"+D2(vol*PerLotLossSL(buy,entry,sl))+",\"risk\":"+D2(PGV(pid,"R",g_curRisk))+
+         ",\"no\":"+IntegerToString((long)PGV(pid,"N",0))+",\"profit\":"+D2(pr)+"}";
+   else s+=",\"pos\":null";
+   s+=",\"hist\":"+BrHistJson();
+   s+=",\"orders\":"+BrOrdersJson();
+   s+=",\"cmds\":"+BrCmdsJson();
+   double pf=(g_st.totLoss>1e-9)?g_st.totProfit/g_st.totLoss:(g_st.totProfit>0?99.0:0.0);
+   s+=",\"stats\":{\"total\":"+IntegerToString((int)g_st.total)+",\"wins\":"+IntegerToString((int)g_st.wins)+",\"losses\":"+IntegerToString((int)g_st.losses)+",\"net\":"+D2(g_st.net)+
+      ",\"buys\":"+IntegerToString((int)g_st.buys)+",\"sells\":"+IntegerToString((int)g_st.sells)+",\"gp\":"+D2(g_st.totProfit)+",\"gl\":"+D2(g_st.totLoss)+
+      ",\"avgW\":"+D2(g_st.avgProfit)+",\"avgL\":"+D2(g_st.avgLoss)+",\"maxW\":"+D2(g_st.maxProfit)+",\"maxL\":"+D2(g_st.maxLoss)+",\"pf\":"+D2(pf)+
+      ",\"streak\":"+IntegerToString((int)g_st.streak)+",\"comm\":"+D2(g_st.commission)+",\"swap\":"+D2(g_st.swap)+",\"vol\":"+DoubleToString(g_st.volume,g_lotDigits)+
+      ",\"hiRisk\":"+D2(g_st.highRisk)+",\"hiLot\":"+DoubleToString(g_st.highLot,g_lotDigits)+"}";
+   s+=",\"acct\":{\"bal\":"+D2(AccountInfoDouble(ACCOUNT_BALANCE))+",\"eq\":"+D2(AccountInfoDouble(ACCOUNT_EQUITY))+",\"mg\":"+D2(AccountInfoDouble(ACCOUNT_MARGIN))+
+      ",\"fm\":"+D2(AccountInfoDouble(ACCOUNT_MARGIN_FREE))+",\"fl\":"+D2(AccountInfoDouble(ACCOUNT_PROFIT))+",\"lev\":"+IntegerToString((int)AccountInfoInteger(ACCOUNT_LEVERAGE))+
+      ",\"cur\":\""+JEsc(AccountInfoString(ACCOUNT_CURRENCY))+"\",\"login\":"+IntegerToString((long)AccountInfoInteger(ACCOUNT_LOGIN))+",\"srv\":\""+JEsc(AccountInfoString(ACCOUNT_SERVER))+"\"";
+   int npos=0; double ovol=BrOpenVolume(npos);
+   s+=",\"ovol\":"+DoubleToString(ovol,g_lotDigits)+",\"np\":"+IntegerToString(npos)+",\"ml\":"+D2(AccountInfoDouble(ACCOUNT_MARGIN_LEVEL))+"}";
+   if(StringLen(g_brLastId)>0)
+      s+=",\"lastCmd\":{\"id\":\""+JEsc(g_brLastId)+"\",\"ok\":"+(g_brLastOk?"true":"false")+",\"text\":\""+JEsc(g_brLastText)+"\"}";
+   s+="}";
+   return s;
+  }
+
+//--- executes ONE command through the existing Telegram-command functions
+string BrExec(const string cmd,const string seg)
+  {
+   ulong tk[];
+   if(cmd=="start") return DoStart("MiniApp");
+   if(cmd=="stop")
+     {
+      bool d=ExecStop(2,0);
+      return StopResultText(d);
+     }
+   if(cmd=="close")
+     {
+      if(OwnPositions(tk)==0) return "ℹ️ No open Yetimmm position.";
+      bool p=CleanupPositions(3);
+      CheckClosures();
+      g_dirty=true;
+      return p?"✅ Open position closed.":"❌ Could not close the open position.";
+     }
+   if(cmd=="delete")
+     {
+      double tkd;
+      if(!JDbl(seg,"ticket",tkd) || tkd<=0.0)
+        {
+         string sdl=JStr(seg,"\"side\":\"");
+         StringToUpper(sdl);
+         if(sdl!="BUY" && sdl!="SELL") return "❌ Invalid command: order ticket or side missing.";
+         return ExecDeleteLevel(sdl=="BUY","MiniApp");
+        }
+      return ExecDeleteOrder((ulong)tkd,"MiniApp");
+     }
+   if(cmd=="cancel")
+     {
+      if(g_state==YT_STOPPED) return "ℹ️ Bot is stopped - no pending orders to cancel.";
+      string r=ExecCancel(false);
+      g_dirty=true; SyncAll();
+      return r;
+     }
+   if(cmd=="modify" || cmd=="place")
+     {
+      double tkm=0.0, px=0.0;
+      if(!JDbl(seg,"price",px) || px<=0.0) return "❌ Invalid command: price missing.";
+      if(g_state!=YT_ARMED) return "❌ Orders can be changed only while the bot is ARMED (state: "+StateText()+").";
+      bool isBuy;
+      if(cmd=="modify")
+        {
+         bool hasTk=(JDbl(seg,"ticket",tkm) && tkm>0.0);
+         if(!hasTk)
+           {
+            string sdm=JStr(seg,"\"side\":\"");
+            StringToUpper(sdm);
+            if(sdm!="BUY" && sdm!="SELL") return "❌ Invalid command: order ticket or side missing.";
+            isBuy=(sdm=="BUY");
+            if(WaitLevelNow(isBuy)<=0.0) return "❌ That level is not waiting (it is a live order - use its ticket).";
+           }
+         else
+           {
+            if(!OrderSelect((ulong)tkm)) return "❌ Order not found (already filled or deleted).";
+            long ty=OrderGetInteger(ORDER_TYPE);
+            if(ty!=ORDER_TYPE_BUY_STOP && ty!=ORDER_TYPE_SELL_STOP) return "❌ Only Buy Stop / Sell Stop orders can be modified.";
+            isBuy=(ty==ORDER_TYPE_BUY_STOP);
+           }
+        }
+      else
+        {
+         string sd=JStr(seg,"\"side\":\"");
+         StringToUpper(sd);
+         if(sd!="BUY" && sd!="SELL") return "❌ Invalid command: side must be BUY or SELL.";
+         isBuy=(sd=="BUY");
+         if(g_mode==YM_BOTH) return "❌ Both orders already exist - use Modify.";
+         if(g_mode==YM_NONE) return "❌ No active order set - press Start (restores both orders) or use Apply.";
+         if((isBuy && g_mode==YM_BUY) || (!isBuy && g_mode==YM_SELL)) return "❌ That order already exists - use Modify.";
+        }
+      double nb=isBuy?px:g_buyLevel, ns=isBuy?g_sellLevel:px;
+      string er="";
+      if(!ApplyLevels(nb,ns,0.0,"MiniApp",er)) return "❌ Invalid Price Configuration: "+er;
+      if(g_fresh && g_pendBuy>0.0 && g_pendSell>0.0) return LevelsAcceptedText();   // sequence locked: the change is only PENDING, say so honestly
+      if(cmd=="place") { g_mode=YM_BOTH; SaveState(); }
+      g_nextPlaceMs=0; ResetSyncBackoff(); SyncAll(); g_dirty=true;
+      return (cmd=="place"?"✅ ORDER ADDED\n":"✅ ORDER MODIFIED\n")+(isBuy?"Buy Stop @ ":"Sell Stop @ ")+PX(px);
+     }
+   if(cmd=="reset")
+     {
+      if(OwnPositions(tk)>0) return "❌ Cannot reset the risk sequence while a position is open.";
+      ResetRisk();
+      g_nextPlaceMs=0;
+      ResetSyncBackoff();
+      SaveState();
+      SyncAll();
+      g_dirty=true;
+      return "✅ Risk sequence reset.";
+     }
+   if(cmd=="apply" || cmd=="settings")
+     {
+      double b,s,r,tg,rr;
+      bool hb=JDbl(seg,"buy",b), hs=JDbl(seg,"sell",s), hr=JDbl(seg,"risk",r), ht=JDbl(seg,"target",tg), hrr=JDbl(seg,"rr",rr);
+      if(cmd=="apply" && (!hb || !hs)) return "❌ Invalid command: buy/sell missing.";
+      double nt=ht?tg:g_target, nrr=hrr?rr:g_rr;
+      if(!MathIsValidNumber(nt) || nt<0.0)   return "❌ Recovery Target must be zero or positive.";
+      if(!MathIsValidNumber(nrr) || nrr<=0.0) return "❌ Risk/Reward must be greater than zero.";
+      bool tradeChanged=(MathAbs(nt-g_target)>1e-9 || MathAbs(nrr-g_rr)>1e-9);
+      if(tradeChanged && OwnPositions(tk)>0) return "❌ Recovery Target / Risk-Reward cannot change while a Yetimmm position is open.";
+      double oldT=g_target, oldR=g_rr;
+      g_target=nt; g_rr=nrr;
+      string err="";
+      string res="";
+      if(hb && hs)
+        {
+         if(!ApplyLevels(b,s,(hr?r:0.0),"MiniApp",err))
+           {
+            g_target=oldT; g_rr=oldR;
+            return "❌ Invalid Price Configuration: "+err;
+           }
+         res=LevelsAcceptedText();
+        }
+      else res="✅ Settings updated.";
+      if(tradeChanged)
+        {
+         g_curRisk=(g_accLoss>1e-9)?NextRiskFor(g_accLoss):g_initRisk;
+         g_nextPlaceMs=0;
+         ResetSyncBackoff();
+         CfgPutAll();
+         CfgSaveFile();
+         SaveState();
+         SyncAll();
+        }
+      g_dirty=true;
+      return res;
+     }
+   return "❌ Unknown command: "+cmd;
+  }
+
+void BridgeSync()
+  {
+   if(!InpBrEnable || MQLInfoInteger(MQL_TESTER)) return;
+   if(StringLen(InpBrUrl)<12 || StringLen(BrKeyEff())<8) return;
+   if(TimeLocal()-g_brLast<MathMax(1,InpBrPollSec)) return;
+   g_brLast=TimeLocal();
+
+   if(!g_brCvLoaded) { g_brCv=(int)StringToInteger(CfgGet("brcv","0")); g_brCvLoaded=true; }
+   if(!g_brPairLoaded) { g_brPairNeed=(CfgGet("brpaired","0")!="1"); g_brPairLoaded=true; }
+   //--- v2.20: broker time offset every sync; calendar hash every sync; full table only when it changed / was requested
+   CalTick();
+   string calPart=",\"tzo\":"+IntegerToString(BrTzOffset());
+   bool   calSending=false;
+   string calHashSent=g_calHash;
+   if(StringLen(g_calHash)>0)
+     {
+      calPart+=",\"calv\":\""+g_calHash+"\"";
+      if(g_calHash!=g_calSent || g_calNeed) { calPart+=",\"cal\":"+g_calJson; calSending=true; }
+     }
+   string body="{\"login\":\""+IntegerToString((long)AccountInfoInteger(ACCOUNT_LOGIN))+"\",\"srv\":\""+JEsc(AccountInfoString(ACCOUNT_SERVER))+"\",\"fresh\":"+(g_brFresh?"true":"false")+",\"reset\":"+(InpBrResetPw?"true":"false")+",\"cv\":"+IntegerToString(g_brCv)+calPart+",\"state\":"+BrStateJson()+",\"ack\":[";
+   for(int i=0;i<ArraySize(g_brAck);i++) body+=(i>0?",":"")+"\""+g_brAck[i]+"\"";
+   body+="],\"ev\":"+EvJson()+"}";
+   string url=InpBrUrl;
+   while(StringLen(url)>0 && StringSubstr(url,StringLen(url)-1,1)=="/") url=StringSubstr(url,0,StringLen(url)-1);
+   url+="/api/ea/sync";
+
+   char data[],res[];
+   string rh;
+   int n=StringToCharArray(body,data,0,WHOLE_ARRAY,CP_UTF8);
+   if(n>0) ArrayResize(data,n-1);
+   ResetLastError();
+   string hdr="Content-Type: application/json\r\nX-EA-Secret: "+BrKeyEff()+"\r\n";
+   string pairCode=InpBrPairCode;
+   StringTrimLeft(pairCode); StringTrimRight(pairCode);
+   if(g_brPairNeed && StringLen(pairCode)>0) hdr+="X-EA-Pair: "+pairCode+"\r\n";   // sent ONLY until the Worker confirmed the pairing (and again if it ever asks for it)
+   int code=WebRequest("POST",url,hdr,3000,data,res,rh);
+   if(code==-1)
+     {
+      int e=GetLastError();
+      g_brOk=false;
+      if(TimeLocal()-g_brErrLog>=60)
+        {
+         g_brErrLog=TimeLocal();
+         if(e==4014)
+           {
+            string org=UrlOrigin(InpBrUrl);
+            YLog("Mini App bridge: tick 'Allow WebRequest for listed URL' and add  "+org+"  (and https://api.telegram.org) in Tools > Options > Expert Advisors > Allowed URLs (error 4014).");
+            if(!g_urlAlertShown){ g_urlAlertShown=true; Alert("Yetimmm: add these to Allowed URLs -> "+org+" , https://api.telegram.org"); }
+           }
+         else YLog("Mini App bridge: WebRequest failed, error "+IntegerToString(e));
+        }
+      return;
+     }
+   string resp=CharArrayToString(res,0,WHOLE_ARRAY,CP_UTF8);
+   if(code!=200 || StringFind(resp,"\"ok\":true")<0)
+     {
+      g_brOk=false;
+      string werr=JStr(resp,"\"error\":\"");
+      if(werr=="secret" || werr=="pair_required") g_brPairNeed=true;       // the Worker does not know this EA's secret: present the pairing code on the next sync
+      if(TimeLocal()-g_brErrLog>=60)
+        {
+         g_brErrLog=TimeLocal();
+         if(werr=="pair_required")     YLog("Mini App bridge: this MT5 account is NOT PAIRED yet - set the input InpBrPairCode to the Worker secret PAIR_CODE (or the app password if PAIR_CODE is not set).");
+         else if(werr=="pair_bad")     YLog("Mini App bridge: pairing code REJECTED - InpBrPairCode must equal the Worker secret PAIR_CODE (or APP_PASSWORD when PAIR_CODE is not set).");
+         else if(werr=="pair_locked")  YLog("Mini App bridge: too many wrong pairing codes - pairing is locked for a few minutes.");
+         else if(werr=="secret")       YLog(StringLen(pairCode)>0?"Mini App bridge: this account is bound to another EA install - re-pairing with InpBrPairCode.":"Mini App bridge: this account is bound to another EA install (or the EA settings file was lost) - set InpBrPairCode to re-pair.");
+         else YLog("Mini App bridge: HTTP "+IntegerToString(code)+" (Worker URL wrong, or Worker error)");
+        }
+      return;
+     }
+   if(!g_brOk) YLog("Mini App bridge: connected.");
+   g_brOk=true;
+   //--- v2.21 pairing: the Worker mints the EA secret (CSPRNG) when the pairing code is accepted; store it and stop sending the code
+   string mintedSecret=JStr(resp,"\"es\":\"");
+   if(StringLen(mintedSecret)>=32)
+     {
+      g_brSec=mintedSecret;
+      CfgSet("brsec",mintedSecret);
+      CfgSet("brpaired","1");
+      CfgSaveFile();
+      g_brPairNeed=false;
+      YLog("Mini App bridge: account PAIRED - a private secret issued by the Worker is stored (the pairing code is no longer sent).");
+     }
+   else if(g_brPairNeed && StringFind(resp,"\"paired\":true")>=0)
+     {
+      CfgSet("brpaired","1");
+      CfgSaveFile();
+      g_brPairNeed=false;
+     }
+   g_brFresh=false;
+   ArrayResize(g_brAck,0);              // the acks in this request were delivered
+   EvAckFrom(resp);                     // v2.23: events the Worker accepted (or already had) leave the outbox
+   if(calSending) { g_calSent=calHashSent; g_calNeed=false; }
+   if(StringFind(resp,"\"calNeed\":true")>=0) g_calNeed=true;   // the Worker lost / never had the table: send it on the next sync
+
+   //--- v2.19b: Telegram Bot Token / Chat IDs pushed by the Worker (no manual entry, survives restarts)
+   int fpos=StringFind(resp,"\"cfg\":{");
+   if(fpos>=0)
+     {
+      string cs=StringSubstr(resp,fpos);
+      int ce=StringFind(cs,"\"commands\":");
+      if(ce>0) cs=StringSubstr(cs,0,ce);
+      string nTok=JStr(cs,"\"tok\":\"");
+      string nAuth=JStr(cs,"\"auth\":\"");
+      int nV=(int)StringToInteger(JStr(cs,"\"v\":\""));
+      if(nV>0 && nV!=g_brCv)
+        {
+         bool tokChanged=(nTok!=g_tgTok);
+         g_tgTok=InpTgViaWorker?"":nTok;
+         g_tgAuth=nAuth;
+         ParseIds();
+         if(tokChanged)
+           {
+            GlobalVariableDel(GN("TGINIT"));
+            g_tgOk=false;
+           }
+         g_brCv=nV;
+         if(StringLen(nTok)>0 || InpTgViaWorker) { g_brShared=true; g_brSharedLoaded=true; CfgSet("brshared","1"); }
+         CfgPutAll();
+         CfgSet("brcv",IntegerToString(nV));
+         CfgSaveFile();
+         g_dirty=true;
+         YLog("Telegram config received from the Worker (v"+IntegerToString(nV)+") | token "+(StringLen(g_tgTok)>0?"set":"empty")+" | chat IDs "+IntegerToString(ArraySize(g_tgIds)));
+        }
+     }
+
+   int cpos=StringFind(resp,"\"commands\":");
+   if(cpos<0) { g_brFirst=false; return; }
+   string sub=StringSubstr(resp,cpos);
+   string marker="\"id\":\"";
+   int mlen=StringLen(marker);
+   int p=0;
+   int discarded=0;
+   while(true)
+     {
+      int a=StringFind(sub,marker,p);
+      if(a<0) break;
+      int b=StringFind(sub,marker,a+mlen);
+      string seg=(b<0)?StringSubstr(sub,a):StringSubstr(sub,a,b-a);
+      p=a+mlen;
+      string id=JStr(seg,marker);
+      string cmd=JStr(seg,"\"cmd\":\"");
+      StringToLower(cmd);
+      if(StringLen(id)==0) continue;
+      if(g_brFirst || BrSeen(id))
+        {
+         if(g_brFirst) discarded++;
+         BrAckAdd(id);                  // never execute twice / never execute what piled up while the EA was off
+         continue;
+        }
+      BrRemember(id);
+      double cage=0.0;
+      if(InpCmdTtlSec>0 && JDbl(seg,"age",cage) && cage>(double)InpCmdTtlSec)
+        {
+         //--- v2.23 COMMAND TTL: an old command is EXPIRED - acked, never executed, and the app is told
+         YLog("Mini App Command EXPIRED (age "+DoubleToString(cage,0)+" s > "+IntegerToString(InpCmdTtlSec)+" s): "+cmd);
+         g_brLastId=id; g_brLastOk=false; g_brLastText="Command expired - not executed. Please try again.";
+         BrCmdAdd(id,cmd,"","⌛ EXPIRED (age "+DoubleToString(cage,0)+" s) - not executed",false);
+         BrAckAdd(id);
+         continue;
+        }
+      string sigNow=cmd+"|"+BrCmdDetail(cmd,seg);
+      if((cmd=="apply" || cmd=="modify" || cmd=="place" || cmd=="delete" || cmd=="settings") && sigNow==g_brSig && GetTickCount64()-g_brSigMs<3000)
+        {
+         YLog("Mini App Command ignored (duplicate within 3 s): "+cmd);
+         BrAckAdd(id);
+         continue;
+        }
+      g_brSig=sigNow; g_brSigMs=GetTickCount64();
+      YLog("Mini App Command Received: "+cmd);
+      string det=BrCmdDetail(cmd,seg);
+      string result=BrExec(cmd,seg);
+      YLog("Mini App Command Result: "+result);
+      g_brLastId=id;
+      g_brLastOk=(StringFind(result,"❌")<0);
+      BrCmdAdd(id,cmd,det,result,g_brLastOk);        // v2.14: the command appears in the app's log
+      string one=result;
+      StringReplace(one,"\n"," | ");
+      g_brLastText=(StringLen(one)>160)?StringSubstr(one,0,160):one;
+      BrAckAdd(id);
+      TgQueue("📱 Mini App → "+cmd+"\n"+result);
+      g_brLast=0;                       // sync again on the next timer tick: ack + fresh state
+     }
+   if(g_brFirst && discarded>0) YLog("Mini App bridge: "+IntegerToString(discarded)+" queued command(s) discarded on startup (not executed).");
+   g_brFirst=false;
+  }
+
+int OnInit()
+  {
+   Print("[Yetimmm] v"+YT_VER+" loaded - Broker/Risk engine | entry "+(InpEntryMode==ENTRY_PENDING?"PENDING":"VIRTUAL")+" | risk policy "+(InpRiskPolicy==YT_RISK_CLAMP_MIN?"CLAMP_TO_MIN":"STRICT"));
+   g_sym=_Symbol;
+   g_magic=InpMagic;
+   string up=g_sym;
+   StringToUpper(up);
+   if(StringFind(up,"XAUUSD")<0)
+     {
+      Alert("Yetimmm works on XAUUSD only. Current symbol: ",g_sym);
+      return INIT_FAILED;
+     }
+   if(InpRiskReward<=0.0 || InpTargetProfit<0.0 || InpInitialRisk<=0.0 || InpMaxDeviation<0 || InpWarnSpread<0 || InpProtectCloseSec<0)
+     {
+      Alert("Yetimmm: invalid inputs (Initial Risk and Risk/Reward must be > 0; Target, Deviation and Spread must be >= 0).");
+      return INIT_PARAMETERS_INCORRECT;
+     }
+   if(!MagicGuardOk()) return INIT_FAILED;
+   SymbolSelect(g_sym,true);
+   g_digits=(int)SymbolInfoInteger(g_sym,SYMBOL_DIGITS);
+   g_point=SymbolInfoDouble(g_sym,SYMBOL_POINT);
+   g_tick=SymbolInfoDouble(g_sym,SYMBOL_TRADE_TICK_SIZE);
+   if(g_tick<=0.0) g_tick=g_point;
+   double st=SymbolInfoDouble(g_sym,SYMBOL_VOLUME_STEP);
+   g_lotDigits=0;
+   while(g_lotDigits<8 && MathAbs(st*MathPow(10,g_lotDigits)-MathRound(st*MathPow(10,g_lotDigits)))>1e-9) g_lotDigits++;
+
+   g_contract=SymbolInfoDouble(g_sym,SYMBOL_TRADE_CONTRACT_SIZE);
+   CfgInit();                          // runtime configuration: inputs + values saved from the panel
+   g_uiTgEn=g_tgEn; g_uiTgNot=g_tgNot; g_uiTgCtl=g_tgCtl;
+
+   g_trade.SetExpertMagicNumber((ulong)g_magic);
+   g_trade.SetDeviationInPoints(g_maxDev);
+   g_trade.SetTypeFillingBySymbol(g_sym);
+   g_trade.SetAsyncMode(false);
+   MathSrand((int)GetTickCount());
+
+   YLog("EA Started | "+g_sym+" | magic "+IntegerToString(g_magic));
+   g_netting=IsNettingAccount();
+   if(g_netting)
+     {
+      //--- Netting merges every deal on the symbol into one position: refuse to run next to a foreign position
+      double ev=ExternalPositionVolume();
+      if(ev>0.0)
+        {
+         Alert("Yetimmm refused to start: Netting account and an external ",g_sym," position exists (",LotS(ev)," lots). Close it first, then re-attach the EA.");
+         YLog("INIT REFUSED: Netting account + external "+g_sym+" position ("+LotS(ev)+" lots).");
+         return INIT_FAILED;
+        }
+      YLog("Netting account detected: the bot stays frozen (no orders, no closing) whenever a foreign "+g_sym+" position exists.");
+     }
+
+   LoadState();
+   TrkLoad();                          // real tickets + last server-verified snapshot survive a restart
+   g_tgLast=(long)GV("TGLAST",0);
+   LoadTradeLog();
+   ParseIds();
+   LogSpecs();
+   if(g_tgEn)
+     {
+      if(MQLInfoInteger(MQL_TESTER)) YLog("Telegram disabled in the Strategy Tester.");
+      else if(StringLen(g_tgTok)==0) YLog("Telegram: waiting for the bot token from the Worker (automatic). Public mode: anyone who messages the bot gets control and notifications.");
+     }
+   YLog("After-SL policy: "+(InpBreachPolicy==BREACH_MARKET?"MARKET (advanced / opt-in - reverses at market when the level was already crossed)":"WAIT (literal philosophy - pending Stop at the SL level)")+
+        " | Protection emergency-close: "+(InpProtectCloseSec>0?IntegerToString(InpProtectCloseSec)+" s":"OFF (alert + retry only)"));
+   if(InpBrEnable && !MQLInfoInteger(MQL_TESTER))
+     {
+      if(StringLen(InpBrUrl)<12 || StringLen(BrKeyEff())<8)
+         YLog("Mini App bridge: INACTIVE - fill InpBrUrl and add the Worker URL to Tools > Options > Expert Advisors > Allowed URLs.");
+      else if(StringFind(InpBrUrl,"https://")!=0)
+         YLog("Mini App bridge: INACTIVE - InpBrUrl must start with https://");
+      else
+         YLog("Mini App bridge: enabled | "+InpBrUrl+" | the URL must be listed in Allowed URLs (error 4014 otherwise).");
+      if(CfgGet("brpaired","0")!="1" && StringLen(InpBrPairCode)==0)
+         YLog("Mini App bridge: InpBrPairCode is empty - an account that is not yet bound to this Worker will be refused until you enter the pairing code (accounts bound by v2.20 keep working).");
+     }
+   g_connected=(bool)TerminalInfoInteger(TERMINAL_CONNECTED);
+   if(g_stateRecovered) YLog("State Recovered: "+StateText()+" | Risk "+D2(g_curRisk)+" | Acc.Loss "+D2(g_accLoss)+" | Seq "+IntegerToString(g_seq)+" | Last Trade #"+TNo(g_tradeNo));
+   PrintRecoveryPlan();
+
+   //--- input levels: applied only when new (or changed) so old inputs never re-arm the bot after TP
+   bool haveIn=(InpBuyStop>0.0 && InpSellStop>0.0);
+   bool changedLv=(!GHas("INBL") || MathAbs(GV("INBL",0)-InpBuyStop)>1e-9 || MathAbs(GV("INSL",0)-InpSellStop)>1e-9);
+   bool changedRk=(!GHas("INRK") || MathAbs(GV("INRK",0)-InpInitialRisk)>1e-9);
+   GS("INBL",InpBuyStop); GS("INSL",InpSellStop); GS("INRK",InpInitialRisk);
+   if(changedRk && !changedLv)
+     {
+      g_initRisk=InpInitialRisk;
+      if(g_accLoss<=1e-9) g_curRisk=g_initRisk;
+     }
+   RecoverHistory();
+   if(haveIn && changedLv)
+     {
+      string err;
+      ApplyLevels(InpBuyStop,InpSellStop,InpInitialRisk,"Inputs",err);
+     }
+   else if(!g_stateRecovered)
+     {
+      g_initRisk=InpInitialRisk; g_curRisk=InpInitialRisk;
+     }
+   SaveState();
+   ChartSetInteger(0,CHART_SHOW_TRADE_LEVELS,true);   // real pending-order / SL / TP levels are drawn by MT5 itself
+   CreatePanel();
+   BrCmdLoad();
+   EventSetMillisecondTimer(200);   // v2.13: fast path every 200 ms (Telegram), slow path once per second
+   SyncAll();
+   UpdatePanel();
+   TgQueue("✅ Yetimmm Started\nStatus: "+RunStatus()+"\nState: "+StateText()+"\nBuy Stop: "+PX(g_buyLevel)+"\nSell Stop: "+PX(g_sellLevel)+"\nRisk: $"+D2(g_curRisk)+
+           (g_stateRecovered?"\n♻️ State Recovered | Last Trade #"+TNo(g_tradeNo):""),0,MenuMarkup());
+   g_inited=true;
+   return INIT_SUCCEEDED;
+  }
+
+void OnDeinit(const int reason)
+  {
+   EventKillTimer();
+   if(g_inited)
+     {
+      SaveState();
+      TgFlush();
+     }
+   ObjectsDeleteAll(0,UI);
+   YLog("EA stopped (reason "+IntegerToString(reason)+"). State saved.");
+  }
+
+void OnTick()
+  {
+   ulong now=GetTickCount64();
+   //--- v2.17: SMART WAIT - one comparison per tick against the cached trigger price; the synchroniser is woken the very tick the market allows the order
+   bool crossed=false;
+   if((g_trig[0]>0.0 || g_trig[1]>0.0) && now-g_lastSyncMs>=100)
+     {
+      MqlTick tk;
+      if(SymbolInfoTick(g_sym,tk))
+        {
+         if(g_zoneGate)
+           {
+            //--- both orders wait for the zone: wake only when BOTH can be placed (Ask below Buy trigger AND Bid above Sell trigger)
+            if(g_trig[0]>0.0 && g_trig[1]>0.0 && tk.ask>0.0 && tk.bid>0.0 && tk.ask<=g_trig[0]+1e-9 && tk.bid>=g_trig[1]-1e-9)
+              { crossed=true; if(g_trigMs[0]==0) g_trigMs[0]=now; if(g_trigMs[1]==0) g_trigMs[1]=now; }
+           }
+         else
+           {
+            if(g_trig[0]>0.0 && g_sync[0]==YS_WAITING && tk.ask>0.0 && tk.ask<=g_trig[0]+1e-9) { crossed=true; if(g_trigMs[0]==0) g_trigMs[0]=now; }
+            if(g_trig[1]>0.0 && g_sync[1]==YS_WAITING && tk.bid>0.0 && tk.bid>=g_trig[1]-1e-9) { crossed=true; if(g_trigMs[1]==0) g_trigMs[1]=now; }
+           }
+        }
+     }
+   if(!crossed && now-g_lastSyncMs>=50 && VirtualWake()) crossed=true;   // v2.22: virtual entry reacts on the tick the price crosses
+   if(crossed || g_dirty || now-g_lastSyncMs>=300)
+     {
+      g_dirty=false;
+      SyncAll();
+     }
+  }
+
+void OnTrade()
+  {
+   g_dirty=true;
+   UpdatePanel();          // show the real server state immediately (incremental, cheap)
+  }
+
+void OnTradeTransaction(const MqlTradeTransaction &trans,const MqlTradeRequest &request,const MqlTradeResult &result)
+  {
+   if(trans.type!=TRADE_TRANSACTION_DEAL_ADD) return;
+   if(trans.symbol!=g_sym) return;
+   if(HistoryDealSelect(trans.deal))
+     {
+      if(HistoryDealGetInteger(trans.deal,DEAL_ENTRY)==DEAL_ENTRY_IN && (long)HistoryDealGetInteger(trans.deal,DEAL_MAGIC)==g_magic)
+        {
+         ulong pid=(ulong)HistoryDealGetInteger(trans.deal,DEAL_POSITION_ID);
+         RegisterPosition(pid);
+        }
+     }
+   g_dirty=true;
+   SyncAll();
+  }
+
+int g_timerCount=0;
+void OnTimer()
+  {
+   //--- FAST PATH (every timer event): receive -> execute -> reply to Telegram commands
+   TgPoll();
+   //--- SLOW PATH (once per second): monitors, sync, bridge, queue flush, panel
+   ulong nowMs=GetTickCount64();
+   if(nowMs-g_slowMs<1000) return;
+   g_slowMs=nowMs;
+   g_timerCount++;
+   MonitorConnection();
+   SyncAll();
+   StopCleanupTick();
+   if(g_timerCount%30==0 && g_connected) RecoverHistory();
+   MonitorSpread();
+   BrWaitTrack();                    // v2.17: waiting Mini App commands -> activated / superseded / cancelled
+   BridgeSync();
+   TgFlush();
+   UpdatePanel();
+  }
+//+------------------------------------------------------------------+
