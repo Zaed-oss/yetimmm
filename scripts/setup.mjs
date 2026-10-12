@@ -88,7 +88,7 @@ const git = sh("git", ["config", "--get", "remote.origin.url"]);
 const gm = /github\.com[:/]+([^/]+)\/([^/.]+?)(?:\.git)?\s*$/.exec(git.stdout || "");
 let appUrl = env.MINI_APP_URL || "";
 if (gm) {
-  const origin = `https://${gm[1]}.github.io`;
+  const origin = `https://${gm[1].toLowerCase()}.github.io`;
   appUrl = gm[2].toLowerCase() === (gm[1] + ".github.io").toLowerCase() ? origin + "/" : `${origin}/${gm[2]}/`;
   toml = toml.replace(/^ALLOWED_ORIGIN\s*=.*$/m, `ALLOWED_ORIGIN = "${origin}"`);
 }
