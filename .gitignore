@@ -6,3 +6,4 @@ node_modules/
 .DS_Store
 # MT5 compiled output
 *.ex5
+ea/Yetimmm.cfg

@@ -13,7 +13,8 @@
 param(
   [string[]]$Url,
   [string]$DataFolder,
-  [switch]$CloseMt5
+  [switch]$CloseMt5,
+  [switch]$Restart
 )
 $ErrorActionPreference = 'Stop'
 
@@ -27,10 +28,12 @@ function Get-Origin([string]$u) {
 $want = New-Object System.Collections.Generic.List[string]
 if ($Url) { foreach ($u in $Url) { $o = Get-Origin $u; if ($o) { $want.Add($o) } } }
 else {
+  $cfg = Join-Path $PSScriptRoot '..\ea\Yetimmm.cfg'
+  if (Test-Path $cfg) { $c = Get-Content -Raw -Path $cfg; if ($c -match '(?m)^url=(\S+)') { $o = Get-Origin $Matches[1]; if ($o) { $want.Add($o) } } }
   $ea = Join-Path $PSScriptRoot '..\ea\Yetimmm.mq5'
   if (Test-Path $ea) {
     $src = Get-Content -Raw -Path $ea
-    if ($src -match 'InpBrUrl\s*=\s*"([^"]+)"') { $o = Get-Origin $Matches[1]; if ($o) { $want.Add($o) } }
+    if ($want.Count -eq 0 -and $src -match 'InpBrUrl\s*=\s*"([^"]+)"') { $o = Get-Origin $Matches[1]; if ($o) { $want.Add($o) } }
   }
 }
 if ($want.Count -eq 0) { Write-Host 'No Worker URL found. Run again with:  -Url https://your-worker.workers.dev' -ForegroundColor Red; exit 1 }
@@ -40,6 +43,7 @@ $want.Add('https://api.telegram.org')
 $run = Get-Process -Name terminal64, terminal -ErrorAction SilentlyContinue
 if ($run) {
   if ($CloseMt5) {
+    $script:exes = @($run | ForEach-Object { try { $_.Path } catch { } } | Where-Object { $_ })
     $run | ForEach-Object { [void]$_.CloseMainWindow() }
     Start-Sleep -Seconds 5
     Get-Process -Name terminal64, terminal -ErrorAction SilentlyContinue | Stop-Process -Force
@@ -62,6 +66,7 @@ else {
     }
   }
 }
+if (-not $DataFolder -and $script:exes) { foreach ($e in $script:exes) { $p = Join-Path (Split-Path $e) 'config\common.ini'; if ((Test-Path $p) -and -not $inis.Contains($p)) { $inis.Add($p) } } }
 if ($inis.Count -eq 0) {
   Write-Host 'common.ini not found. Open MT5 once, close it, then run again - or pass -DataFolder (MT5: File > Open Data Folder).' -ForegroundColor Red
   exit 3
@@ -110,6 +115,7 @@ foreach ($ini in $inis) {
   Write-Host ('OK  ' + $ini) -ForegroundColor Green
   Write-Host ('    ' + $urlLine)
 }
+if ($Restart -and $script:exes) { foreach ($e in ($script:exes | Select-Object -Unique)) { Start-Process -FilePath $e } ; Write-Host 'MetaTrader 5 restarted.' -ForegroundColor Green }
 Write-Host ''
 Write-Host 'Done. Start MetaTrader 5 and check Tools > Options > Expert Advisors:' -ForegroundColor Cyan
 Write-Host '"Allow WebRequest for listed URL" must be ticked and list the URLs above.'

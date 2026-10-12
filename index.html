@@ -58,6 +58,7 @@ header{display:flex;justify-content:space-between;align-items:center;gap:8px;pad
 .tk{display:flex;justify-content:space-between;align-items:center;margin-bottom:6px}
 .badge{display:inline-flex;align-items:center;gap:4px;font-size:12px;font-weight:700;padding:4px 12px;border-radius:8px}.badge.up{background:color-mix(in srgb,var(--up) 16%,transparent)}.badge.dn{background:color-mix(in srgb,var(--dn) 16%,transparent)}
 .big{font-size:32px;font-weight:700;line-height:1.2;margin:4px 0 14px}
+.pb2{position:relative;height:8px;border-radius:9px;margin:14px 0 6px;background:linear-gradient(90deg,var(--dn),color-mix(in srgb,var(--mu) 35%,transparent) 50%,var(--up))}.pb2 u{position:absolute;top:50%;width:14px;height:14px;border-radius:50%;background:var(--txt);border:3px solid var(--surf);transform:translate(-50%,-50%);transition:left .5s}.pb2 u.out{background:var(--gold)}.card.ly{border-inline-start:3px solid var(--gold)}.card.ly.qd{opacity:.82;border-inline-start-style:dashed}
 .pb{position:relative;height:6px;border-radius:9px;margin:4px 0 16px}.pb u{position:absolute;top:50%;width:14px;height:14px;border-radius:50%;background:var(--txt);border:3px solid var(--surf);transform:translate(-50%,-50%);transition:left .5s}
 .pl{display:flex;justify-content:space-between;font-size:11px;color:var(--mute);margin:-8px 0 14px}
 .fld{margin-bottom:12px}.fld label{display:flex;justify-content:space-between;font-size:12px;color:var(--mute);margin-bottom:6px;font-weight:600}
@@ -252,7 +253,7 @@ body.loading .pr,body.loading .kv b{color:transparent;border-radius:8px;backgrou
 <section class="tab on" id="t0">
   <div class="card quote" id="qc"><div class="lnk" id="lnk"><i></i><div id="botMain"></div><div><b id="lnkT"></b><small id="lnkS"></small></div><button class="ib" id="retryB" aria-label="Retry" hidden><svg class="ic"><use href="#i-refresh"/></svg></button></div><div class="qt"><div><small>XAUUSD<span class="lv"><i></i><span id="lvT">SIM</span></span></small><div class="pr num" id="pr">—</div></div><div class="chg num" id="chg"></div></div>
     <svg class="spk" id="spk" viewBox="0 0 200 40" preserveAspectRatio="none"><defs><linearGradient id="sgf" x1="0" y1="0" x2="0" y2="1"><stop offset="0" style="stop-color:var(--gold);stop-opacity:.35"/><stop offset="1" style="stop-color:var(--gold);stop-opacity:0"/></linearGradient></defs><polygon id="spa" fill="url(#sgf)" points=""/><polyline id="spl" points=""/></svg>
-    <div class="kv" style="margin-top:12px"><div><small data-t="dB"></small><b class="num" id="dB">—</b></div><div><small data-t="dS"></small><b class="num" id="dS">—</b></div><div><small data-t="rng"></small><b class="num" id="rng">—</b></div></div></div>
+</div>
   <div id="dash"></div>
   <div class="card">
     <h3><span class="hl"><svg class="ic"><use href="#i-chart"/></svg><span data-t="ordT"></span></span></h3>
@@ -687,7 +688,7 @@ function delOrder(tk){
   const b=isB(o.side);
   ask(t("q_del"),t(L.length<2?"q_delB1":"q_delB",t(b?"oB":"oS"),f(o.price),tk),t("q_delY"),()=>run("delete",{ticket:tk,side:b?"BUY":"SELL",price:o.price}));
 }
-function pairSides(){const R={BUY:null,SELL:null};(S.orders||[]).forEach(o=>{R[isB(o.side)?"BUY":"SELL"]={px:o.price}});(S.waits||[]).forEach(w=>{if(!R[w.side])R[w.side]={px:w.level}});return R}
+function pairSides(){const R={BUY:null,SELL:null};(S.orders||[]).forEach(o=>{R[isB(o.side)?"BUY":"SELL"]={px:o.price}});(S.waits||[]).forEach(w=>{if(!R[w.side])R[w.side]={px:w.level}});if(S.mode==="BOTH"){if(!R.BUY&&S.buy>0)R.BUY={px:S.buy};if(!R.SELL&&S.sell>0)R.SELL={px:S.sell}}return R}
 const pairOn=()=>{const P=pairSides();return !!(P.BUY&&P.SELL)};
 const pairBusy=()=>Ops.m.has("cancel")||Ops.m.has("apply");
 function delPair(){ask(t("q_delBoth"),t("q_delBothB"),t("delBoth"),()=>run("cancel"))}
@@ -767,6 +768,49 @@ function waitCard(){
   if(!(live()&&link()==="ok"&&S.run&&!S.pos&&S.buy>0&&S.sell>0&&!(S.orders||[]).length&&(S.state==="ARMED"||S.state==="WAITING_REENTRY")))return"";
   return `<div class="note"><b>${ic("clock")} ${t("wfT")}</b><br>Buy Stop: <b class="num">${f(S.buy)}</b> · Sell Stop: <b class="num">${f(S.sell)}</b><br>${t("wfR")}: ${t((S.waits||[]).length?"wfR1":"wfR2")}</div>`;
 }
+/* ═════ v4.13 · ONE order = ONE card (layer) · one delete · a real bar per order ═════
+   An "order" is the Buy Stop + Sell Stop pair of one cycle. Everything shown here comes from what the EA reports
+   (mode / orders / waits / pend / price) — never from the app's own input fields. Several layers stack, each with its own number. */
+Object.assign(D,{lyT:["الأوردر #{0}","Order #{0}"],lyQ:["مجدول · الدورة القادمة","Queued · next cycle"],lyN:["طبقة {0} من {1}","Layer {0} of {1}"],
+  lyDel:["حذف الأوردر","Delete order"],lyDelQ:["حذف الأوردر؟","Delete this order?"],lyDelB:["سيتم حذف Buy Stop و Sell Stop معًا من MT5 بأمر واحد. الصفقة المفتوحة (إن وجدت) تبقى.","Buy Stop and Sell Stop will be deleted from MT5 together with one command. An open trade (if any) stays."],
+  lyDelQB:["سيُحذف هذا الأوردر المجدول بالكامل (Buy Stop و Sell Stop) ولن يُوضع لاحقاً.","This queued order (Buy Stop + Sell Stop) will be deleted and never placed."],
+  lyLive:["نشط في MT5","Live in MT5"],lyWait:["بانتظار السعر","Waiting for price"],lyZone:["بانتظار دخول السعر المنطقة","Waiting for price to enter the zone"],lyQd:["مجدول","Queued"],
+  lyOut:["السعر خارج النطاق","Price is outside the range"],lyPx:["السعر","Price"]});
+function lyBar(buy,sell){
+  const px=S.price;if(!(buy>sell&&px>0))return"";
+  const raw=(px-sell)/(buy-sell)*100,pc=Math.max(0,Math.min(100,raw)),out=raw<0||raw>100;
+  return `<div class="pb2" dir="ltr"><u class="${out?"out":""}" style="left:${pc}%"></u></div><div class="pl" dir="ltr"><span>Sell ${f(sell)}</span><span class="num">${f(px)}${out?" ⚠":""}</span><span>Buy ${f(buy)}</span></div>`}
+function lyDist(buy,sell){
+  const px=S.price,ak=S.ask>0?S.ask:S.price;if(!(px>0&&buy>0&&sell>0))return"";
+  const db=buy-ak,ds=px-sell,k=(l,v,c)=>`<div><small>${l}</small><b class="num ${c||""}">${v}</b></div>`;
+  return `<div class="kv" style="margin-top:10px">${k(t("dB"),f(db),db<0?"dn":"")}${k(t("dS"),f(ds),ds<0?"dn":"")}${k(t("rng"),f(buy-sell))}</div>`}
+function orderLayers(){
+  const OR=S.orders||[],WT=S.waits||[],L=[];
+  let no=((S.pos&&S.pos.no)||S.no||0)+1;
+  const mode=S.mode||((OR.length||WT.length)?"BOTH":"NONE");
+  const armed=S.run&&!S.frz&&!S.pos&&(S.state==="ARMED"||S.state==="WAITING_REENTRY"||OR.length>0);
+  if(mode!=="NONE"&&(armed||OR.length)){
+    const sides=["BUY","SELL"].filter(sd=>mode==="BOTH"||mode===sd).map(sd=>{
+      const o=OR.find(x=>(isB(x.side)?"BUY":"SELL")===sd),w=WT.find(x=>x.side===sd),lv=o?o.price:w?w.level:(sd==="BUY"?S.buy:S.sell);
+      return{sd,o,w,lv}}).filter(x=>x.lv>0);
+    if(sides.length){const bu=(sides.find(x=>x.sd==="BUY")||{}).lv||0,se=(sides.find(x=>x.sd==="SELL")||{}).lv||0;L.push({kind:"live",no:no++,sides,buy:bu,sell:se})}
+  }
+  if(S.pend&&S.pend.buy>0&&S.pend.sell>0)L.push({kind:"queued",no:no++,buy:S.pend.buy,sell:S.pend.sell});
+  return L}
+function delLayer(i){const y=orderLayers()[i];if(!y)return;
+  if(y.kind==="queued")ask(t("lyDelQ"),t("lyDelQB"),t("q_delY"),()=>run("delpend"));
+  else ask(t("lyDelQ"),t("lyDelB"),t("q_delY"),()=>run("cancel"))}
+function layersHtml(dis){
+  const LY=orderLayers();if(!LY.length)return"";
+  return LY.map((y,i)=>{
+    const live=y.kind==="live",bz=live?(Ops.m.has("cancel")||Ops.m.has("apply")):Ops.m.has("delpend");
+    const rows=live?y.sides.map(x=>{const b=x.sd==="BUY",o=x.o,w=x.w;
+      const sub=o?`#${o.ticket} · ${f(o.lot)} ${t("lots")} · SL ${f(o.sl)} · TP ${f(o.tp)}`:w?(w.placing?t("plc"):t(b?"wB":"wS",f(w.now),f(w.trig),f(w.dist))):t("lyZone");
+      return `<div class="hi${bz?" busy":""}"><div class="hl2"><i class="hs ${o?(b?"up":"dn"):"gd"}">${ic(o?(b?"up":"dn"):"clock")}</i><div><b>${t(b?"oB":"oS")} · <span class="num">${f(x.lv)}</span></b><small class="num">${sub}</small></div></div><span class="mu" style="font-size:11px">${o?t("lyLive"):t("lyWait")}${window.YTN?YTN.obell(o?"t"+o.ticket:"w"+x.sd,dis):""}</span></div>`}).join("")
+      :[["BUY",y.buy],["SELL",y.sell]].map(([sd,lv])=>{const b=sd==="BUY";return `<div class="hi"><div class="hl2"><i class="hs gd">${ic("clock")}</i><div><b>${t(b?"oB":"oS")} · <span class="num">${f(lv)}</span></b><small>${t("lyQd")}</small></div></div></div>`}).join("");
+    const both=live&&y.buy>0&&y.sell>0,one=live&&!both&&y.sides.length===1&&S.run&&!S.pos;
+    const btns=`<div class="btns" style="margin-top:10px">${both?`<button class="btn" onclick="modPair()"${dis||(bz?" disabled":"")}>${ic("edit")}${t("editBoth")}</button>`:""}${one?`<button class="btn go" onclick="addOrder('${y.sides[0].sd==="BUY"?"SELL":"BUY"}')"${dis}>${ic("bolt")}${t("addB",t(y.sides[0].sd==="BUY"?"oS":"oB"))}</button>`:""}<button class="btn dg${both||one?"":" w"}" onclick="delLayer(${i})"${dis||(bz?" disabled":"")}>${ic("trash")}${t("lyDel")}</button></div>`;
+    return `<div class="card ly${live?"":" qd"}"><h3><span class="hl">${ic(live?"bolt":"clock")}${t("lyT",y.no)}${live?"":" · "+t("lyQ")}</span>${LY.length>1?`<span class="mu num" style="font-size:11px">${t("lyN",i+1,LY.length)}</span>`:""}</h3>${rows}${y.buy>0&&y.sell>0?lyBar(y.buy,y.sell)+lyDist(y.buy,y.sell):""}${bz?`<small class="opw"><i class="spn2"></i>${t("op_ing")}</small>`:""}${btns}</div>`}).join("")}
 let _dashH="",_tch=0,_late=false;
 function setDash(h){if(h===_dashH)return;if(_tch&&Date.now()-_tch<1500){_late=true;return}_dashH=h;$("dash").innerHTML=h}
 (function(){const dn=e=>{if(e.target&&e.target.closest&&e.target.closest("#dash"))_tch=Date.now()},up=()=>{if(!_tch)return;setTimeout(()=>{_tch=0;if(_late){_late=false;renderDash()}},80)};
@@ -791,12 +835,7 @@ function renderDash(){
     <div class="kv">${k(t("entry"),fp(x.entry))}${k(t("slK"),fp(x.sl),"dn")}${k(t("tpK"),fp(x.tp),"up")}${k(t("lot"),fv(x.lot))}${k(t("riskK"),cs()+f(x.risk))}${k(t("expK"),cs()+f(x.est*S.rr),"up")}</div></div>`;
   }
   if(live()&&link()==="ok"&&!(parseFloat(S.ver)>=2.18))h=`<div class="note er">${t("oldEA")}</div>`+h;
-  h+=waitCard();
-  const WT=(S.waits||[]);
-  if(pairOn())h+=pairCard(dis);
-  if(WT.length&&!pairOn())h+=`<div class="card"><h3><span class="hl">${ic("clock")}${t("waitT")}</span></h3>`+WT.map(w=>{const b=w.side==="BUY",dl=Ops.delSd(w.side);return `<div class="hi${dl?" busy":""}"><div class="hl2"><i class="hs gd">${ic("clock")}</i><div><b>${t(b?"oB":"oS")} · <span class="num">${f(w.level)}</span></b><small class="num">${w.placing?t("plc"):t(b?"wB":"wS",f(w.now),f(w.trig),f(w.dist))}</small>${dl?`<small class="opw"><i class="spn2"></i>${t("op_ing")}</small>`:""}</div></div><span style="display:flex;gap:6px">${window.YTN?YTN.obell("w"+w.side,dis):""}<button class="ib" aria-label="${t("editB")}" onclick="modLevel('${w.side}',${w.level})"${dis}>${ic("edit")}</button><button class="ib dgb" aria-label="${t("delB")}" onclick="delLevel('${w.side}',${w.level})"${dis||(dl?" disabled":"")}>${dl?'<i class="spn2"></i>':ic("trash")}</button></span></div>`}).join("")+`</div>`;
-  const OR=S.orders||[];
-  if(OR.length&&!pairOn())h+=`<div class="card"><h3><span class="hl">${ic("bolt")}${t("ordsT")}</span></h3>`+OR.map(o=>{const b=isB(o.side),dl=Ops.delTk(o.ticket);return `<div class="hi${dl?" busy":""}"><div class="hl2"><i class="hs ${b?"up":"dn"}">${ic(b?"up":"dn")}</i><div><b>${t(b?"oB":"oS")} · <span class="num">${f(o.price)}</span></b><small class="num">#${o.ticket} · ${f(o.lot)} ${t("lots")} · SL ${f(o.sl)} · TP ${f(o.tp)}</small>${dl?`<small class="opw"><i class="spn2"></i>${t("op_ing")}</small>`:""}</div></div><span style="display:flex;gap:6px">${window.YTN?YTN.obell("t"+o.ticket,dis):""}<button class="ib" aria-label="${t("editB")}" onclick="modOrder(${o.ticket})"${dis||(dl?" disabled":"")}>${ic("edit")}</button><button class="ib dgb" aria-label="${t("delB")}" onclick="delOrder(${o.ticket})"${dis||(dl?" disabled":"")}>${dl?'<i class="spn2"></i>':ic("trash")}</button></span></div>`}).join("")+`<div class="btns" style="margin-top:10px">${OR.length===1&&S.run&&!S.pos?`<button class="btn go" onclick="addOrder('${isB(OR[0].side)?"SELL":"BUY"}')"${dis}>${ic("bolt")}${t("addB",t(isB(OR[0].side)?"oS":"oB"))}</button>`:""}<button class="btn${OR.length===1&&S.run&&!S.pos?"":" w"}" onclick="cancelAll()"${dis}>${ic("xc")}${t("canB")}</button></div></div>`;
+  h+=layersHtml(dis);
   h+=acctCard(k);
   const L=lotFor(S.cur,S.buy,S.sell);
   h+=`<div class="card"><h3><span class="hl">${ic("shield")}${t("rmT")}</span><span style="display:flex;gap:8px;align-items:center"><span class="num">${t("seq",S.seq+1)}</span><button class="ib" style="width:30px;height:30px" aria-label="${t("reset")}" onclick="resetUI()"${dis}>${ic("refresh")}</button><button class="ib" style="width:30px;height:30px" aria-label="${t("cyc_btn")}" title="${t("cyc_btn")}" onclick="newCycleUI()">${ic("xc")}</button></span></h3><div class="kv">${k(t("curR"),cs()+f(S.cur),"gd")}${k(t("accL"),cs()+f(S.acc),S.acc>0?"dn":"")}${k(t("lot"),L.e||(!x&&!(L.lot>0))?"—":fv(x?x.lot:L.lot))}</div>${rkRows(k)}</div>`;
@@ -810,7 +849,6 @@ function renderHist(){
 function feed(){if(!(S.price>0)||S.frz)return;SP.push(S.price);if(SP.length>40)SP.shift()}
 function renderPrice(){
   const d=S.frz?0:S.price-prev;$("qc").classList.toggle("frozen",!!S.frz);$("pr").textContent=S.price>0?fp(S.price):"—";$("pr").className="pr num "+(d>0?"up":d<0?"dn":"");$("chg").textContent=S.price>0?sg(d):"";$("chg").className="chg num "+cl(d);
-  {const o=S.price>0&&S.buy>0&&S.sell>0;$("dB").textContent=o?fp(S.buy-(S.ask>0?S.ask:S.price)):"—";$("dS").textContent=o?fp(S.price-S.sell):"—";$("rng").textContent=S.buy>0&&S.sell>0?fp(S.buy-S.sell):"—"}
   if(SP.length>1){const mn=Math.min(...SP),mx=Math.max(...SP),sp=mx-mn||1;const pts=SP.map((v,i)=>(i*200/(SP.length-1)).toFixed(1)+","+(36-(v-mn)/sp*32).toFixed(1)).join(" ");$("spl").setAttribute("points",pts);$("spa").setAttribute("points",pts+" 200,40 0,40")}
 }
 const isB=s=>String(s).toUpperCase().startsWith("B");
@@ -931,7 +969,7 @@ function tick(){prev=S.price;S.price=Math.max(100,r2(S.price+(Math.random()-.5)*
 /* ═════════════ LOGIN (MT5 account number + password) ═════════════ */
 const Login={
   has(){return !!SES.s&&!!SES.l},
-  show(msg){const g=$("lg");g.className="";g.hidden=false;$("lgA").value=SES.l||$("lgA").value;$("lgP").value="";$("lgEr").textContent=msg||"";$("lgEr").classList.toggle("okm",!!msg&&msg===t("out_ok"));$("lgGo").disabled=false},
+  show(msg){const g=$("lg");g.className="";g.hidden=false;$("lgA").value=SES.l||$("lgA").value;$("lgP").value="";$("lgEr").textContent=msg||"";$("lgEr").classList.toggle("okm",!!msg&&msg===t("out_ok"));$("lgGo").disabled=false;if(!msg&&!this.auto&&window.Telegram&&Telegram.WebApp&&Telegram.WebApp.initData){this.auto=true;this.go(true)}},
   async out(call,msg){
     if(this.outing)return;this.outing=true;
     const l=SES.l,tok=SES.s;let rk=msg||(call!==false?"out_ok":"");   /* v4.11: user-initiated logout says so; if the server could not confirm the revoke, say that honestly */
@@ -951,21 +989,22 @@ const Login={
       if(!left){clearInterval(this.lk);b.disabled=false;er.textContent="";return}
       b.disabled=true;er.textContent=t("e_lockT",Math.floor(left/60)+":"+String(left%60).padStart(2,"0"))};
     tick();this.lk=setInterval(tick,500)},
-  async go(){
+  async go(auto){
     if(this.busy||$("lgGo").disabled)return;          /* Enter on the password field used to bypass the disabled button → duplicate login requests */
+    const au=auto===true;   /* v4.14: inside Telegram the owner is recognised by Telegram itself: no account number, no password */
     const l=$("lgA").value.replace(/\D/g,""),p=$("lgP").value,er=$("lgEr");er.textContent="";
-    if(!/^\d{3,12}$/.test(l)){er.textContent=t("e_login");return}
-    if(!p){er.textContent=t("e_pw_empty");return}
+    if(!au&&!/^\d{3,12}$/.test(l)){er.textContent=t("e_login");return}
+    if(!au&&!p){er.textContent=t("e_pw_empty");return}
     const g=$("lg");g.className="w";$("lgGo").disabled=true;this.busy=true;let keep=false;
     const ac=new AbortController(),tmo=setTimeout(()=>ac.abort(),15000);
     try{
       const init=(window.Telegram&&Telegram.WebApp&&Telegram.WebApp.initData)||"";
       const r=await fetch(CONFIG.api.baseUrl+"/login",{method:"POST",headers:{"Content-Type":"application/json"},signal:ac.signal,body:JSON.stringify({login:l,pw:p,init})});
       const d=await r.json().catch(()=>({}));
-      if(!r.ok||!d.ok){this.show();$("lgA").value=l;
+      if(!r.ok||!d.ok){this.show("");$("lgA").value=l;if(au){return}
         if(d.error==="locked"){this.lock(d.retry||120);return}
         const k="e_"+(d.error||"srv");er.textContent=d.error==="bad_pw"&&d.left!=null&&d.left<=3?t("e_left",d.left):D[k]?t(k):t("e_srv");return}
-      keep=true;SES.set(l,d.sess);Verify.ok=true;g.className="ok";vib&&vib();
+      keep=true;SES.set(d.login||l,d.sess);Verify.ok=true;g.className="ok";vib&&vib();
       setTimeout(()=>{this.busy=false;g.hidden=true;g.className="";Bridge.init=false;Bridge.ok=null;Bridge.pull()},1100);
     }catch(e){this.show();$("lgA").value=l;er.textContent=t("e_srv")}
     finally{clearTimeout(tmo);if(!keep)this.busy=false}

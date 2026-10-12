@@ -1,4 +1,4 @@
-// Yetimmm bridge v4.12.0 — ONE bot, ONE link, login by MT5 account number + ONE app password.
+// Yetimmm bridge v4.14.0 — ONE bot, ONE link, login by MT5 account number + ONE app password.
 //   EA  -> POST /api/ea/sync  (headers X-EA-Secret [+ X-EA-Pair while pairing])  body {login, srv, fresh, reset, cv, state, ack}
 //   App -> POST /login        body {login, pw, init}                -> {ok, sess}
 //   App -> POST /verify       headers X-Login + X-Session, body {init} -> {ok, hard, checks:{session,account,telegram,bot}}
@@ -17,7 +17,7 @@
 //    • SESSION_EPOCH bumped -> everybody is signed out instantly (panic button)
 // ═════════════════════════════════════════════════════════════════════════
 import { Notify } from "./news.js";
-export const VERSION = "4.12.0", EA_PROTOCOL = "2.26";   // v4.8: the ONE place the release number lives (package.json / README / CHANGELOG / EA must match: npm run check enforces it)
+export const VERSION = "4.14.0", EA_PROTOCOL = "2.27";   // v4.8: the ONE place the release number lives (package.json / README / CHANGELOG / EA must match: npm run check enforces it)
 export { Notify };
 
 const CONFIG = {
@@ -48,6 +48,7 @@ function cfg(env) {
     epoch: String(env.SESSION_EPOCH || CONFIG.SESSION_EPOCH),
     requireTg: String(env.REQUIRE_TG !== undefined ? env.REQUIRE_TG : CONFIG.REQUIRE_TG ? "1" : "0") !== "0",
     salt: String(env.BOT_TOKEN || ""),
+    owners: String(env.OWNER_TG || "").split(",").map((x) => x.trim()).filter((x) => /^\d{3,15}$/.test(x)),   // v4.14: Telegram ids that sign in WITHOUT a password (identity proven by Telegram initData)
     origins: String(env.ALLOWED_ORIGIN || CONFIG.ALLOWED_ORIGIN || "").split(",").map((x) => x.trim().replace(/\/+$/, "")).filter(Boolean),   // comma separated; "*" = open (testing only)
     // v4.8: PAIR_CODE is MANDATORY and separate from APP_PASSWORD (a leaked app password must not pair a rogue EA). ALLOW_PAIR_FALLBACK="1" restores the old fallback (not recommended).
   pairKey: String(env.PAIR_CODE || (String(env.ALLOW_PAIR_FALLBACK || "") === "1" ? (env.APP_PASSWORD || CONFIG.PASSWORD) : "")),
@@ -149,6 +150,47 @@ function weekStats(L) {
   return { total: n, wins: win.length, losses: los.length, net: r2n(sum(L.map((x) => x.pnl))), pf: n ? (gl > 0 ? r2n(gw / gl) : gw > 0 ? 99.99 : 0) : null, avgW: win.length ? r2n(gw / win.length) : 0, avgL: los.length ? r2n(gl / los.length) : 0, maxW: win.length ? Math.max(...win.map((x) => x.pnl)) : 0, maxL: los.length ? Math.max(...los.map((x) => -x.pnl)) : 0, buys: L.filter((x) => /^B/i.test(x.side)).length, sells: L.filter((x) => /^S/i.test(x.side)).length, streak, vol: r2n(sum(L.map((x) => x.lot))), comm: 0, swap: 0 };
 }
 
+// ── Telegram bot chat (v4.14): /start = banner + one centered Mini App button ───────────────────────────────────────────────
+// Webhook secret is derived from BOT_TOKEN (no extra secret to manage). scripts/setup-bot.mjs registers it with the same derivation.
+const TGW = {
+  ar: { cap: "<b>Yetimmm</b> · XAUUSD\nنظام إدارة مخاطر ذكي لمنصة MT5\n\n▫️ أوردرات Buy / Sell Stop بتسلسل مخاطرة محسوب\n▫️ متابعة مباشرة للأوردرات والصفقات والأرباح\n▫️ تنبيهات الأخبار والأوامر\n\nاضغط الزر بالأسفل لفتح التطبيق 👇", btn: "فتح Yetimmm" },
+  en: { cap: "<b>Yetimmm</b> · XAUUSD\nSmart risk-sequence manager for MT5\n\n▫️ Buy / Sell Stop cycles with calculated risk\n▫️ Live orders, trades and P/L\n▫️ News and order alerts\n\nTap the button below to open the app 👇", btn: "Open Yetimmm" },
+};
+export async function tgWebhookSecret(token) {
+  const d = await crypto.subtle.digest("SHA-256", new TextEncoder().encode("yt-webhook:" + token));
+  return [...new Uint8Array(d)].map((b) => b.toString(16).padStart(2, "0")).join("").slice(0, 48);
+}
+const _seenByNs = new WeakMap();   // per Durable Object namespace binding (isolate lifetime)
+const seenLogins = (ns) => { let x = _seenByNs.get(ns); if (!x) _seenByNs.set(ns, (x = new Set())); return x; };
+let _menuUrl = { u: "", t: 0 };
+async function tgMenuUrl(token) {
+  if (_menuUrl.u && Date.now() - _menuUrl.t < 300000) return _menuUrl.u;
+  try {
+    const r = await (await fetch("https://api.telegram.org/bot" + token + "/getChatMenuButton", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" })).json();
+    const u = r && r.ok && r.result && r.result.web_app && r.result.web_app.url;
+    if (u) _menuUrl = { u: String(u), t: Date.now() };
+    return u ? String(u) : "";
+  } catch { return ""; }
+}
+async function tgWebhook(req, env) {
+  const token = env.BOT_TOKEN || "";
+  if (!token) return new Response("no bot", { status: 503 });
+  const got = req.headers.get("X-Telegram-Bot-Api-Secret-Token") || "";
+  if (!safeEq(got, await tgWebhookSecret(token))) return new Response("forbidden", { status: 403 });
+  let u; try { u = await req.json(); } catch { return new Response("ok"); }
+  const m = u && u.message;
+  if (!m || !m.chat || m.chat.type !== "private") return new Response("ok");
+  const L = String((m.from && m.from.language_code) || "").toLowerCase().startsWith("ar") ? TGW.ar : TGW.en;
+  const app = String(env.MINI_APP_URL || "").trim() || await tgMenuUrl(token);   // optional override; otherwise = the Menu-Button URL set by setup-bot (single source of truth)
+  const api = (method, body) => fetch("https://api.telegram.org/bot" + token + "/" + method, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  const kb = app ? { inline_keyboard: [[{ text: "✦ " + L.btn, web_app: { url: app } }]] } : undefined;
+  const banner = String(env.BANNER_URL || (app ? app.replace(/\/?$/, "/") + "assets/banner.png" : "")).trim();
+  let ok = false;
+  if (banner) { try { const r = await api("sendPhoto", { chat_id: m.chat.id, photo: banner, caption: L.cap, parse_mode: "HTML", reply_markup: kb }); ok = r.ok; } catch { ok = false; } }
+  if (!ok) await api("sendMessage", { chat_id: m.chat.id, text: L.cap, parse_mode: "HTML", reply_markup: kb }).catch(() => {});
+  return new Response("ok");
+}
+
 export default {
   async fetch(req, env) {
     const url = new URL(req.url);
@@ -158,6 +200,7 @@ export default {
     const done = (res) => { const h = new Headers(res.headers); for (const [k, v] of Object.entries(ch)) h.set(k, v); return new Response(res.body, { status: res.status, headers: h }); };
     const P = url.pathname;
     if (P === "/") return done(json({ ok: true, service: "yetimmm-bridge", v: VERSION, release: VERSION, ea_protocol: EA_PROTOCOL, pairConfigured: !!c.pairKey, corsOpen: c.origins.includes("*"), corsConfigured: c.origins.length > 0 }));
+    if (P === "/tg/webhook" && req.method === "POST") return tgWebhook(req, env);   // Telegram -> bot chat (no CORS / no account)
     try {
       let login = "", body = "";
       if (P === "/api/ea/sync" || P === "/login") {
@@ -169,20 +212,35 @@ export default {
         login = (req.headers.get("X-Login") || "").trim();
         if (req.method === "POST") { body = await req.text(); if (body.length > 65536) return done(json({ ok: false, error: "too_large" }, 413)); }
       } else return done(json({ error: "not found" }, 404));
+      let autoLogin = false;
+      if (P === "/login" && !/^\d{3,12}$/.test(login)) {            // owner (Telegram-proven) may omit the account number: the only MT5 account that ever synced is used
+        let b0 = {}; try { b0 = JSON.parse(body); } catch (e) {}
+        const tg0 = await tgUser(String(b0.init || ""), env.BOT_TOKEN || "");
+        if (tg0 && c.owners.includes(tg0)) {
+          const dl = await (await env.HUB.get(env.HUB.idFromName("dir")).fetch("https://hub/dir", { method: "POST", body: JSON.stringify({ op: "list" }) })).json();
+          if (dl.logins.length === 1) { login = dl.logins[0]; autoLogin = true; }
+          else return done(json({ ok: false, error: dl.logins.length ? "pick_account" : "no_account", accounts: dl.logins }, 404));
+        }
+      }
       if (!/^\d{3,12}$/.test(login)) return done(json({ ok: false, error: "login" }, P === "/login" ? 400 : 401));
       const hub = env.HUB.get(env.HUB.idFromName("acc-" + login));
       const call = (path, extra) => hub.fetch("https://hub" + path, { method: "POST", body: JSON.stringify(extra) });
+      if (P === "/api/ea/sync" && !seenLogins(env.HUB).has(login)) {         // account directory (owner auto-login). Once per isolate; failures never block the sync
+        seenLogins(env.HUB).add(login);
+        try { await env.HUB.get(env.HUB.idFromName("dir")).fetch("https://hub/dir", { method: "POST", body: JSON.stringify({ op: "add", login }) }); } catch (e) { seenLogins(env.HUB).delete(login); }
+      }
       if (P === "/api/ea/sync") return done(await call("/sync", { secret: (req.headers.get("X-EA-Secret") || "").trim(), pair: (req.headers.get("X-EA-Pair") || "").trim().slice(0, 256), body, tok: env.BOT_TOKEN || "", login }));
       if (P === "/login") {
         const b = JSON.parse(body);
         const tg = await tgUser(String(b.init || ""), env.BOT_TOKEN || "");
         const gate = env.HUB.get(env.HUB.idFromName("gate-" + (tg ? "tg" + tg : "ip" + (req.headers.get("CF-Connecting-IP") || "x"))));
         const gcall = async (op) => (await gate.fetch("https://hub/gate", { method: "POST", body: JSON.stringify(op) })).json();
-        if (!c.password) return done(json({ ok: false, error: "not_configured" }, 503));   // no APP_PASSWORD set: refuse instead of running with a default password
+        const owner = !!(tg && c.owners.includes(tg));
+        if (!c.password && !owner) return done(json({ ok: false, error: c.owners.length ? "tg_only" : "not_configured" }, c.owners.length ? 403 : 503));   // no APP_PASSWORD set: refuse instead of running with a default password
         const g0 = await gcall({});
         if (!g0.ok) return done(json({ ok: false, error: "locked", retry: g0.retry }, 429));
         if (c.requireTg && !tg) return done(json({ ok: false, error: "tg_only" }, 403));
-        if (!(await pwEq(c, b.pw, c.password))) {
+        if (!owner && !(await pwEq(c, b.pw, c.password))) {
           const g = await gcall({ fail: true });
           if (!g.ok) return done(json({ ok: false, error: "locked", retry: g.retry }, 429));
           return done(json({ ok: false, error: "bad_pw", left: g.left }, 401));
@@ -191,6 +249,7 @@ export default {
         if (res.status === 503) return done(res);                      // bot offline is NOT a wrong password: never count it toward the lock
         if (res.status !== 200) { await gcall({ fail: true }); return done(res); }
         await gcall({ reset: true });
+        if (autoLogin) { const j = await res.json(); return done(json({ ...j, login })); }
         return done(res);
       }
       if (P === "/admin/diag") {            // internal diagnostics: admin key only (secret ADMIN_KEY); unset = endpoint does not exist
@@ -238,6 +297,11 @@ export class Hub {
   async fetch(req) {
     const p = new URL(req.url).pathname;
     const b = await req.json().catch(() => ({}));
+    if (p === "/dir") {
+      let l = (await this.ctx.storage.get("dir")) || [];
+      if (b.op === "add" && /^\d{3,12}$/.test(String(b.login || "")) && !l.includes(String(b.login))) { l = [...l, String(b.login)].slice(-20); await this.ctx.storage.put("dir", l); }
+      return json({ ok: true, logins: l });
+    }
     if (p === "/gate") return this.gate(b);
     if (p === "/sync") return this.sync(b);
     if (p === "/login") return this.login(b);
@@ -525,7 +589,7 @@ export class Hub {
     if (!r.s) return this.deny(r.why);
     await this.touch(a, r.s);
     let b = null; try { b = JSON.parse(m.body || "null"); } catch (e) {}
-    const allowed = ["start", "stop", "close", "reset", "apply", "settings", "delete", "cancel", "modify", "place", "newcycle"];
+    const allowed = ["start", "stop", "close", "reset", "apply", "settings", "delete", "cancel", "delpend", "modify", "place", "newcycle"];
     if (!b || !allowed.includes(String(b.cmd))) return json({ error: "bad command" }, 400);
     if (!this.botUp()) return json({ error: "ea offline" }, 503);
     if (b.cmd === "newcycle") {            // v4.7: explicit, GUARDED cycle reset = EA "stop" + EA "reset". Never on a live trade, never while another command is in flight.

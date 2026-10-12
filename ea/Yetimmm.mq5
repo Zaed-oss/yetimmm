@@ -4,7 +4,7 @@
 //|  MetaTrader 5 | Telegram control | State recovery | Trade log    |
 //+------------------------------------------------------------------+
 #property copyright "Yetimmm"
-#property version   "2.26"
+#property version   "2.27"
 #property description "Yetimmm | XAUUSD | Two-level Stop Buy / Stop Sell switch + risk sequence | Telegram integration"
 
 #include <Trade\Trade.mqh>
@@ -160,7 +160,7 @@ enum ENUM_YT_RISKPOL
    YT_RISK_CLAMP_MIN=1   // use the broker minimum volume and SAY SO: Requested Risk / Effective Risk are both shown and logged
   };
 
-#define YT_VER "2.26"
+#define YT_VER "2.27"
 
 //--- which pending orders the bot must keep alive
 #define YM_NONE 0
@@ -173,8 +173,8 @@ enum ENUM_YT_RISKPOL
 //+------------------------------------------------------------------+
 
 input group "=== Trading Levels ==="
-input double InpBuyStop        = 0.0;     // Buy Stop Price
-input double InpSellStop       = 0.0;     // Sell Stop Price
+input double InpBuyStop        = 0.0;     // (DEPRECATED v2.27 - IGNORED) orders come ONLY from the Telegram Mini App
+input double InpSellStop       = 0.0;     // (DEPRECATED v2.27 - IGNORED) orders come ONLY from the Telegram Mini App
 
 input group "=== Risk Management ==="
 input double InpInitialRisk    = 1.0;     // Initial Risk ($) - lot is rounded DOWN to the broker step: real risk <= requested
@@ -228,11 +228,12 @@ input int    InpTgPollMs       = 1000;     // Telegram fast polling interval (ms
 
 input group "=== Mini App Bridge (Cloudflare Worker) ==="
 input bool   InpBrEnable       = true;    // Enable Mini App bridge
-input string InpBrUrl      = "https://yetimmm-bridge.sayfhazeem078.workers.dev"; // Worker URL (pre-filled). MT5 never lets an EA edit Allowed URLs: run tools\allow-urls.bat once (it reads this URL) or add it by hand
-input string InpBrPairCode   = "123123";  // PAIRING CODE = the Worker PAIR_CODE (pre-filled 123123 = the value in worker/wrangler.toml [vars]; change BOTH together). Needed ONCE per account. Visible in the EA inputs - use a dedicated code, not your trading password
+input string InpBrUrl      = "";      // Worker URL. LEAVE EMPTY (v2.27): read automatically from Common\Files\Yetimmm.cfg written by `npm run setup`. Fill only to override.
+input string InpBrPairCode   = "";      // Pairing code. LEAVE EMPTY (v2.27): read automatically from Common\Files\Yetimmm.cfg written by `npm run setup`. Fill only to override.
 input bool   InpBrResetPw    = false;   // Set TRUE once (then back to FALSE) to sign every device out of this account (a normal EA restart does NOT sign anyone out since v4.1)
 input int    InpCmdTtlSec      = 30;      // v2.23: a Mini App command older than this when it reaches the EA is EXPIRED (acked, never executed)
 input int    InpBrPollSec      = 1;       // Bridge sync interval (sec) - v2.22: 1 s (was 3) so the Mini App price follows the broker closely
+string g_brUrl="", g_brPair="";   // resolved at OnInit: input if filled, else Common\Files\Yetimmm.cfg (url=... / pair=...)
 
 //+------------------------------------------------------------------+
 //| Constants                                                        |
@@ -2423,7 +2424,7 @@ string UrlOrigin(const string u)
   }
 string AllowUrlsHint()
   {
-   return UrlOrigin(InpBrUrl)+"  and  https://api.telegram.org";
+   return UrlOrigin(g_brUrl)+"  and  https://api.telegram.org";
   }
 bool g_urlAlertShown=false;
 void AllowUrlsAlertOnce()
@@ -4854,26 +4855,12 @@ void CreatePanel()
    ArrayResize(g_uiTxt,rows);                        // value cache: UpdatePanel writes only the rows that changed
    ArrayResize(g_uiCol,rows);
    for(int c=0;c<rows;c++) { g_uiTxt[c]="~~~"; g_uiCol[c]=clrNONE; }
-   int h=48+3*24+34+30+rows*15+12;
+   int h=48+34+rows*15+12;
    UI_Rect(UI+"BG",x,y,w,h,C'22,26,34',C'212,175,55');
    UI_Label(UI+"TITLE",x+12,y+6,"Yetimmm",clrGold,15);
-   UI_Label(UI+"SUB",x+110,y+13,"XAUUSD | Risk Sequence EA",C'150,160,175',8);
+   UI_Label(UI+"SUB",x+110,y+13,"XAUUSD | Monitor - orders come from the Mini App",C'150,160,175',8);
    int ry=y+40;
-   UI_Label(UI+"L_BUY",x+12,ry+4,"Buy Stop Price",clrSilver,9);
-   UI_Edit(UI+"ED_BUY",x+190,ry,140,20,g_edHave?g_edBuy:(g_buyLevel>0?PX(g_buyLevel):""));
-   ry+=24;
-   UI_Label(UI+"L_SELL",x+12,ry+4,"Sell Stop Price",clrSilver,9);
-   UI_Edit(UI+"ED_SELL",x+190,ry,140,20,g_edHave?g_edSell:(g_sellLevel>0?PX(g_sellLevel):""));
-   ry+=24;
-   UI_Label(UI+"L_RISK",x+12,ry+4,"Initial Risk ($)",clrSilver,9);
-   UI_Edit(UI+"ED_RISK",x+190,ry,140,20,g_edHave?g_edRisk:D2(g_initRisk));
-   ry+=28;
-   UI_Button(UI+"BTN_APPLY",x+10,ry,80,24,"APPLY",C'30,90,160');
-   UI_Button(UI+"BTN_START",x+95,ry,80,24,"START",C'30,130,60');
-   UI_Button(UI+"BTN_STOP",x+180,ry,80,24,"STOP",C'170,40,40');
-   UI_Button(UI+"BTN_CANCEL",x+265,ry,75,24,"CANCEL",C'160,110,20');
-   ry+=30;
-   UI_Button(UI+"BTN_SET",x+10,ry,330,22,"SETTINGS  >",C'60,70,95');
+   UI_Button(UI+"BTN_SET",x+10,ry,380,22,"SETTINGS  >",C'60,70,95');
    ry+=34;
    for(int i=0;i<rows;i++)
      {
@@ -4984,42 +4971,6 @@ void UpdatePanel()
    if(g_uiChanged) ChartRedraw(0);
   }
 
-//--- smart APPLY: Validate -> Compare Desired vs Actual -> NOTHING TO DO / MODIFY / CREATE / REMOVE -> verify
-void PanelApply()
-  {
-   double b=ParseNum(ObjectGetString(0,UI+"ED_BUY",OBJPROP_TEXT));
-   double s=ParseNum(ObjectGetString(0,UI+"ED_SELL",OBJPROP_TEXT));
-   double r=ParseNum(ObjectGetString(0,UI+"ED_RISK",OBJPROP_TEXT));
-   string err;
-   if(ApplyLevels(b,s,r,"Panel",err))
-     {
-      g_edHave=false;
-      if(g_applyNote=="NOTHING TO DO")
-         PanelMsg("APPLY: NOTHING TO DO (already synced)",clrSilver);
-      else if(g_applyNote=="QUEUED")
-        {
-         PanelMsg("APPLY: saved for NEXT sequence (active trade untouched)",clrGold);
-         TgQueue(LevelsAcceptedText());
-        }
-      else
-        {
-         bool allGood=true;
-         for(int k=0;k<2;k++)
-           {
-            bool sb=(k==0);
-            double dl;
-            if(!SideDesired(sb,dl)) continue;
-            int sst=SideStatusShown(sb);
-            if(sst==YS_FAILED || sst==YS_WAITING || sst==YS_MISSING || sst==YS_EXTERNAL) allGood=false;
-           }
-         PanelMsg("APPLY: "+SyncSummary(),allGood?clrWhite:clrTomato);
-         TgQueue(LevelsAcceptedText()+"\nSync: "+SyncSummary());
-        }
-      YLog("Levels accepted from panel ("+(g_applyNote==""?"applied":g_applyNote)+") | "+SyncSummary());
-     }
-   else PanelMsg("APPLY REJECTED: "+err,clrTomato);
-  }
-
 //--- every id must be a non-zero integer (negative ids = groups/channels)
 //--- validate EVERYTHING first; apply all-or-nothing
 void PanelSaveSettings()
@@ -5090,51 +5041,9 @@ void OnChartEvent(const int id,const long &lparam,const double &dparam,const str
   {
    if(id!=CHARTEVENT_OBJECT_CLICK) return;
    if(StringFind(sparam,UI)!=0) return;
-   if(sparam==UI+"BTN_APPLY")
+   if(sparam==UI+"BTN_SET")
      {
       ObjectSetInteger(0,sparam,OBJPROP_STATE,false);
-      PanelApply();
-     }
-   else if(sparam==UI+"BTN_START")
-     {
-      ObjectSetInteger(0,sparam,OBJPROP_STATE,false);
-      string r=DoStart("Panel");
-      Alert("Yetimmm: ",r);
-      TgQueue(r);
-     }
-   else if(sparam==UI+"BTN_STOP")
-     {
-      ObjectSetInteger(0,sparam,OBJPROP_STATE,false);
-      ulong tk[];
-      bool go=true;
-      if(OwnPositions(tk)>0 && !MQLInfoInteger(MQL_TESTER))
-         go=(MessageBox("An open Yetimmm position exists.\nClose it, delete orders and STOP the bot?","Yetimmm STOP",MB_YESNO|MB_ICONWARNING)==IDYES);
-      if(go)
-        {
-         bool done=ExecStop(1,0);
-         string r=StopResultText(done);
-         Alert("Yetimmm: ",r);
-         TgQueue(r);
-        }
-     }
-   else if(sparam==UI+"BTN_CANCEL")
-     {
-      ObjectSetInteger(0,sparam,OBJPROP_STATE,false);
-      ulong tk[];
-      bool closeToo=false;
-      if(OwnPositions(tk)>0 && !MQLInfoInteger(MQL_TESTER))
-         closeToo=(MessageBox("An open Yetimmm position exists.\nYES = cancel orders AND close the position.\nNO = cancel orders only.","Yetimmm CANCEL",MB_YESNO|MB_ICONWARNING)==IDYES);
-      string r=ExecCancel(closeToo);
-      Alert("Yetimmm: ",r);
-      TgQueue(r);
-     }
-   else if(sparam==UI+"BTN_SET")
-     {
-      ObjectSetInteger(0,sparam,OBJPROP_STATE,false);
-      g_edBuy=ObjectGetString(0,UI+"ED_BUY",OBJPROP_TEXT);      // keep unsaved level edits
-      g_edSell=ObjectGetString(0,UI+"ED_SELL",OBJPROP_TEXT);
-      g_edRisk=ObjectGetString(0,UI+"ED_RISK",OBJPROP_TEXT);
-      g_edHave=true;
       g_uiTgEn=g_tgEn; g_uiTgNot=g_tgNot; g_uiTgCtl=g_tgCtl;
       g_page=1;
       CreatePanel();
@@ -5880,6 +5789,7 @@ string BrStateJson()
       ",\"exp\":"+(MQLInfoInteger(MQL_TRADE_ALLOWED)?"true":"false")+",\"acc\":"+(AccountInfoInteger(ACCOUNT_TRADE_ALLOWED)?"true":"false")+
       ",\"ea\":"+(AccountInfoInteger(ACCOUNT_TRADE_EXPERT)?"true":"false")+",\"tm\":"+(SymbolInfoInteger(g_sym,SYMBOL_TRADE_MODE)==SYMBOL_TRADE_MODE_FULL?"true":"false")+
       ",\"ping\":"+IntegerToString((int)(TerminalInfoInteger(TERMINAL_PING_LAST)/1000))+"}";
+   s+=",\"mode\":\""+(g_mode==YM_BOTH?"BOTH":(g_mode==YM_BUY?"BUY":(g_mode==YM_SELL?"SELL":"NONE")))+"\"";
    s+=",\"buy\":"+DoubleToString(g_buyLevel,g_digits)+",\"sell\":"+DoubleToString(g_sellLevel,g_digits);
    s+=",\"risk\":"+D2(g_initRisk)+",\"cur\":"+D2(g_curRisk)+",\"acc\":"+D2(g_accLoss);
    s+=",\"seq\":"+IntegerToString(g_seq)+",\"no\":"+IntegerToString(g_tradeNo);
@@ -5947,6 +5857,14 @@ string BrExec(const string cmd,const string seg)
         }
       return ExecDeleteOrder((ulong)tkd,"MiniApp");
      }
+   if(cmd=="delpend")
+     {
+      if(!(g_pendBuy>0.0 && g_pendSell>0.0)) return "ℹ️ No queued order to delete.";
+      g_pendBuy=0.0; g_pendSell=0.0;
+      SaveState();
+      g_dirty=true;
+      return "✅ Queued order deleted.";
+     }
    if(cmd=="cancel")
      {
       if(g_state==YT_STOPPED) return "ℹ️ Bot is stopped - no pending orders to cancel.";
@@ -5994,6 +5912,7 @@ string BrExec(const string cmd,const string seg)
       if(!ApplyLevels(nb,ns,0.0,"MiniApp",er)) return "❌ Invalid Price Configuration: "+er;
       if(g_fresh && g_pendBuy>0.0 && g_pendSell>0.0) return LevelsAcceptedText();   // sequence locked: the change is only PENDING, say so honestly
       if(cmd=="place") { g_mode=YM_BOTH; SaveState(); }
+      GS("LVSRC",1.0);
       g_nextPlaceMs=0; ResetSyncBackoff(); SyncAll(); g_dirty=true;
       return (cmd=="place"?"✅ ORDER ADDED\n":"✅ ORDER MODIFIED\n")+(isBuy?"Buy Stop @ ":"Sell Stop @ ")+PX(px);
      }
@@ -6029,6 +5948,7 @@ string BrExec(const string cmd,const string seg)
             g_target=oldT; g_rr=oldR;
             return "❌ Invalid Price Configuration: "+err;
            }
+         GS("LVSRC",1.0);
          res=LevelsAcceptedText();
         }
       else res="✅ Settings updated.";
@@ -6051,7 +5971,7 @@ string BrExec(const string cmd,const string seg)
 void BridgeSync()
   {
    if(!InpBrEnable || MQLInfoInteger(MQL_TESTER)) return;
-   if(StringLen(InpBrUrl)<12 || StringLen(BrKeyEff())<8) return;
+   if(StringLen(g_brUrl)<12 || StringLen(BrKeyEff())<8) return;
    if(TimeLocal()-g_brLast<MathMax(1,InpBrPollSec)) return;
    g_brLast=TimeLocal();
 
@@ -6070,7 +5990,7 @@ void BridgeSync()
    string body="{\"login\":\""+IntegerToString((long)AccountInfoInteger(ACCOUNT_LOGIN))+"\",\"srv\":\""+JEsc(AccountInfoString(ACCOUNT_SERVER))+"\",\"fresh\":"+(g_brFresh?"true":"false")+",\"reset\":"+(InpBrResetPw?"true":"false")+",\"cv\":"+IntegerToString(g_brCv)+calPart+",\"state\":"+BrStateJson()+",\"ack\":[";
    for(int i=0;i<ArraySize(g_brAck);i++) body+=(i>0?",":"")+"\""+g_brAck[i]+"\"";
    body+="],\"ev\":"+EvJson()+"}";
-   string url=InpBrUrl;
+   string url=g_brUrl;
    while(StringLen(url)>0 && StringSubstr(url,StringLen(url)-1,1)=="/") url=StringSubstr(url,0,StringLen(url)-1);
    url+="/api/ea/sync";
 
@@ -6080,7 +6000,7 @@ void BridgeSync()
    if(n>0) ArrayResize(data,n-1);
    ResetLastError();
    string hdr="Content-Type: application/json\r\nX-EA-Secret: "+BrKeyEff()+"\r\n";
-   string pairCode=InpBrPairCode;
+   string pairCode=g_brPair;
    StringTrimLeft(pairCode); StringTrimRight(pairCode);
    if(g_brPairNeed && StringLen(pairCode)>0) hdr+="X-EA-Pair: "+pairCode+"\r\n";   // sent ONLY until the Worker confirmed the pairing (and again if it ever asks for it)
    int code=WebRequest("POST",url,hdr,3000,data,res,rh);
@@ -6109,15 +6029,15 @@ void BridgeSync()
       if(TimeLocal()-g_brErrLog>=60)
         {
          g_brErrLog=TimeLocal();
-         if(werr=="pair_required")     YLog("Mini App bridge: this MT5 account is NOT PAIRED yet - set the input InpBrPairCode to the Worker secret PAIR_CODE (or the app password if PAIR_CODE is not set).");
-         else if(werr=="pair_bad")     YLog("Mini App bridge: pairing code REJECTED - InpBrPairCode must equal the Worker secret PAIR_CODE (or APP_PASSWORD when PAIR_CODE is not set).");
+         if(werr=="pair_required")     YLog("Mini App bridge: this MT5 account is NOT PAIRED yet - run `npm run setup` (or set InpBrPairCode to the Worker secret PAIR_CODE (or the app password if PAIR_CODE is not set).");
+         else if(werr=="pair_bad")     YLog("Mini App bridge: pairing code REJECTED - the pairing code must equal the Worker secret PAIR_CODE (or APP_PASSWORD when PAIR_CODE is not set).");
          else if(werr=="pair_locked")  YLog("Mini App bridge: too many wrong pairing codes - pairing is locked for a few minutes.");
          else if(werr=="secret")       YLog(StringLen(pairCode)>0?"Mini App bridge: this account is bound to another EA install - re-pairing with InpBrPairCode.":"Mini App bridge: this account is bound to another EA install (or the EA settings file was lost) - set InpBrPairCode to re-pair.");
          else if(werr=="pair_not_configured") YLog("Mini App bridge: HTTP 503 pair_not_configured - the Worker has no PAIR_CODE. Deploy worker/wrangler.toml (it now carries PAIR_CODE) or run: npx wrangler secret put PAIR_CODE  (value must equal InpBrPairCode).");
          else if(werr=="not_configured")    YLog("Mini App bridge: HTTP 503 not_configured - the Worker has no APP_PASSWORD secret (npx wrangler secret put APP_PASSWORD).");
          else if(werr!="")                  YLog("Mini App bridge: HTTP "+IntegerToString(code)+" - Worker answered '"+werr+"'.");
-         else if(code==404)                 YLog("Mini App bridge: HTTP 404 - Worker URL is wrong (check InpBrUrl: "+UrlOrigin(InpBrUrl)+").");
-         else YLog("Mini App bridge: HTTP "+IntegerToString(code)+" (Worker not deployed / Worker error - open "+UrlOrigin(InpBrUrl)+"/ in a browser: it must answer {\"ok\":true})");
+         else if(code==404)                 YLog("Mini App bridge: HTTP 404 - Worker URL is wrong (check the Worker URL: "+UrlOrigin(g_brUrl)+").");
+         else YLog("Mini App bridge: HTTP "+IntegerToString(code)+" (Worker not deployed / Worker error - open "+UrlOrigin(g_brUrl)+"/ in a browser: it must answer {\"ok\":true})");
         }
       return;
      }
@@ -6238,6 +6158,45 @@ void BridgeSync()
    g_brFirst=false;
   }
 
+//--- v2.27: zero-typing setup. `npm run setup` writes Common\Files\Yetimmm.cfg (url=..., pair=...). Inputs, if filled, win.
+void LoadAutoConfig()
+  {
+   g_brUrl=InpBrUrl; g_brPair=InpBrPairCode;
+   StringTrimLeft(g_brUrl); StringTrimRight(g_brUrl); StringTrimLeft(g_brPair); StringTrimRight(g_brPair);
+   if(StringLen(g_brUrl)>=12 && StringLen(g_brPair)>0) return;
+   int h=FileOpen("Yetimmm.cfg",FILE_READ|FILE_TXT|FILE_ANSI|FILE_COMMON);
+   if(h==INVALID_HANDLE) { if(StringLen(g_brUrl)<12) YLog("Mini App bridge: Yetimmm.cfg not found in the Common Files folder - run `npm run setup` (or fill InpBrUrl / InpBrPairCode)."); return; }
+   while(!FileIsEnding(h))
+     {
+      string ln=FileReadString(h); StringTrimLeft(ln); StringTrimRight(ln);
+      int eq=StringFind(ln,"="); if(eq<1) continue;
+      string k=StringSubstr(ln,0,eq), v=StringSubstr(ln,eq+1);
+      StringTrimLeft(v); StringTrimRight(v); StringToLower(k);
+      if(k=="url"  && StringLen(g_brUrl)<12)  g_brUrl=v;
+      if(k=="pair" && StringLen(g_brPair)==0) g_brPair=v;
+     }
+   FileClose(h);
+   YLog("Mini App bridge: configuration loaded automatically (Yetimmm.cfg).");
+  }
+
+//--- v2.27: levels left by the old panel fields / EA inputs / defaults (never confirmed by the Mini App) are removed ONCE.
+//--- Open positions are never touched. Levels set from the Mini App (LVSRC=1) survive restarts (Recovery).
+void PurgeLegacyLevels()
+  {
+   if(MQLInfoInteger(MQL_TESTER)) return;
+   if(GHas("V227")) return;
+   GS("V227",1.0);
+   if(GV("LVSRC",0)>0.5) return;
+   ulong pt[];
+   if(OwnPositions(pt)>0) return;
+   if(g_buyLevel<=0.0 && g_sellLevel<=0.0 && g_pendBuy<=0.0 && g_pendSell<=0.0 && g_mode==YM_NONE) return;
+   YLog("v2.27 cleanup: legacy levels removed (Buy "+PX(g_buyLevel)+" / Sell "+PX(g_sellLevel)+") - they were not set from the Mini App.");
+   g_mode=YM_NONE; g_buyLevel=0.0; g_sellLevel=0.0; g_pendBuy=0.0; g_pendSell=0.0;
+   if(g_state==YT_ARMED || g_state==YT_WAITING_REENTRY) g_state=YT_IDLE;
+   SaveState();
+   CleanupOrders("v2.27 legacy levels cleanup");
+  }
+
 int OnInit()
   {
    Print("[Yetimmm] v"+YT_VER+" loaded - Broker/Risk engine | entry "+(InpEntryMode==ENTRY_PENDING?"PENDING":"VIRTUAL")+" | risk policy "+(InpRiskPolicy==YT_RISK_CLAMP_MIN?"CLAMP_TO_MIN":"STRICT"));
@@ -6305,39 +6264,25 @@ int OnInit()
         " | Protection emergency-close: "+(InpProtectCloseSec>0?IntegerToString(InpProtectCloseSec)+" s":"OFF (alert + retry only)"));
    if(InpBrEnable && !MQLInfoInteger(MQL_TESTER))
      {
-      if(StringLen(InpBrUrl)<12 || StringLen(BrKeyEff())<8)
+      if(StringLen(g_brUrl)<12 || StringLen(BrKeyEff())<8)
          YLog("Mini App bridge: INACTIVE - InpBrUrl is empty/too short (or no app key). Fill InpBrUrl, then allow it in Tools > Options > Expert Advisors.");
-      else if(StringFind(InpBrUrl,"https://")!=0)
+      else if(StringFind(g_brUrl,"https://")!=0)
          YLog("Mini App bridge: INACTIVE - InpBrUrl must start with https://");
       else
-         YLog("Mini App bridge: enabled | "+InpBrUrl+" | Allowed URLs must contain: "+AllowUrlsHint()+" (error 4014 otherwise).");
-      if(CfgGet("brpaired","0")!="1" && StringLen(InpBrPairCode)==0)
+         YLog("Mini App bridge: enabled | "+g_brUrl+" | Allowed URLs must contain: "+AllowUrlsHint()+" (error 4014 otherwise).");
+      if(CfgGet("brpaired","0")!="1" && StringLen(g_brPair)==0)
          YLog("Mini App bridge: InpBrPairCode is empty - an account that is not yet bound to this Worker will be refused until you enter the pairing code (accounts bound by v2.20 keep working).");
      }
    g_connected=(bool)TerminalInfoInteger(TERMINAL_CONNECTED);
    if(g_stateRecovered) YLog("State Recovered: "+StateText()+" | Risk "+D2(g_curRisk)+" | Acc.Loss "+D2(g_accLoss)+" | Seq "+IntegerToString(g_seq)+" | Last Trade #"+TNo(g_tradeNo));
    PrintRecoveryPlan();
 
-   //--- input levels: applied only when new (or changed) so old inputs never re-arm the bot after TP
-   bool haveIn=(InpBuyStop>0.0 && InpSellStop>0.0);
-   bool changedLv=(!GHas("INBL") || MathAbs(GV("INBL",0)-InpBuyStop)>1e-9 || MathAbs(GV("INSL",0)-InpSellStop)>1e-9);
-   bool changedRk=(!GHas("INRK") || MathAbs(GV("INRK",0)-InpInitialRisk)>1e-9);
-   GS("INBL",InpBuyStop); GS("INSL",InpSellStop); GS("INRK",InpInitialRisk);
-   if(changedRk && !changedLv)
-     {
-      g_initRisk=InpInitialRisk;
-      if(g_accLoss<=1e-9) g_curRisk=g_initRisk;
-     }
+   //--- v2.27: the Telegram Mini App is the ONLY source of levels/risk. Input levels, panel fields and old defaults never create orders.
+   if(InpBuyStop>0.0 || InpSellStop>0.0) YLog("InpBuyStop / InpSellStop are DEPRECATED and ignored (v2.27): set the levels from the Telegram Mini App.");
+   LoadAutoConfig();
    RecoverHistory();
-   if(haveIn && changedLv)
-     {
-      string err;
-      ApplyLevels(InpBuyStop,InpSellStop,InpInitialRisk,"Inputs",err);
-     }
-   else if(!g_stateRecovered)
-     {
-      g_initRisk=InpInitialRisk; g_curRisk=InpInitialRisk;
-     }
+   PurgeLegacyLevels();
+   if(!g_stateRecovered) { g_initRisk=InpInitialRisk; g_curRisk=InpInitialRisk; }
    SaveState();
    ChartSetInteger(0,CHART_SHOW_TRADE_LEVELS,true);   // real pending-order / SL / TP levels are drawn by MT5 itself
    CreatePanel();

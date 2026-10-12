@@ -1,6 +1,6 @@
 {
   "name": "yetimmm",
-  "version": "4.12.0",
+  "version": "4.14.0",
   "private": true,
   "type": "module",
   "description": "Yetimmm - MT5 Expert Advisor + Cloudflare Worker bridge + Telegram Mini App",
@@ -10,7 +10,9 @@
     "dev": "wrangler dev --config worker/wrangler.toml",
     "deploy": "node scripts/deploy.mjs",
     "deploy:dry": "node scripts/deploy.mjs --dry",
-    "deploy:raw": "wrangler deploy --config worker/wrangler.toml"
+    "deploy:raw": "wrangler deploy --config worker/wrangler.toml",
+    "setup:bot": "node scripts/setup-bot.mjs",
+    "setup": "node scripts/setup.mjs"
   },
   "devDependencies": {
     "wrangler": "^4"

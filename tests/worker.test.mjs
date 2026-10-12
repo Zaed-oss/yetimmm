@@ -525,3 +525,30 @@ test("v4.8 the public state forwards the BrokerSpec / RiskResult / waiting code 
   const st = await t.call("/state", { method: "GET", headers: h });
   assert.deepEqual(st.j.bs, bs); assert.deepEqual(st.j.rk, rk); assert.equal(st.j.wcode, "WAITING_VOLUME");
 });
+
+// ── v4.14 owner sign-in (Telegram identity, no password, account auto-detected) ──
+import { createHmac } from "node:crypto";
+const tgInit = (token, id) => {
+  const p = new URLSearchParams({ auth_date: String(Math.floor(Date.now() / 1000)), user: JSON.stringify({ id: Number(id) }) });
+  const chk = [...p.entries()].map(([k, v]) => k + "=" + v).sort().join("\n");
+  p.set("hash", createHmac("sha256", createHmac("sha256", "WebAppData").update(token).digest()).update(chk).digest("hex"));
+  return p.toString();
+};
+test("v4.14 owner: Telegram-verified owner signs in with no password and no account number", async () => {
+  const t = boot({ REQUIRE_TG: "1", OWNER_TG: "777001", APP_PASSWORD: "" });
+  const none = await t.call("/login", { body: { init: tgInit("123:ABC", "777001") } });
+  assert.equal(none.j.error, "no_account");                       // nothing synced yet: clear answer
+  await t.sync("123456");
+  const ok = await t.call("/login", { body: { init: tgInit("123:ABC", "777001") } });
+  assert.equal(ok.s, 200); assert.equal(ok.j.login, "123456"); assert.ok(ok.j.sess);
+  const st = await t.call("/state", { method: "GET", headers: t.auth("123456", ok.j.sess) });
+  assert.equal(st.s, 200);
+});
+test("v4.14 owner: a Telegram user who is NOT the owner is refused without the password", async () => {
+  const t = boot({ REQUIRE_TG: "1", OWNER_TG: "777001", APP_PASSWORD: "" });
+  await t.sync("123456");
+  const r = await t.call("/login", { body: { login: "123456", pw: "", init: tgInit("123:ABC", "999") } });
+  assert.notEqual(r.s, 200);
+  const r2 = await t.call("/login", { body: { init: tgInit("123:ABC", "999") } });
+  assert.notEqual(r2.s, 200);
+});
