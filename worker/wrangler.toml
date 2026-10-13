@@ -44,8 +44,6 @@ ALLOWED_ORIGIN = "https://zaed-oss.github.io"
 # MAX_ATTEMPTS   = "8"        # wrong passwords before the lock
 # SESSION_DAYS   = "30"       # sliding session lifetime (any authenticated request extends it)
 # EA_STALE_SEC   = "20"       # seconds without an EA sync before it counts as offline (the app reads this value from the server)
-# PAIR_MAX_FAILS = "10"       # wrong pairing codes per account before the lock
-# PAIR_LOCK_SEC  = "300"      # pairing lock length
 # NEWS_SCOPE     = "server"   # server = calendar/notifications per broker server (default) | global = one shared shard (v4.5 behaviour)
 # SESSION_EPOCH  = "1"        # bump 1 -> 2 to sign EVERYBODY out at once
 # REQUIRE_TG     = "1"        # "0" = allow sign-in from a normal browser (default: only inside Telegram)

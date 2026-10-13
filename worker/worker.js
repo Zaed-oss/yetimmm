@@ -1,4 +1,4 @@
-// Yetimmm bridge v4.14.0 — ONE bot, ONE link, login by MT5 account number + ONE app password.
+// Yetimmm bridge v4.15.1 — ONE bot, ONE link, login by MT5 account number + ONE app password.
 //   EA  -> POST /api/ea/sync  (headers X-EA-Secret [+ X-EA-Pair while pairing])  body {login, srv, fresh, reset, cv, state, ack}
 //   App -> POST /login        body {login, pw, init}                -> {ok, sess}
 //   App -> POST /verify       headers X-Login + X-Session, body {init} -> {ok, hard, checks:{session,account,telegram,bot}}
@@ -17,7 +17,7 @@
 //    • SESSION_EPOCH bumped -> everybody is signed out instantly (panic button)
 // ═════════════════════════════════════════════════════════════════════════
 import { Notify } from "./news.js";
-export const VERSION = "4.14.0", EA_PROTOCOL = "2.27";   // v4.8: the ONE place the release number lives (package.json / README / CHANGELOG / EA must match: npm run check enforces it)
+export const VERSION = "4.15.1", EA_PROTOCOL = "2.29";   // v4.8: the ONE place the release number lives (package.json / README / CHANGELOG / EA must match: npm run check enforces it)
 export { Notify };
 
 const CONFIG = {
@@ -31,8 +31,6 @@ const CONFIG = {
   ALLOWED_ORIGIN: "",        // v4.6.1: fail-closed. CORS origin of the web app, e.g. "https://you.github.io" (set in wrangler.toml [vars]; env wins). "*" = open, testing only
   REQUIRE_TG: true,          // true = login only from inside the Telegram bot (env REQUIRE_TG="0" allows browsers)
   SESSION_TOUCH_SEC: 600,    // v4.6: any authenticated request slides the session expiry (persisted at most once per this many seconds)
-  PAIR_MAX_FAILS: 10,        // v4.6: wrong pairing codes allowed per account before a lock
-  PAIR_LOCK_SEC: 300,        // v4.6: pairing lock length
   NEWS_SCOPE: "server",      // v4.6: "server" = one calendar/notification shard per broker server (multi-broker safe) | "global" = legacy single shard
 };
 
@@ -52,8 +50,6 @@ function cfg(env) {
     origins: String(env.ALLOWED_ORIGIN || CONFIG.ALLOWED_ORIGIN || "").split(",").map((x) => x.trim().replace(/\/+$/, "")).filter(Boolean),   // comma separated; "*" = open (testing only)
     // v4.8: PAIR_CODE is MANDATORY and separate from APP_PASSWORD (a leaked app password must not pair a rogue EA). ALLOW_PAIR_FALLBACK="1" restores the old fallback (not recommended).
   pairKey: String(env.PAIR_CODE || (String(env.ALLOW_PAIR_FALLBACK || "") === "1" ? (env.APP_PASSWORD || CONFIG.PASSWORD) : "")),
-    pairMax: Math.max(1, Math.floor(num(env.PAIR_MAX_FAILS, CONFIG.PAIR_MAX_FAILS))),
-    pairLockMs: num(env.PAIR_LOCK_SEC, CONFIG.PAIR_LOCK_SEC) * 1000,
     touchMs: num(env.SESSION_TOUCH_SEC, CONFIG.SESSION_TOUCH_SEC) * 1000,
     newsScope: String(env.NEWS_SCOPE || CONFIG.NEWS_SCOPE).toLowerCase() === "global" ? "global" : "server",
   };
@@ -421,15 +417,11 @@ export class Hub {
     const pair = String(m.pair || "");
     if (pair && !matched && !this.c.pairKey) return json({ ok: false, error: "pair_not_configured" }, 503);   // v4.8: no PAIR_CODE secret = pairing refused (never falls back to the app password)
     if (pair) {
-      const locked = !!(a.pf && a.pf.until && now0 < a.pf.until);
-      if (locked && !matched) return json({ ok: false, error: "pair_locked", retry: Math.ceil((a.pf.until - now0) / 1000) }, 429);
-      if (!locked && this.c.pairKey && (await pwEq(this.c, pair, this.c.pairKey))) {
+      // v4.15.1: pairing lockout REMOVED by owner request - wrong codes are never locked out, unlimited attempts.
+      if (this.c.pairKey && (await pwEq(this.c, pair, this.c.pairKey))) {
         a.pf = { n: 0, until: 0 }; paired = true; ok = true; dirty = true;
         if (!matched || !a.eaIssued) { issued = rnd(32); a.eaSecretH = await sha("yt-ea|" + issued); delete a.eaSecret; a.eaIssued = true; a.pairedAt = now0; }
       } else if (!matched) {
-        const n = ((a.pf && a.pf.n) || 0) + 1;
-        a.pf = { n, until: n >= this.c.pairMax ? now0 + this.c.pairLockMs : 0 };
-        await this.ctx.storage.put("acc", a);
         return json({ ok: false, error: "pair_bad" }, 403);
       }
     }
@@ -445,6 +437,16 @@ export class Hub {
     const tsig = hex(await hmacRaw(enc.encode("t"), m.tok || "")).slice(0, 8);
     if (a.tsig !== tsig) { a.tsig = tsig; a.cfgv = (a.cfgv || 0) + 1; dirty = true; }
     if (dirty) await this.ctx.storage.put("acc", a);
+    // v4.15 SECOND-COPY DETECTION. The MT5 lock only covers copies inside ONE terminal; the Worker sees every EA that syncs this account
+    // (another PC, a VPS ...). The first live instance id owns the account; a different id while the owner is fresh (< 20 s) is told dupInst,
+    // gets no commands and its state is NOT stored, so two copies can never overwrite each other's view or execute the same command twice.
+    const inst = String(body.inst || "").replace(/[^A-Za-z0-9_-]/g, "").slice(0, 64);
+    if (inst) {
+      const cur = await this.ctx.storage.get("inst"), tn = Date.now();
+      if (!cur || cur.id === inst || tn - cur.t > 20000) {
+        if (!cur || cur.id !== inst || tn - cur.t > 5000) await this.ctx.storage.put("inst", { id: inst, t: tn });
+      } else return json({ ok: true, dupInst: true, commands: [], staleSec: this.c.staleSec });
+    }
     if (body.state && typeof body.state === "object") { this.st = body.state; this.ts = Date.now(); try { await this.watch(a); } catch (e) { /* alerts must never break the EA sync */ } try { await this.archive(body.state, a); await this.diagFrom(body.state); } catch (e) { /* the internal archive / diagnostics must never break the EA sync */ } }
     let evack = [];
     if (Array.isArray(body.ev) && body.ev.length) { try { evack = await this.events(body.ev, a, String(m.login || "")); } catch (e) { /* notifications must never break the EA sync */ } }

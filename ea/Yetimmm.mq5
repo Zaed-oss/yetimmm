@@ -4,7 +4,7 @@
 //|  MetaTrader 5 | Telegram control | State recovery | Trade log    |
 //+------------------------------------------------------------------+
 #property copyright "Yetimmm"
-#property version   "2.27"
+#property version   "2.29"
 #property description "Yetimmm | XAUUSD | Two-level Stop Buy / Stop Sell switch + risk sequence | Telegram integration"
 
 #include <Trade\Trade.mqh>
@@ -160,7 +160,10 @@ enum ENUM_YT_RISKPOL
    YT_RISK_CLAMP_MIN=1   // use the broker minimum volume and SAY SO: Requested Risk / Effective Risk are both shown and logged
   };
 
-#define YT_VER "2.27"
+#define YT_VER "2.29"
+#define YT_DUP_HALT_SEC 30     // v2.29: the Worker keeps reporting another live copy for this long -> this copy halts
+#define YT_VANISH_WAIT_SEC 90  // v2.29: a vanished position keeps the SAFE state (no orders, sequence untouched) and the history is re-read every 5 s for this long
+#define YT_INST_STALE_SEC 15   // v2.28: a copy that has not refreshed its heartbeat for this long is considered dead
 
 //--- which pending orders the bot must keep alive
 #define YM_NONE 0
@@ -202,7 +205,7 @@ input double InpMinLevelGap    = 0.0;     // Minimum gap between Buy/Sell levels
 input ENUM_YT_ENTRY InpEntryMode = ENTRY_PENDING; // v2.23 DEFAULT = PENDING (real Buy Stop + Sell Stop on the server = the strategy). VIRTUAL = stored zone + tick trigger + market execution (advanced, opt-in)
 input bool   InpZoneGate     = true;    // v2.18 ZONE GATE: when BOTH Buy Stop and Sell Stop are missing, place them TOGETHER only when the price is inside the zone (no lone order in a trending market)
 input ENUM_YT_BREACH InpBreachPolicy = BREACH_WAIT; // After an SL: WAIT (DEFAULT v2.23: pending pair re-armed, WAITING_REENTRY until both Stops are placeable - Market Reversal OFF) or MARKET (advanced: opens the opposite side at market; a different strategy with a different SL distance)
-input bool   InpPriceFallback  = false;   // Classify SL/TP by exit price ONLY when the deal reason is unknown (never for manual / stop-out / EA closes; off = strict: DEAL_REASON only)
+input bool   InpPriceFallback  = true;    // v2.28 DEFAULT = ON: classify SL/TP by exit price ONLY when the deal reason is unknown (never for manual / stop-out / EA closes). Prevents a broker SL with slippage from being labelled "Other" (which used to stop the sequence)
 input bool   InpCombinedMargin  = true;    // Place a missing Buy Stop / Sell Stop pair only when the margin of BOTH missing orders is available (off = each order is checked alone)
 input int    InpProtectCloseSec = 20;     // Position WITHOUT SL/TP: emergency-close after N seconds of failed protection. TRADING DECISION: 20 = "never stay unprotected" (a transient connection problem can close the trade at a loss larger than the planned risk); 0 = never force-close (alert + retry only; the position may stay unprotected)
 
@@ -387,6 +390,16 @@ ulong         g_brSigMs=0;
 int           g_gvTotal=-1;                // v2.19: cached list of registered position ids (rebuilt only when the globals change)
 ulong         g_pids[];
 bool          g_inited=false;      // OnInit completed: only then may OnDeinit overwrite the saved state
+bool          g_instOwn=false;     // v2.28: this copy owns the single-instance lock of its Magic
+bool          g_halt=false;        // v2.28: the lock was lost to another copy - this copy does nothing
+ulong         g_instBeatMs=0;
+ulong         g_vanishNextMs=0;      // v2.29: next history re-read while a position is missing
+string        g_instId="";            // v2.29: unique id of THIS running copy (sent to the Worker, which detects a second live copy on another PC / VPS)
+datetime      g_dupSince=0;           // v2.29: the Worker reports another live copy since this time (0 = none)
+ulong         g_pendClPid=0;
+ulong         g_pendClSince=0;        // v2.29: first time an unprocessed closed position was seen (placement waits briefly for it)
+bool          InstOkTrade(const string what);
+bool          InstOk(const string what);   // v2.29: re-verifies lock ownership right before a sensitive operation (defined with the instance guard)
 
 bool          g_stopCleanup=false;
 int           g_stopTries=0;
@@ -626,6 +639,7 @@ void CfgInit()
 
 void SaveState()
   {
+   if(!InstOk("save the state")) return;      // v2.29: a copy without the lock never writes the shared state
    GS("STATE",(double)g_state);
    GS("MODE",(double)g_mode);
    GS("BL",g_buyLevel);
@@ -681,6 +695,20 @@ void ResetRisk()
    g_accLoss=0.0;
    g_seq=0;
    g_curRisk=g_initRisk;
+  }
+
+//--- v2.29: every EXPLICIT reset of the loss sequence records the values BEFORE and AFTER (Experts log, Orders log, Telegram),
+//--- and remembers the trade number at which it happened (the sequence audit ignores older trades).
+void ResetRiskLogged(const string src)
+  {
+   double oa=g_accLoss, oc=g_curRisk;
+   int os=g_seq;
+   ResetRisk();
+   GS("RSTNO",(double)g_tradeNo);
+   string t="Risk sequence RESET ("+src+") | BEFORE: Seq "+IntegerToString(os)+", Acc.Loss "+D2(oa)+", Risk "+D2(oc)+" | AFTER: Seq "+IntegerToString(g_seq)+", Acc.Loss "+D2(g_accLoss)+", Risk "+D2(g_curRisk);
+   YLog(t);
+   LogOrder("RESET_SEQUENCE",-1,0.0,0.0,0,0,t);
+   if(oa>1e-9 || os>0) TgQueue("♻️ RISK SEQUENCE RESET ("+src+")\nBefore: Seq "+IntegerToString(os)+" | Acc.Loss $"+D2(oa)+" | Risk $"+D2(oc)+"\nAfter: Seq "+IntegerToString(g_seq)+" | Acc.Loss $"+D2(g_accLoss)+" | Risk $"+D2(g_curRisk));
   }
 
 double NextRiskFor(const double L)
@@ -1378,6 +1406,7 @@ bool DeleteOrder(const ulong ticket,const string reason)
       vol=OrderGetDouble(ORDER_VOLUME_CURRENT);
       type=OrderGetInteger(ORDER_TYPE);
      }
+   if(!InstOkTrade("delete order #"+UL(ticket))) return false;
    bool r=g_trade.OrderDelete(ticket);
    uint rc=g_trade.ResultRetcode();
    bool ok=(r && (rc==TRADE_RETCODE_DONE || rc==TRADE_RETCODE_PLACED));
@@ -1862,6 +1891,7 @@ bool ModifySide(const bool buy,const ulong ticket,const double level,const doubl
    g_trade.SetDeviationInPoints(g_maxDev);
    datetime mdExp=0;
    ENUM_ORDER_TYPE_TIME mdTT=PendingTimeType(mdExp);
+   if(!InstOkTrade("modify order #"+UL(ticket))) return false;
    bool r=g_trade.OrderModify(ticket,level,dSL,dTP,mdTT,mdExp);
    uint rc=g_trade.ResultRetcode();
    string desc=g_trade.ResultRetcodeDescription();
@@ -2280,7 +2310,7 @@ void ParseIds()
      }
   }
 
-//--- PUBLIC MODE (owner decision): any Telegram user who messages the bot may control it and receives its notifications
+//--- v2.28: only chat ids registered through the Worker may control the EA (the old "public mode" comment was outdated)
 bool TgAuthorized(const long from)
   {
    //--- v2.23: NO public mode. Only chat ids registered through the Worker (Telegram-verified identity) may control the EA.
@@ -2298,7 +2328,7 @@ void TgAddId(const long id)
    CfgSet("tgpub",g_tgPub);
    CfgSaveFile();
    ParseIds();
-   YLog("Telegram: chat registered automatically (id "+IntegerToString(id)+") - public mode.");
+   YLog("Telegram: chat registered automatically (id "+IntegerToString(id)+").");
   }
 
 string UrlEnc(const string s)
@@ -2774,7 +2804,7 @@ bool CloseRejected(const ulong pid)
    double px=PositionGetDouble(POSITION_PRICE_OPEN);
    double lt=PositionGetDouble(POSITION_VOLUME);
    ulong exitDev=(ulong)MathMax(500,g_maxDev*10);   // get out even in a fast market
-   bool ok=g_trade.PositionClose(t,exitDev);
+   bool ok=InstOk("close position")&&g_trade.PositionClose(t,exitDev);
    uint rc=g_trade.ResultRetcode();
    LogOrder(ok?"DEV_REJECT_CLOSE":"DEV_REJECT_CLOSE_FAILED",ot,px,lt,t,rc,"Max Slippage Check exceeded");
    YLog(ok?"Deviation reject: position closed #"+UL(t):"Deviation reject: close FAILED #"+UL(t)+" retcode "+IntegerToString((int)rc)+" (retrying)");
@@ -2818,7 +2848,7 @@ bool EmergencyClose(const ulong pid,const string why)
    PSet(pid,"CRC",6.0);
    GlobalVariablesFlush();
    ulong exitDev=(ulong)MathMax(500,g_maxDev*10);   // get out even in a fast market
-   bool ok=g_trade.PositionClose(t,exitDev);
+   bool ok=InstOk("close position")&&g_trade.PositionClose(t,exitDev);
    uint rc=g_trade.ResultRetcode();
    LogOrder(ok?"PROTECTION_CLOSE":"PROTECTION_CLOSE_FAILED",ot,px,lt,t,rc,why);
    YLog((ok?"Emergency close done #":"Emergency close FAILED #")+UL(t)+" retcode "+IntegerToString((int)rc)+" | "+why);
@@ -2881,7 +2911,7 @@ bool ProtectPosition(const ulong pid)
       EmergencyClose(pid,"TP level "+PX(eTP)+" already reached while the position had no TP");
       return false;
      }
-   bool r=g_trade.PositionModify(t,eSL,eTP);
+   bool r=InstOk("set SL/TP")&&g_trade.PositionModify(t,eSL,eTP);
    uint rc=g_trade.ResultRetcode();
    bool ok=(r && (rc==TRADE_RETCODE_DONE || rc==TRADE_RETCODE_PLACED));
    if(ok)
@@ -3050,7 +3080,9 @@ bool ProcessClosedPosition(const ulong pid)
    int n=HistoryDealsTotal();
    double inVol=0,outVol=0,gross=0,comm=0,swap=0,exitPrice=0,entryPrice=0;
    datetime tOpen=0,tClose=0;
-   ulong dealIn=0,dealOut=0,orderIn=0;
+   long tCloseMsc=0;
+   string outComment="";
+   ulong dealIn=0,dealOut=0,orderIn=0,orderOut=0;
    long ptype=-1,reason=-1;
    bool foreignIn=false;                                   // Netting: a foreign ENTRY deal merged into this position id
    for(int i=0;i<n;i++)
@@ -3082,6 +3114,9 @@ bool ProcessClosedPosition(const ulong pid)
          gross+=HistoryDealGetDouble(d,DEAL_PROFIT);
          dealOut=d; tClose=tm; exitPrice=pr;
          reason=HistoryDealGetInteger(d,DEAL_REASON);
+         tCloseMsc=(long)HistoryDealGetInteger(d,DEAL_TIME_MSC);
+         outComment=HistoryDealGetString(d,DEAL_COMMENT);
+         orderOut=(ulong)HistoryDealGetInteger(d,DEAL_ORDER);
         }
      }
    if(inVol<=0.0 || dealOut==0) return false;             // history not ready yet
@@ -3101,9 +3136,23 @@ bool ProcessClosedPosition(const ulong pid)
    long otype=(long)PGV(pid,"ET",-1);
    long cmd=(long)PGV(pid,"CRC",0);
 
+   //--- v2.29: the broker's own SL/TP flag is read from THREE places (deal reason, closing-order reason, deal comment "[sl ...]"/"[tp ...]"),
+   //--- so a stop that filled with slippage is still an SL. Unknown reasons are never guessed unless the price proves it (see below).
+   long oreason=-1;
+   if(orderOut!=0 && HistoryOrderSelect(orderOut)) oreason=HistoryOrderGetInteger(orderOut,ORDER_REASON);
+   string lcm=outComment;
+   StringToLower(lcm);
+   bool brokerSL=(reason==DEAL_REASON_SL || oreason==ORDER_REASON_SL);
+   bool brokerTP=(reason==DEAL_REASON_TP || oreason==ORDER_REASON_TP);
+   string cnote="";
+   if(!brokerSL && !brokerTP && cmd==0)
+     {
+      if(StringFind(lcm,"[sl")>=0) { brokerSL=true; cnote="classified SL from the deal comment"; }
+      else if(StringFind(lcm,"[tp")>=0) { brokerTP=true; cnote="classified TP from the deal comment"; }
+     }
    string rs;
-   if(reason==DEAL_REASON_SL) rs="SL";
-   else if(reason==DEAL_REASON_TP) rs="TP";
+   if(brokerSL && !(reason==DEAL_REASON_TP)) rs="SL";
+   else if(brokerTP) rs="TP";
    else if(cmd==1) rs="Manual Stop";
    else if(cmd==2) rs="Telegram Stop";
    else if(cmd==3) rs="Telegram Cancel";
@@ -3116,8 +3165,11 @@ bool ProcessClosedPosition(const ulong pid)
       //--- v2.11: the price fallback applies ONLY when the reason is unknown; a manual / mobile / web / stop-out / EA close is never re-labelled SL or TP
       bool reasonUnknown=(reason!=DEAL_REASON_CLIENT && reason!=DEAL_REASON_MOBILE && reason!=DEAL_REASON_WEB &&
                           reason!=DEAL_REASON_SO && reason!=DEAL_REASON_EXPERT);
-      if(InpPriceFallback && reasonUnknown && slp>0.0 && MathAbs(exitPrice-slp)<=tol) rs="SL";
-      else if(InpPriceFallback && reasonUnknown && tpp>0.0 && MathAbs(exitPrice-tpp)<=tol) rs="TP";
+      //--- v2.29: "at or BEYOND the stop" counts as SL (slippage on a gap), "at or beyond the target" as TP. Only when no explicit reason exists.
+      bool slHit=(slp>0.0) && (buy?(exitPrice<=slp+tol):(exitPrice>=slp-tol));
+      bool tpHit=(tpp>0.0) && (buy?(exitPrice>=tpp-tol):(exitPrice<=tpp+tol));
+      if(InpPriceFallback && reasonUnknown && slHit) { rs="SL"; cnote="reason unknown: exit price at/beyond SL ("+PX(exitPrice)+" vs "+PX(slp)+") -> SL by price"; }
+      else if(InpPriceFallback && reasonUnknown && tpHit) { rs="TP"; cnote="reason unknown: exit price at/beyond TP -> TP by price"; }
       else if(reason==DEAL_REASON_SO) rs="Stop Out";
       else if(reason==DEAL_REASON_CLIENT || reason==DEAL_REASON_MOBILE || reason==DEAL_REASON_WEB) rs="Manual (External)";
       else rs="Other";
@@ -3137,14 +3189,39 @@ bool ProcessClosedPosition(const ulong pid)
       YLog("Netting: position "+UL(pid)+" absorbed foreign volume (found in its history) - logged, but NOT counted in the risk sequence / statistics.");
 
    //--- apply the risk logic exactly once for this position
-   bool bookkeeping=(g_state==YT_STOPPED || g_stopCleanup);
-   bool isSL=(rs=="SL" && !tainted), isTP=(rs=="TP" && !tainted), isDev=(rs=="Deviation Reject" && !tainted);
    ulong rest[];
    int others=OwnPositions(rest);
+   bool bookkeeping=(g_state==YT_STOPPED || g_stopCleanup);
+   //--- v2.29: a position marked as the EXTRA one (CRC=5) is an extra even if the broker's SL/TP hit it before our market close:
+   //--- it is a real loss of the running sequence, never a new SL step / TP reset.
+   bool markedExtra=(cmd==5);
+   bool isSL=(rs=="SL" && !tainted && !markedExtra), isTP=(rs=="TP" && !tainted && !markedExtra), isDev=(rs=="Deviation Reject" && !tainted);
+   bool isExtra=((rs=="Extra Position Closed" || markedExtra) && !tainted);
+   //--- v2.29: OLD EVENT guard. A closing deal older than the last one already applied 
+   //--- may update the loss / sequence numbers, but it must NEVER rewrite the state, mode or levels that a newer event already set.
+   long ldtm=(long)GV("LDTM",0.0);
+   bool staleEv=(ldtm>0 && tCloseMsc>0 && tCloseMsc<ldtm);
+   bool keepState=staleEv;   // an overlapping position (others>0) is handled by Reconcile exactly as before; only a genuinely OLDER deal is kept away from the state
+   //--- v2.29: crash-safety replay: the previous run applied this deal and saved the state but died before the log line was written
+   bool replay=(dealOut!=0 && g_lastDeal==dealOut);
+   if(replay)
+     {
+      bookkeeping=true;
+      cnote="replayed after a restart: the risk effect of this deal was already applied and saved";
+      YLog("Closing deal "+UL(dealOut)+" was already applied before a restart - only its log line is written (loss NOT counted twice).");
+     }
    string nextInfo="";
    double nextLot=0,nextEst=0; string lerr="";
    if(!bookkeeping)
      {
+      //--- v2.28: the loss of an EXTRA position (closed at market by the one-position rule) is a REAL loss of the running sequence:
+      //--- it joins the accumulated loss so the next risk recovers it too. It is NOT an SL step (Seq unchanged).
+      if(isExtra && net<0.0)
+        {
+         g_accLoss+=-net;
+         g_curRisk=NextRiskFor(g_accLoss);
+         YLog("Extra position loss "+D2(net)+" added to the accumulated loss -> Acc.Loss "+D2(g_accLoss)+" | next risk "+D2(g_curRisk));
+        }
       if(tainted)
         {
          if(others==0) { g_mode=YM_NONE; g_state=YT_IDLE; g_lastSLSide=0; }
@@ -3155,20 +3232,34 @@ bool ProcessClosedPosition(const ulong pid)
          if(net<0.0) g_accLoss+=-net;
          g_seq++;
          g_curRisk=NextRiskFor(g_accLoss);
-         //--- v2.00: a VERIFIED Stop Loss closed the position -> BOTH stop orders are prepared again (Upper = Buy Stop, Lower = Sell Stop)
-         g_mode=YM_BOTH;
-         g_state=YT_WAITING_REENTRY;
-         g_lastSLSide=buy?1:2;
-         g_nextPlaceMs=0;
-         g_failCount=0;
-         //--- the ORIGINAL levels of the position that just stopped out are restored (its SL was the opposite level)
-         if(lbuy>0.0 && lsell>0.0 && (!PriceEq(g_buyLevel,lbuy) || !PriceEq(g_sellLevel,lsell)))
+         if(keepState)
            {
-            YLog("Original levels restored for re-arm: Buy "+PX(g_buyLevel)+" -> "+PX(lbuy)+" | Sell "+PX(g_sellLevel)+" -> "+PX(lsell));
-            g_buyLevel=lbuy; g_sellLevel=lsell;
+            //--- v2.29: an OLD / overlapping SL: the loss and the Seq step count, but the CURRENT state, mode and levels are left exactly as they are
+            YLog("Old/overlapping SL event (Trade #"+TNo(tno)+"): loss and Seq applied, current state "+StateText()+" and levels NOT touched.");
            }
-         double lvl=buy?g_sellLevel:g_buyLevel;   // the opposite direction is the next one (same SL distance on both sides)
-         if(!CalcLot(g_curRisk,!buy,lvl,nextLot,nextEst,lerr)) nextLot=0;
+         else
+           {
+            //--- v2.00: a VERIFIED Stop Loss closed the position -> BOTH stop orders are prepared again (Upper = Buy Stop, Lower = Sell Stop)
+            g_mode=YM_BOTH;
+            g_state=YT_WAITING_REENTRY;
+            g_lastSLSide=buy?1:2;
+            g_nextPlaceMs=0;
+            g_failCount=0;
+            //--- the ORIGINAL levels of the position that just stopped out are restored (its SL was the opposite level)
+            if(lbuy>0.0 && lsell>0.0 && (!PriceEq(g_buyLevel,lbuy) || !PriceEq(g_sellLevel,lsell)))
+              {
+               YLog("Original levels restored for re-arm: Buy "+PX(g_buyLevel)+" -> "+PX(lbuy)+" | Sell "+PX(g_sellLevel)+" -> "+PX(lsell));
+               g_buyLevel=lbuy; g_sellLevel=lsell;
+              }
+            double lvl=buy?g_sellLevel:g_buyLevel;   // the opposite direction is the next one (same SL distance on both sides)
+            if(!CalcLot(g_curRisk,!buy,lvl,nextLot,nextEst,lerr)) nextLot=0;
+           }
+        }
+      else if(isTP && keepState)
+        {
+         //--- v2.29: an OLD TP that arrives after a newer event: resetting now would erase the newer loss. Nothing is reset; the user is told.
+         YLog("Old/overlapping TP event (Trade #"+TNo(tno)+", net "+D2(net)+"): sequence NOT reset (Seq "+IntegerToString(g_seq)+", Acc.Loss "+D2(g_accLoss)+"). Verify and use Reset / New Cycle only if the losses are really repaid.");
+         RaiseAlert("STALETP"+IntegerToString((int)tno),"An older TP (Trade #"+TNo(tno)+", net "+D2(net)+") was processed after a newer event. The risk sequence was NOT reset (Seq "+IntegerToString(g_seq)+", Acc.Loss "+D2(g_accLoss)+"). Check the Trades log.",true,true);
         }
       else if(isTP)
         {
@@ -3186,6 +3277,10 @@ bool ProcessClosedPosition(const ulong pid)
          g_mode=YM_NONE;
          if(g_fresh) { PromotePending(); g_state=YT_ARMED; g_mode=YM_BOTH; g_fresh=false; }
          else g_state=YT_TP_RESET;
+        }
+      else if(isDev && keepState)
+        {
+         YLog("Old/overlapping Deviation-Reject close (Trade #"+TNo(tno)+"): state and levels NOT touched.");
         }
       else if(isDev)
         {
@@ -3206,8 +3301,10 @@ bool ProcessClosedPosition(const ulong pid)
             g_state=YT_ARMED;
            }
         }
-      else if(others==0)
+      else if(others==0 && !staleEv && g_state!=YT_ARMED && g_state!=YT_WAITING_REENTRY && !isExtra)
         {
+         //--- v2.28: never overwrite a state that ALREADY moved on (e.g. the kept position hit its SL and the pair was re-armed
+         //--- before this older closing deal was processed): going IDLE there would drop the pending pair and stop the sequence.
          if(g_fresh) PromotePending();
          g_mode=YM_NONE;
          g_state=YT_IDLE;
@@ -3217,6 +3314,14 @@ bool ProcessClosedPosition(const ulong pid)
    double nextRisk=g_curRisk;
    if(!bookkeeping && !isSL && !isTP) nextRisk=g_curRisk;
 
+   //--- v2.29: the new risk numbers and the id of this closing deal are SAVED TOGETHER before the log line is written, so a crash in between
+   //--- can neither lose this loss nor count it twice (see "replay" above).
+   if(!bookkeeping || replay)
+     {
+      g_lastDeal=dealOut;
+      if(tCloseMsc>ldtm) GS("LDTM",(double)tCloseMsc);
+      SaveState();
+     }
    //--- persistent trade log (once per position)
    string line=IntegerToString(tno)+";"+UL(orderIn)+";"+UL(dealIn)+";"+UL(dealOut)+";"+UL(pid)+";"+(buy?"BUY":"SELL")+";"+OTypeStr(otype)+";"+
                PX(entryPrice)+";"+PX(exitPrice)+";"+PX(slp)+";"+PX(tpp)+";"+LotS(inVol)+";"+D2(reqRisk)+";"+D2(theoLoss)+";"+D2(theoProfit)+";"+
@@ -3224,7 +3329,7 @@ bool ProcessClosedPosition(const ulong pid)
                TimeToString(tOpen,TIME_DATE|TIME_SECONDS)+";"+TimeToString(tClose,TIME_DATE|TIME_SECONDS)+";"+rs+";"+
                D2(balBefore)+";"+D2(AccountInfoDouble(ACCOUNT_BALANCE))+";"+D2(accBefore)+";"+D2(accAfter)+";"+D2(reqRisk)+";"+D2(nextRisk)+";"+
                PX(lbuy)+";"+PX(lsell)+";"+IntegerToString(g_magic)+";"+g_sym+";"+(tainted?"CLOSED_NET_TAINTED":"CLOSED")+";"+
-               Clean(tainted?"Netting: external volume merged - risk sequence NOT updated":(bookkeeping?"bookkeeping only":""));
+               Clean(tainted?"Netting: external volume merged - risk sequence NOT updated":(bookkeeping?(replay?cnote:"bookkeeping only"):cnote));
    AppendLine(TradeFile(),TRADE_HEADER,line);
    MarkLogged(pid,dealOut);
    if(!tainted) StatsAdd(net,comm,swap,buy?"BUY":"SELL",inVol,reqRisk,rs);
@@ -3261,11 +3366,13 @@ bool ProcessClosedPosition(const ulong pid)
       YLog("Position closed ("+rs+") Trade #"+TNo(tno)+" net "+D2(net)+(tainted?" | NETTING-TAINTED: not counted in the risk sequence / statistics":""));
       TgQueue("⚪ POSITION CLOSED ("+rs+")\nTrade #: "+TNo(tno)+"\nType: "+(buy?"BUY":"SELL")+"\nEntry: "+PX(entryPrice)+"\nExit: "+PX(exitPrice)+"\nNet P/L: "+Money(net)+
               (tainted?"\n⚠️ Netting: external volume was merged into this position. Its result is NOT counted in the risk sequence or statistics.":"")+
-              (bookkeeping?"":"\nRisk sequence unchanged. Waiting for levels (/set BUY SELL)."));
-      if(!bookkeeping && others==0)
+              (bookkeeping?"":(isExtra?"\nExtra position (one-position rule). Loss added to the accumulated loss: $"+D2(g_accLoss)+" | Next Risk: $"+D2(g_curRisk)
+                                      +(g_state==YT_IDLE?"\nWaiting for levels (/set BUY SELL) or START.":""):
+                                 (g_state==YT_IDLE?"\nRisk sequence unchanged. Waiting for levels (/set BUY SELL).":"\nRisk sequence unchanged."))));
+      if(!bookkeeping && others==0 && g_state==YT_IDLE)
         {
          if(tainted) RaiseAlert("NETTAINT","Netting-contaminated position closed ("+rs+"). Its result was NOT added to the risk sequence. Check the account, then enter new levels to continue.",true,true);
-         else        RaiseAlert("EXTCLOSE","Position closed outside SL/TP ("+rs+"). Enter new levels to continue.",true,false);
+         else        RaiseAlert("EXTCLOSE","Position closed outside SL/TP ("+rs+"). Sequence kept (Seq "+IntegerToString(g_seq)+", Acc.Loss "+D2(g_accLoss)+"). Press START to re-arm the saved levels, or enter new levels.",true,true);
         }
      }
    return true;
@@ -3300,6 +3407,16 @@ void CheckClosures()
      }
    ulong ids[];
    ArrayCopy(ids,g_pids);
+   //--- v2.29: closed positions are applied in the order they were OPENED (trade number). The order of the saved variables is arbitrary,
+   //--- and TP-then-SL is not the same sequence as SL-then-TP. Insertion sort (the list is tiny).
+   for(int a=1;a<ArraySize(ids);a++)
+     {
+      ulong key=ids[a];
+      double kn=PGV(key,"N",0.0);
+      int b=a-1;
+      while(b>=0 && PGV(ids[b],"N",0.0)>kn) { ids[b+1]=ids[b]; b--; }
+      ids[b+1]=key;
+     }
    for(int i=0;i<ArraySize(ids);i++)
      {
       ulong tk;
@@ -3407,10 +3524,59 @@ bool AllNeededPlaced()
    return ((!nb || hb) && (!ns || hs));
   }
 
+//--- v2.28: is there ALREADY a pending order of this side on the server (own symbol + magic)?
+bool SideOrderExists(const bool buy)
+  {
+   ulong t[];
+   int n=OwnOrders(t);
+   long want=buy?(long)ORDER_TYPE_BUY_STOP:(long)ORDER_TYPE_SELL_STOP;
+   for(int i=0;i<n;i++)
+     {
+      if(!OrderSelect(t[i])) continue;
+      if(OrderGetInteger(ORDER_TYPE)==want) return true;
+     }
+   return false;
+  }
+
+//--- v2.29: a position that was registered by this bot but is no longer open and whose closing deal is NOT booked yet is a recent state change
+//--- that was not processed: no new order is sent until it is (bounded to 20 s, so a deal that never appears can never block trading forever).
+bool ClosurePendingBlocks()
+  {
+   bool pend=false;
+   ulong pp=0;
+   for(int i=0;i<ArraySize(g_pids);i++)
+     {
+      ulong tk=0;
+      if(FindLive(g_pids[i],tk)) continue;
+      if(IsLoggedPos(g_pids[i])) continue;
+      pend=true;
+      pp=g_pids[i];
+      break;
+     }
+   if(!pend) { g_pendClSince=0; g_pendClPid=0; return false; }
+   ulong now=GetTickCount64();
+   if(g_pendClSince==0 || pp!=g_pendClPid) { g_pendClSince=now; g_pendClPid=pp; }   // a NEW pending closure restarts the 20 s bound
+   return (now-g_pendClSince)<20000;
+  }
+
 bool TryPlace(const bool buy,const double level)
   {
    int s=SideIdx(buy);
+   if(!InstOkTrade("place a pending order")) return false;     // v2.29: lock ownership re-verified before every send
    ulong nowMs=GetTickCount64();
+   //--- v2.28 HARD GUARD: a second order of the same side, or ANY new pending order while a position is open, is never sent.
+   //--- (two Buy Stops at one level = two positions at the same moment = one of them is closed as "extra" at market)
+   {
+    ulong gp[];
+    if(OwnPositions(gp)>0) return false;
+    if(SideOrderExists(buy)) return false;
+    if(ClosurePendingBlocks())
+      {
+       SetSync(buy,YS_WAITING,"A closed position is still being booked - no new order until it is processed");
+       g_nextPlaceMs=GetTickCount64()+500;
+       return false;
+      }
+   }
    if(nowMs<g_nextPlaceMs)
      {
       if(g_sync[s]==YS_CREATING) SetSync(buy,YS_WAITING,"Retry cooldown");
@@ -3596,13 +3762,13 @@ void EnforceSinglePosition(const ulong &pos[],const int np)
   {
    ulong nowMs=GetTickCount64();
    if(nowMs<g_nextExtraMs) return;
-   g_nextExtraMs=nowMs+2000;
+   g_nextExtraMs=nowMs+250;          // v2.28: was 2000 ms - the extra position is closed as soon as it is seen (smaller loss)
    ulong keep=0; long kt=0;
    for(int i=0;i<np;i++)
      {
       if(!PositionSelectByTicket(pos[i])) continue;
       long tm=PositionGetInteger(POSITION_TIME_MSC);
-      if(keep==0 || tm<kt) { keep=pos[i]; kt=tm; }
+      if(keep==0 || tm<kt || (tm==kt && pos[i]<keep)) { keep=pos[i]; kt=tm; }   // oldest kept; equal time -> lowest ticket (deterministic)
      }
    for(int i=0;i<np;i++)
      {
@@ -3614,7 +3780,7 @@ void EnforceSinglePosition(const ulong &pos[],const int np)
       PSet(pid,"CRC",5.0);
       GlobalVariablesFlush();
       ulong exitDev=(ulong)MathMax(500,g_maxDev*10);
-      bool ok=g_trade.PositionClose(pos[i],exitDev);
+      bool ok=InstOk("close extra position")&&g_trade.PositionClose(pos[i],exitDev);
       uint rc=g_trade.ResultRetcode();
       LogOrder(ok?"EXTRA_POS_CLOSE":"EXTRA_POS_CLOSE_FAILED",ot,px,lt,pos[i],rc,"only one position is allowed");
       YLog(ok?"Extra position closed #"+UL(pos[i])+" (only one position is allowed)":"Extra position close FAILED #"+UL(pos[i])+" retcode "+IntegerToString((int)rc)+" (retrying)");
@@ -3676,6 +3842,11 @@ void RevEnterError(const string why)
 bool TryMarketReverse(const int force=0)   // force: 0 = reversal after an SL, 1 = virtual-entry BUY, 2 = virtual-entry SELL
   {
    if(force==0 && g_lastSLSide!=1 && g_lastSLSide!=2) return false;
+   if(!InstOkTrade("open a market reversal")) return false;                  // v2.29: lock re-verified before every send
+   {
+    ulong rp[];
+    if(OwnPositions(rp)>0) return false;                                // v2.29: never open a second trade while one is open
+   }
    bool revBuy=(force!=0)?(force==1):(g_lastSLSide==2);                 // a Sell was stopped -> Buy next; a Buy was stopped -> Sell next
    double lvl=revBuy?g_buyLevel:g_sellLevel;      // the level that would have been the stop-order entry
    double slLvl=revBuy?g_sellLevel:g_buyLevel;    // SL of the new trade = the opposite level
@@ -3913,12 +4084,39 @@ void Reconcile()
    if(g_state==YT_BUY_ACTIVE || g_state==YT_SELL_ACTIVE)
      {
       //--- the closing deal has not been processed yet; never create orders before it is
-      if(g_activeNoPosSince==0) g_activeNoPosSince=TimeCurrent();
-      else if(TimeCurrent()-g_activeNoPosSince>20)
+      if(g_activeNoPosSince==0) { g_activeNoPosSince=TimeCurrent(); g_vanishNextMs=0; }
+      else
         {
-         g_state=YT_IDLE; g_mode=YM_NONE; g_activeNoPosSince=0;
-         SaveState();
-         RaiseAlert("INCONS","Position vanished without a processed closing deal. Bot is waiting for levels.",true,true);
+         long waited=(long)(TimeCurrent()-g_activeNoPosSince);
+         //--- v2.29: SAFE STATE - while the closing deal is not in the history yet, nothing is placed and nothing is decided.
+         //--- The history is re-read every 5 s (it may simply lag behind the position list).
+         if(waited>=3 && GetTickCount64()>=g_vanishNextMs)
+           {
+            g_vanishNextMs=GetTickCount64()+5000;
+            CheckClosures();
+            RecoverHistory();
+            if(g_state!=YT_BUY_ACTIVE && g_state!=YT_SELL_ACTIVE) { g_activeNoPosSince=0; g_dirty=true; ClearAlert("VANISHWAIT"); return; }
+           }
+         if(waited<=YT_VANISH_WAIT_SEC)
+           {
+            if(waited>=20) RaiseAlert("VANISHWAIT","Position of Trade #"+TNo(g_tradeNo)+" is no longer open but its closing deal is not in the history yet. Safe state: NO new orders, sequence kept (Seq "+IntegerToString(g_seq)+", Acc.Loss "+D2(g_accLoss)+"). Retrying the history every 5 s.",false,true);
+            return;
+           }
+         ClearAlert("VANISHWAIT");
+         g_activeNoPosSince=0;
+         //--- an unfinished risk sequence is never dropped silently: with valid saved levels the same pending pair is re-armed (sequence kept)
+         if(g_accLoss>1e-9 && g_buyLevel>0.0 && g_sellLevel>0.0 && g_buyLevel>g_sellLevel)
+           {
+            g_mode=YM_BOTH; g_state=YT_WAITING_REENTRY; g_nextPlaceMs=0;
+            SaveState();
+            RaiseAlert("INCONS","Position vanished without a processed closing deal. The risk sequence (Seq "+IntegerToString(g_seq)+", Acc.Loss "+D2(g_accLoss)+") is kept and the same Buy/Sell pending pair is re-armed. Check the Trades log.",true,true);
+           }
+         else
+           {
+            g_state=YT_IDLE; g_mode=YM_NONE;
+            SaveState();
+            RaiseAlert("INCONS","Position vanished without a processed closing deal. Bot is waiting for levels.",true,true);
+           }
         }
       return;
      }
@@ -4197,7 +4395,7 @@ bool ApplyLevels(const double buy,const double sell,const double risk,const stri
    switch(g_state)
      {
       case YT_STOPPED:
-         if(InpResetRiskOnStart) ResetRisk();
+         if(InpResetRiskOnStart) ResetRiskLogged("levels applied after STOP");
          g_state=YT_ARMED; g_mode=YM_BOTH; g_stopCleanup=false;
          break;
       case YT_ERROR:
@@ -4261,7 +4459,7 @@ string DoStart(const string src)
    if(g_fresh) PromotePending();
    string err=ValidateLevels(g_buyLevel,g_sellLevel);
    if(err!="") return "❌ START FAILED\nReason:\nInvalid Buy/Sell levels. "+err;
-   if(g_state==YT_STOPPED && InpResetRiskOnStart) ResetRisk();
+   if(g_state==YT_STOPPED && InpResetRiskOnStart) ResetRiskLogged("START after STOP");
    //--- v2.11: after a market-reversal ERROR the REVERSAL is resumed (WAITING_REENTRY keeps the direction); every other start re-arms normally
    bool resumeRev=(g_state==YT_ERROR && GV("REVERR",0.0)>0.5 && (g_lastSLSide==1 || g_lastSLSide==2));
    GS("REVERR",0.0);
@@ -4298,7 +4496,7 @@ bool CleanupPositions(const int code)
       if(!PositionSelectByTicket(tk[i])) continue;
       ulong pid=(ulong)PositionGetInteger(POSITION_IDENTIFIER);
       PSet(pid,"CRC",(double)code);
-      if(!g_trade.PositionClose(tk[i]))
+      if(!InstOkTrade("close position") || !g_trade.PositionClose(tk[i]))
          YLog("Close position failed #"+UL(tk[i])+" retcode "+IntegerToString((int)g_trade.ResultRetcode()));
      }
    return OwnPositions(tk)==0;
@@ -5792,6 +5990,7 @@ string BrStateJson()
    s+=",\"mode\":\""+(g_mode==YM_BOTH?"BOTH":(g_mode==YM_BUY?"BUY":(g_mode==YM_SELL?"SELL":"NONE")))+"\"";
    s+=",\"buy\":"+DoubleToString(g_buyLevel,g_digits)+",\"sell\":"+DoubleToString(g_sellLevel,g_digits);
    s+=",\"risk\":"+D2(g_initRisk)+",\"cur\":"+D2(g_curRisk)+",\"acc\":"+D2(g_accLoss);
+   s+=",\"rstStart\":"+(InpResetRiskOnStart?"true":"false");   // v2.29: the app warns that START after STOP clears the loss when this is on
    s+=",\"seq\":"+IntegerToString(g_seq)+",\"no\":"+IntegerToString(g_tradeNo);
    s+=",\"target\":"+D2(g_target)+",\"rr\":"+DoubleToString(g_rr,2);
    s+=",\"maxDev\":"+IntegerToString(g_maxDev)+",\"warn\":"+IntegerToString(g_warn);
@@ -5919,7 +6118,7 @@ string BrExec(const string cmd,const string seg)
    if(cmd=="reset")
      {
       if(OwnPositions(tk)>0) return "❌ Cannot reset the risk sequence while a position is open.";
-      ResetRisk();
+      ResetRiskLogged("Mini App RESET");
       g_nextPlaceMs=0;
       ResetSyncBackoff();
       SaveState();
@@ -5987,7 +6186,7 @@ void BridgeSync()
       calPart+=",\"calv\":\""+g_calHash+"\"";
       if(g_calHash!=g_calSent || g_calNeed) { calPart+=",\"cal\":"+g_calJson; calSending=true; }
      }
-   string body="{\"login\":\""+IntegerToString((long)AccountInfoInteger(ACCOUNT_LOGIN))+"\",\"srv\":\""+JEsc(AccountInfoString(ACCOUNT_SERVER))+"\",\"fresh\":"+(g_brFresh?"true":"false")+",\"reset\":"+(InpBrResetPw?"true":"false")+",\"cv\":"+IntegerToString(g_brCv)+calPart+",\"state\":"+BrStateJson()+",\"ack\":[";
+   string body="{\"login\":\""+IntegerToString((long)AccountInfoInteger(ACCOUNT_LOGIN))+"\",\"srv\":\""+JEsc(AccountInfoString(ACCOUNT_SERVER))+"\",\"fresh\":"+(g_brFresh?"true":"false")+",\"reset\":"+(InpBrResetPw?"true":"false")+",\"cv\":"+IntegerToString(g_brCv)+calPart+",\"inst\":\""+g_instId+"\",\"state\":"+BrStateJson()+",\"ack\":[";
    for(int i=0;i<ArraySize(g_brAck);i++) body+=(i>0?",":"")+"\""+g_brAck[i]+"\"";
    body+="],\"ev\":"+EvJson()+"}";
    string url=g_brUrl;
@@ -6060,6 +6259,26 @@ void BridgeSync()
       CfgSaveFile();
       g_brPairNeed=false;
      }
+   //--- v2.29: the Worker sees EVERY copy that syncs this account (another PC / VPS included). dupInst = another live copy owns the account.
+   //--- This copy stops trading at once, executes no command (the Worker sends none) and halts for good if it lasts YT_DUP_HALT_SEC.
+   if(StringFind(resp,"\"dupInst\":true")>=0)
+     {
+      if(g_dupSince==0)
+        {
+         g_dupSince=TimeLocal();
+         YLog("SECOND COPY SUSPECTED: the Worker reports another live Yetimmm copy for account "+IntegerToString((long)AccountInfoInteger(ACCOUNT_LOGIN))+" (another PC / VPS / terminal). Trading is paused here.");
+         RaiseAlert("DUPINST","Another Yetimmm copy is running on this account (another PC / VPS?). THIS copy paused trading and will halt in "+IntegerToString(YT_DUP_HALT_SEC)+" s unless the other copy stops. Keep ONE copy only.",true,true);
+        }
+      else if(TimeLocal()-g_dupSince>=YT_DUP_HALT_SEC)
+        {
+         g_halt=true;
+         string hm="Yetimmm: another live copy owns this account (reported by the Worker for "+IntegerToString(YT_DUP_HALT_SEC)+"+ s). THIS copy is halted and sends nothing. Remove it from the chart / VPS.";
+         YLog("SECOND COPY CONFIRMED: "+hm);
+         Alert(hm);
+        }
+      return;
+     }
+   if(g_dupSince>0) { YLog("The other copy is gone: trading resumes on this copy."); g_dupSince=0; ClearAlert("DUPINST"); g_dirty=true; }
    g_brFresh=false;
    ArrayResize(g_brAck,0);              // the acks in this request were delivered
    EvAckFrom(resp);                     // v2.23: events the Worker accepted (or already had) leave the outbox
@@ -6133,7 +6352,7 @@ void BridgeSync()
          continue;
         }
       string sigNow=cmd+"|"+BrCmdDetail(cmd,seg);
-      if((cmd=="apply" || cmd=="modify" || cmd=="place" || cmd=="delete" || cmd=="settings") && sigNow==g_brSig && GetTickCount64()-g_brSigMs<3000)
+      if((cmd=="apply" || cmd=="modify" || cmd=="place" || cmd=="delete" || cmd=="settings" || cmd=="start" || cmd=="stop" || cmd=="close" || cmd=="reset" || cmd=="cancel" || cmd=="delpend") && sigNow==g_brSig && GetTickCount64()-g_brSigMs<3000)
         {
          YLog("Mini App Command ignored (duplicate within 3 s): "+cmd);
          BrAckAdd(id);
@@ -6197,11 +6416,160 @@ void PurgeLegacyLevels()
    CleanupOrders("v2.27 legacy levels cleanup");
   }
 
+//+------------------------------------------------------------------+
+//| v2.28 SINGLE-INSTANCE GUARD                                      |
+//| Two copies with the same Magic share the saved state (global     |
+//| variables) but keep their own memory: one processes the closing  |
+//| deal, the other never sees the transition, falls back to IDLE    |
+//| and deletes the first copy's pending orders. Only ONE copy per   |
+//| Magic may run: the others refuse to start (or halt).             |
+//+------------------------------------------------------------------+
+string InstLockName() { return GN("INST"); }
+string InstBeatName() { return GN("INSTHB"); }
+double InstToken()    { return (double)(ChartID()%900000000000000)+1.0; }   // unique per chart, exactly representable as a double
+
+bool InstAlive()
+  {
+   if(!GlobalVariableCheck(InstLockName()) || !GlobalVariableCheck(InstBeatName())) return false;
+   double hb=GlobalVariableGet(InstBeatName());
+   if(hb<=0.0) return false;
+   return ((double)TimeLocal()-hb)<=(double)YT_INST_STALE_SEC;
+  }
+
+bool InstAcquire()
+  {
+   if(MQLInfoInteger(MQL_TESTER)) return true;
+   double mine=InstToken();
+   if(InstAlive() && GlobalVariableGet(InstLockName())!=mine) return false;
+   GlobalVariableSet(InstLockName(),mine);
+   GlobalVariableSet(InstBeatName(),(double)TimeLocal());
+   Sleep(300);                                   // two copies started in the same moment: the last writer wins and both read the same value
+   if(GlobalVariableGet(InstLockName())!=mine) return false;
+   g_instOwn=true;
+   return true;
+  }
+
+void InstBeat()
+  {
+   if(!g_instOwn || g_halt) return;
+   ulong nowMs=GetTickCount64();
+   if(nowMs-g_instBeatMs<1000) return;
+   g_instBeatMs=nowMs;
+   if(!GlobalVariableCheck(InstLockName())) GlobalVariableSet(InstLockName(),InstToken());   // vanished (not taken over): re-created
+   if(GlobalVariableGet(InstLockName())!=InstToken())
+     {
+      g_halt=true;
+      g_instOwn=false;
+      string m="Yetimmm: another copy with Magic "+IntegerToString((int)g_magic)+" took over. THIS copy is halted and no longer trades. Remove it from the chart.";
+      YLog("INSTANCE LOCK LOST: "+m);
+      Alert(m);
+      return;
+     }
+   GlobalVariableSet(InstBeatName(),(double)TimeLocal());
+  }
+
+
+//--- v2.29: lock ownership is re-verified RIGHT BEFORE every trading operation and every state write (not only once per second).
+//--- A copy that lost the lock (or whose heartbeat entry was taken over) halts itself and can neither trade nor overwrite the shared state.
+bool InstOk(const string what)
+  {
+   if(MQLInfoInteger(MQL_TESTER)) return true;
+   if(g_halt) return false;
+   if(!g_inited && !g_instOwn) return true;                 // OnInit still running (the lock is acquired before anything else is sent)
+   if(!g_instOwn) return false;
+   if(GlobalVariableCheck(InstLockName()) && GlobalVariableGet(InstLockName())==InstToken()) return true;
+   if(!GlobalVariableCheck(InstLockName()))
+     {
+      //--- the lock variable merely VANISHED (e.g. deleted by hand in Tools > Global Variables): nobody took it over, so it is re-created
+      GlobalVariableSet(InstLockName(),InstToken());
+      YLog("Instance lock variable was missing - re-created by its owner.");
+      return true;
+     }
+   g_halt=true;
+   g_instOwn=false;
+   string m="Yetimmm: lock of Magic "+IntegerToString((int)g_magic)+" lost while trying to "+what+". THIS copy is halted and sent NOTHING. Remove it from the chart.";
+   YLog("INSTANCE LOCK LOST: "+m);
+   Alert(m);
+   return false;
+  }
+
+bool InstOkTrade(const string what)
+  {
+   if(!InstOk(what)) return false;
+   if(g_dupSince>0 && !MQLInfoInteger(MQL_TESTER))
+     {
+      static datetime lastLog=0;
+      if(TimeLocal()-lastLog>=10) { lastLog=TimeLocal(); YLog("Trading paused: the Worker reports another live copy for this account - NOT trying to "+what+" ("+IntegerToString((int)(TimeLocal()-g_dupSince))+" s so far; halts after "+IntegerToString(YT_DUP_HALT_SEC)+" s)."); }
+      return false;
+     }
+   return true;
+  }
+
+void InstRelease()
+  {
+   if(!g_instOwn) return;
+   if(GlobalVariableCheck(InstLockName()) && GlobalVariableGet(InstLockName())==InstToken())
+     {
+      GlobalVariableDel(InstLockName());
+      GlobalVariableDel(InstBeatName());
+     }
+   g_instOwn=false;
+  }
+
+//+------------------------------------------------------------------+
+//| v2.29 SEQUENCE AUDIT (alert only - NEVER changes or resets)      |
+//| Compares the saved Seq / Acc.Loss with the Trades log of the     |
+//| CURRENT cycle (since the last explicit reset or fully repaid TP).|
+//| A mismatch is reported, never "fixed" automatically: the user    |
+//| decides (restore, or RESET with confirmation).                   |
+//+------------------------------------------------------------------+
+string SeqAuditText()
+  {
+   string lines[];
+   int n=ReadTradeLines(lines);
+   long rstNo=(long)GV("RSTNO",0.0);
+   int slRows=0;
+   double lastAcc=0.0;
+   long lastNo=0;
+   bool haveLast=false;
+   for(int i=n-1;i>=0;i--)
+     {
+      string f[];
+      if(StringSplit(lines[i],';',f)<30) continue;
+      if(ArraySize(f)>34 && StringFind(f[34],"TAINTED")>=0) continue;
+      long tno=(long)StringToInteger(f[0]);
+      if(tno<=rstNo) break;                                  // older than the last explicit reset
+      double accAfter=StringToDouble(f[27]);
+      if(!haveLast) { haveLast=true; lastAcc=accAfter; lastNo=tno; }
+      if(accAfter<=0.005) break;                             // this row ended the cycle (everything repaid): it and older rows are not part of the current one
+      if(f[23]=="SL") slRows++;
+     }
+   if(!haveLast)
+      return (g_seq>0 || g_accLoss>0.005)?"Seq "+IntegerToString(g_seq)+" / Acc.Loss "+D2(g_accLoss)+" are saved but the Trades log has no closed trade of the current cycle. ":"";
+   string why="";
+   if(MathAbs(lastAcc-g_accLoss)>0.02)
+      why+="Acc.Loss saved "+D2(g_accLoss)+" vs "+D2(lastAcc)+" after Trade #"+TNo(lastNo)+" in the log. ";
+   if(slRows!=g_seq)
+      why+="Seq saved "+IntegerToString(g_seq)+" vs "+IntegerToString(slRows)+" SL trade(s) counted in the log. ";
+   return why;
+  }
+
+void SeqAuditRun()
+  {
+   if(MQLInfoInteger(MQL_TESTER)) return;
+   string w=SeqAuditText();
+   if(StringLen(w)==0) { ClearAlert("SEQAUDIT"); return; }
+   YLog("SEQUENCE AUDIT: "+w+"(nothing was changed)");
+   RaiseAlert("SEQAUDIT","⚠️ Inconsistent risk sequence: "+w+"Nothing was reset or changed. Trading continues with the SAVED values - check Yetimmm_"+IntegerToString((int)g_magic)+"_Trades.csv, then fix by RESET (with confirmation) only if the losses are not real.",false,true);
+  }
+
 int OnInit()
   {
    Print("[Yetimmm] v"+YT_VER+" loaded - Broker/Risk engine | entry "+(InpEntryMode==ENTRY_PENDING?"PENDING":"VIRTUAL")+" | risk policy "+(InpRiskPolicy==YT_RISK_CLAMP_MIN?"CLAMP_TO_MIN":"STRICT"));
    g_sym=_Symbol;
    g_magic=InpMagic;
+   g_instId=StringFormat("%I64d-%I64d-%d",(long)TimeLocal(),(long)ChartID(),(int)(GetTickCount64()%100000));
+   g_dupSince=0;
    string up=g_sym;
    StringToUpper(up);
    if(StringFind(up,"XAUUSD")<0)
@@ -6215,6 +6583,13 @@ int OnInit()
       return INIT_PARAMETERS_INCORRECT;
      }
    if(!MagicGuardOk()) return INIT_FAILED;
+   if(!InstAcquire())
+     {
+      string im="Yetimmm: another copy with Magic "+IntegerToString((int)g_magic)+" is already running on "+g_sym+" (another chart or window). Two copies overwrite each other's state and delete each other's orders, so THIS copy was NOT started. Remove the other copy, or give this one a different Magic, then re-attach. (After an MT5 restart wait "+IntegerToString(YT_INST_STALE_SEC)+" s and re-attach.)";
+      YLog("INIT REFUSED: "+im);
+      Alert(im);
+      return INIT_FAILED;
+     }
    SymbolSelect(g_sym,true);
    g_digits=(int)SymbolInfoInteger(g_sym,SYMBOL_DIGITS);
    g_point=SymbolInfoDouble(g_sym,SYMBOL_POINT);
@@ -6258,7 +6633,7 @@ int OnInit()
    if(g_tgEn)
      {
       if(MQLInfoInteger(MQL_TESTER)) YLog("Telegram disabled in the Strategy Tester.");
-      else if(StringLen(g_tgTok)==0) YLog("Telegram: waiting for the bot token from the Worker (automatic). Public mode: anyone who messages the bot gets control and notifications.");
+      else if(StringLen(g_tgTok)==0) YLog("Telegram: waiting for the bot token from the Worker (automatic). Control and notifications go ONLY to the chat IDs registered through the Worker.");
      }
    YLog("After-SL policy: "+(InpBreachPolicy==BREACH_MARKET?"MARKET (advanced / opt-in - reverses at market when the level was already crossed)":"WAIT (literal philosophy - pending Stop at the SL level)")+
         " | Protection emergency-close: "+(InpProtectCloseSec>0?IntegerToString(InpProtectCloseSec)+" s":"OFF (alert + retry only)"));
@@ -6292,6 +6667,11 @@ int OnInit()
    UpdatePanel();
    TgQueue("✅ Yetimmm Started\nStatus: "+RunStatus()+"\nState: "+StateText()+"\nBuy Stop: "+PX(g_buyLevel)+"\nSell Stop: "+PX(g_sellLevel)+"\nRisk: $"+D2(g_curRisk)+
            (g_stateRecovered?"\n♻️ State Recovered | Last Trade #"+TNo(g_tradeNo):""),0,MenuMarkup());
+   if(g_stateRecovered && g_accLoss>1e-9 && g_state==YT_IDLE)
+      RaiseAlert("SEQIDLE","⚠️ The bot is IDLE in the middle of a risk sequence (Seq "+IntegerToString(g_seq)+", Acc.Loss "+D2(g_accLoss)+", next risk "+D2(g_curRisk)+"). Press START to re-arm the saved levels and continue the sequence, or use Reset / New Cycle to begin again.",false,true);
+   if(g_stateRecovered && g_seq>0 && g_tradeNo<(long)g_seq)
+      RaiseAlert("SEQINCONS","⚠️ Saved sequence is inconsistent: Seq "+IntegerToString(g_seq)+" but only "+IntegerToString((int)g_tradeNo)+" trade(s) numbered. Check Yetimmm_"+IntegerToString((int)g_magic)+"_Trades.csv; if the losses are not real, use Reset / New Cycle.",false,true);
+   SeqAuditRun();
    g_inited=true;
    return INIT_SUCCEEDED;
   }
@@ -6299,17 +6679,20 @@ int OnInit()
 void OnDeinit(const int reason)
   {
    EventKillTimer();
-   if(g_inited)
+   bool wasOwner=g_instOwn;
+   if(g_inited && !g_halt)       // a halted copy must NEVER write its stale memory over the shared state
      {
       SaveState();
       TgFlush();
      }
+   InstRelease();
    ObjectsDeleteAll(0,UI);
-   YLog("EA stopped (reason "+IntegerToString(reason)+"). State saved.");
+   YLog("EA stopped (reason "+IntegerToString(reason)+")."+((wasOwner||(g_inited && !g_halt))?" State saved.":" (this copy never owned the instance lock - nothing saved)."));
   }
 
 void OnTick()
   {
+   if(g_halt) return;
    ulong now=GetTickCount64();
    //--- v2.17: SMART WAIT - one comparison per tick against the cached trigger price; the synchroniser is woken the very tick the market allows the order
    bool crossed=false;
@@ -6341,12 +6724,14 @@ void OnTick()
 
 void OnTrade()
   {
+   if(g_halt) return;
    g_dirty=true;
    UpdatePanel();          // show the real server state immediately (incremental, cheap)
   }
 
 void OnTradeTransaction(const MqlTradeTransaction &trans,const MqlTradeRequest &request,const MqlTradeResult &result)
   {
+   if(g_halt) return;
    if(trans.type!=TRADE_TRANSACTION_DEAL_ADD) return;
    if(trans.symbol!=g_sym) return;
    if(HistoryDealSelect(trans.deal))
@@ -6364,6 +6749,8 @@ void OnTradeTransaction(const MqlTradeTransaction &trans,const MqlTradeRequest &
 int g_timerCount=0;
 void OnTimer()
   {
+   InstBeat();
+   if(g_halt) return;
    //--- FAST PATH (every timer event): receive -> execute -> reply to Telegram commands
    TgPoll();
    //--- SLOW PATH (once per second): monitors, sync, bridge, queue flush, panel
@@ -6375,6 +6762,7 @@ void OnTimer()
    SyncAll();
    StopCleanupTick();
    if(g_timerCount%30==0 && g_connected) RecoverHistory();
+   if(g_timerCount%600==0) SeqAuditRun();          // v2.29: every 10 min, alert only
    MonitorSpread();
    BrWaitTrack();                    // v2.17: waiting Mini App commands -> activated / superseded / cancelled
    BridgeSync();

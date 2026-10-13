@@ -345,7 +345,7 @@ noLink:["لا يمكن إرسال الأوامر — البوت غير متصل"
 r_STOP:["إيقاف يدوي","Manual stop"],r_CANCEL:["إلغاء","Cancel"],r_EXT:["إغلاق خارجي","External close"],r_SO:["Stop Out","Stop Out"],r_DEV:["رفض الانزلاق","Slippage reject"],r_EXTRA:["إغلاق صفقة زائدة","Extra position closed"],r_PROT:["إغلاق حماية","Protection close"],r_OTH:["أخرى","Other"],
 back:["رجوع","Back"],q_open:["توجد صفقة مفتوحة","A trade is open"],q_openB:["سيتم إغلاق الصفقة ({0} $) ثم إيقاف البوت.","The trade ({0} $) will be closed, then the bot stops."],q_openY:["إغلاق وإيقاف","Close & stop"],
 q_close:["إغلاق الصفقة","Close trade"],q_closeB:["الربح/الخسارة الحالية: {0} $. لن يعيد البوت إنشاء الأوامر تلقائياً بعد الإغلاق اليدوي.","Current P/L: {0} $. The bot won't recreate orders automatically after a manual close."],
-q_reset:["إعادة ضبط تسلسل المخاطرة","Reset risk sequence"],q_resetB:["تُصفَّر الخسائر المتراكمة وتعود المخاطرة إلى ${0}","Accumulated losses are cleared and risk returns to ${0}"],q_resetY:["إعادة ضبط","Reset"],
+q_reset:["إعادة ضبط تسلسل المخاطرة","Reset risk sequence"],q_resetB:["تُصفَّر الخسائر المتراكمة وتعود المخاطرة إلى ${0}","Accumulated losses are cleared and risk returns to ${0}"],q_resetY:["إعادة ضبط","Reset"],q2T:["تأكيد نهائي","Final confirmation"],q_stop:["إيقاف التداول","Stop trading"],q_stopB:["يوقف البوت ويحذف الأوامر المعلّقة. لا يُصفّر الخسائر المتراكمة ({0} $).","Stops the bot and deletes pending orders. It does not clear the accumulated loss ({0} $)."],q_stopY:["إيقاف","Stop"],q2_stop:["هل أنت متأكد من إيقاف البوت الآن؟{0}","Are you sure you want to stop the bot now?{0}"],q2_stopR:[" تنبيه: بدء التشغيل بعد الإيقاف يصفّر الخسائر المتراكمة حسب إعداد الـ EA."," Note: starting again after a stop clears the accumulated loss (EA setting)."],q2_open:["تأكيد أخير: تُغلق الصفقة بسعر السوق الآن ثم يتوقف البوت.{0}","Last check: the trade is closed at market now, then the bot stops.{0}"],q2_close:["تأكيد أخير: تُغلق الصفقة بسعر السوق الآن. لا يتوقف البوت ولا تُحذف الأوامر ولا تُصفَّر الخسائر.","Last check: the trade is closed at market now. The bot is not stopped, no orders are deleted and losses are not cleared."],q_resetB2:["يُصفَّر التسلسل (Seq {1}) والخسارة التراكمية {2} $ وتعود المخاطرة إلى ${0}.","The sequence (Seq {1}) and the accumulated loss {2} $ are cleared and risk returns to ${0}."],q2_reset:["تأكيد أخير: لا يمكن التراجع. هذا ليس إيقافاً ولا إغلاقاً للصفقة.","Last check: this cannot be undone. It is not a stop and it does not close a trade."],
 ordsT:["الأوامر المعلقة الفعلية","Live pending orders"],oB:["Buy Stop","Buy Stop"],oS:["Sell Stop","Sell Stop"],delB:["حذف الأمر","Delete order"],
 q_del:["حذف الأمر المعلق","Delete pending order"],
 q_delB:["سيتم حذف {0} عند {1} (تذكرة #{2}) من MT5 فوراً، ويكمل البوت بالأمر الآخر فقط.","{0} at {1} (ticket #{2}) will be deleted from MT5 now; the bot continues with the other order only."],
@@ -672,6 +672,11 @@ function run(c,p={}){
 
 /* ═════════════ 9) UI LAYER ═════════════ */
 function ask(ti,b,y,fn){$("sheet").innerHTML=`<b>${ti}</b><p>${b}</p><div class="btns"><button class="btn" id="no">${t("back")}</button><button class="btn dg" id="yes">${y}</button></div>`;$("no").onclick=shut;$("yes").onclick=()=>{shut();fn()};$("ov").classList.add("show")}
+/* v4.15: two-step confirmation for the dangerous commands (STOP / CLOSE / RESET), like Telegram. The second sheet names the exact consequence and its
+   confirm button stays disabled for ~1.2 s so a double tap can never confirm both steps. */
+function ask2(ti,b,y,b2,y2,fn){ask(ti,b,y,()=>{setTimeout(()=>{
+  $("sheet").innerHTML=`<b>${t("q2T")}</b><p>${b2}</p><div class="btns"><button class="btn" id="no">${t("back")}</button><button class="btn dg" id="yes" disabled>${y2}</button></div>`;
+  $("no").onclick=shut;const yb=$("yes");yb.onclick=()=>{shut();fn()};$("ov").classList.add("show");setTimeout(()=>{yb.disabled=false},1200)},150)})}
 const shut=()=>$("ov").classList.remove("show");$("ov").onclick=e=>{if(e.target.id==="ov"&&!Login.outing)shut()};
 (function(){const bb=()=>TG&&TG.wa&&TG.wa.BackButton,ov=$("ov");
   const sync=()=>{const on=ov.classList.contains("show"),b=bb();if(!b)return;try{if(on){b.onClick(shut);b.show()}else{b.offClick(shut);b.hide()}}catch(e){}};
@@ -681,8 +686,8 @@ const stIc={STOPPED:"pause",IDLE:"clock",TP_RESET:"target",ARMED:"bolt",BUY_ACTI
 const stDot={STOPPED:"gd",IDLE:"gd",TP_RESET:"gd",ARMED:"up",BUY_ACTIVE:"up",SELL_ACTIVE:"dn",WAITING_REENTRY:"gd",ERROR:"dn"};
 
 function start(){const e=vLevels(S.buy,S.sell)||(live()?"":placeErr(S.buy,S.sell))||(live()?"":lotFor(S.risk,S.buy,S.sell).e);if(e)return toast(t("t_startF",e));window.YT&&YT.pend();run("start")}
-function stop(){S.pos?ask(t("q_open"),t("q_openB",sg(floating())),t("q_openY"),()=>run("stop")):run("stop")}
-function closePos(){ask(t("q_close"),t("q_closeB",sg(floating())),t("q_close"),()=>run("close"))}
+function stop(){const rs=S.rstStart?t("q2_stopR"):"";S.pos?ask2(t("q_open"),t("q_openB",sg(floating())),t("q_openY"),t("q2_open",rs),t("q_openY"),()=>run("stop")):ask2(t("q_stop"),t("q_stopB",f(S.acc||0)),t("q_stopY"),t("q2_stop",rs),t("q_stopY"),()=>run("stop"))}
+function closePos(){ask2(t("q_close"),t("q_closeB",sg(floating())),t("q_close"),t("q2_close"),t("q_close"),()=>run("close"))}
 function delOrder(tk){
   const L=S.orders||[],o=L.find(x=>x.ticket==tk);if(!o)return;
   const b=isB(o.side);
@@ -921,7 +926,7 @@ function newCycleUI(){
   if(S.pos||S.state==="BUY_ACTIVE"||S.state==="SELL_ACTIVE")return toast("❌ "+t("cyc_blk"));
   const n=(S.orders||[]).length;
   ask(t("cyc_q"),t("cyc_b",n?t("cyc_o",n):""),t("cyc_y"),()=>run("newcycle"))}
-function resetUI(){ask(t("q_reset"),t("q_resetB",f(S.risk)),t("q_resetY"),()=>run("reset"))}
+function resetUI(){ask2(t("q_reset"),t("q_resetB2",f(S.risk),S.seq||0,f(S.acc||0)),t("q_resetY"),t("q2_reset"),t("q_resetY"),()=>run("reset"))}
 
 /* shell: tabs, theme, language */
 $("nav").onclick=e=>{const b=e.target.closest("button"),i=b&&b.dataset.k;if(i===undefined)return;vib();tab=+i;document.querySelectorAll(".tab").forEach((x,j)=>x.classList.toggle("on",j===tab));[...$("nav").children].forEach((c,j)=>c.classList.toggle("on",j===tab));if(tab===1)renderHist();if(tab===2&&window.YTN)YTN.open();window.scrollTo(0,0)};

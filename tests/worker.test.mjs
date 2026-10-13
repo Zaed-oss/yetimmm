@@ -181,15 +181,14 @@ test("PAIRING: a stranger who syncs first cannot take the account (no code -> 40
   assert.equal(real.s, 200); assert.ok(real.j.es && real.j.es.length === 64); assert.equal(real.j.paired, true);
 });
 
-test("PAIRING: wrong codes lock the account's pairing after PAIR_MAX_FAILS, a bound EA keeps syncing", async () => {
+test("PAIRING: no lockout - unlimited wrong codes never lock, the right code still pairs", async () => {
   const b = boot({ PAIR_MAX_FAILS: "3" });
-  await b.sync("123456");                                           // bound with the minted secret
+  await b.sync("123456");
   let r;
-  for (let i = 0; i < 3; i++) r = await b.call("/api/ea/sync", { body: { login: "123456", state: {} }, headers: { "X-EA-Secret": "a".repeat(32), "X-EA-Pair": "bad" + i } });
-  assert.equal(r.s, 403);
-  const locked = await b.call("/api/ea/sync", { body: { login: "123456", state: {} }, headers: { "X-EA-Secret": "a".repeat(32), "X-EA-Pair": PAIR } });
-  assert.equal(locked.s, 429); assert.equal(locked.j.error, "pair_locked");   // even the right code waits while locked
-  assert.equal((await b.sync("123456")).s, 200);                    // the legitimate EA (valid secret) is never affected by the lock
+  for (let i = 0; i < 25; i++) r = await b.call("/api/ea/sync", { body: { login: "123456", state: {} }, headers: { "X-EA-Secret": "a".repeat(32), "X-EA-Pair": "bad" + i } });
+  assert.equal(r.s, 403); assert.equal(r.j.error, "pair_bad");
+  const ok = await b.call("/api/ea/sync", { body: { login: "123456", state: {} }, headers: { "X-EA-Secret": "a".repeat(32), "X-EA-Pair": PAIR } });
+  assert.equal(ok.s, 200); assert.equal(ok.j.paired, true);          // the right code still pairs (and mints a fresh secret) after 25 wrong tries
 });
 
 test("PAIRING: the minted secret is stored only as a hash; the old secret dies when the account is re-paired (reinstall recovery)", async () => {
@@ -551,4 +550,14 @@ test("v4.14 owner: a Telegram user who is NOT the owner is refused without the p
   assert.notEqual(r.s, 200);
   const r2 = await t.call("/login", { body: { init: tgInit("123:ABC", "999") } });
   assert.notEqual(r2.s, 200);
+});
+
+test("v4.15 second EA copy: another live instance gets dupInst, no commands and does not overwrite the state", async () => {
+  const { sync } = boot();
+  const a = await sync("123456", { inst: "A-1", state: { price: 2400.5 } });
+  assert.equal(a.j.ok, true); assert.ok(!a.j.dupInst);
+  const b = await sync("123456", { inst: "B-2", state: { price: 1 } });
+  assert.equal(b.j.dupInst, true); assert.deepEqual(b.j.commands, []);
+  const a2 = await sync("123456", { inst: "A-1" });
+  assert.ok(!a2.j.dupInst);
 });

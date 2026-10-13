@@ -1,4 +1,4 @@
-# Yetimmm v4.14.0
+# Yetimmm v4.15.1
 
 ## v4.12 — ربط الإكسبرت بالـ Worker (خطأ 4014 و HTTP 503)
 - **4014:** يلزم مرة واحدة تفعيل *Allow WebRequest for listed URL* وإضافة رابط الـ Worker و`https://api.telegram.org` (MT5 لا يسمح للإكسبرت بإضافتها بنفسه). الأسهل: أغلق MT5 ثم شغّل `tools/allow-urls.bat` (يقرأ الرابط من `InpBrUrl` ويعدّل `common.ini` لكل النسخ مع نسخة احتياطية). أو يدوياً: Tools ▸ Options ▸ Expert Advisors.
@@ -23,7 +23,7 @@ yetimmm/
 │   ├── wrangler.toml
 │   └── .dev.vars.example
 ├── ea/Yetimmm.mq5
-├── tests/                اختبارات: 45 اختباراً للـ Worker + 13 لمحرك المخاطرة + 15 لخطة التعويض (مرجع حسابي لما يطبّقه الـ EA)
+├── tests/                اختبارات: 46 اختباراً للـ Worker + 13 لمحرك المخاطرة + 15 لخطة التعويض (مرجع حسابي لما يطبّقه الـ EA)
 ├── scripts/check.mjs     فحص سريع للحزمة كلها
 ├── CHANGELOG.md
 └── package.json
@@ -69,7 +69,6 @@ npm run deploy
 | `SESSION_DAYS` | 30 | عمر الجلسة المنزلق |
 | `REQUIRE_TG` | 1 | `0` = السماح بالدخول من متصفح عادي (للتجربة فقط) |
 | `PAIR_CODE` *(secret)* | **إلزامي** (لا بديل) · `ALLOW_PAIR_FALLBACK=1` يعيد الرجوع لـ `APP_PASSWORD` (غير موصى به) | رمز ربط الـ EA بالحساب (`InpBrPairCode` في الـ EA) |
-| `PAIR_MAX_FAILS` / `PAIR_LOCK_SEC` | 10 / 300 | قفل الربط بعد محاولات رمز خاطئة (لا يؤثر على EA مربوط) |
 | `EA_STALE_SEC` | 20 | ثوانٍ بلا مزامنة قبل اعتبار الـ EA غير متصل. **مصدر واحد**: التطبيق يقرأها من السيرفر (`eaStaleSec`) |
 | `NEWS_SCOPE` | `server` | `server` = تقويم وإشعارات منفصلة لكل سيرفر وسيط · `global` = مشاركة واحدة (سلوك v4.5) |
 | `SESSION_TOUCH_SEC` | 600 | أي طلب موثّق يمدّد الجلسة (الكتابة للتخزين مرة كل هذه الثواني فقط) |
