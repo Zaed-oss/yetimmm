@@ -6976,8 +6976,8 @@ void OnTick()
            }
         }
      }
-   if(!crossed && now-g_lastSyncMs>=(InpTurbo?20:50) && VirtualWake()) crossed=true;   // v2.22: virtual entry reacts on the tick the price crosses
-   if(crossed || g_dirty || now-g_lastSyncMs>=(InpTurbo?150:300))
+   if(!crossed && now-g_lastSyncMs>=(ulong)(InpTurbo?20:50) && VirtualWake()) crossed=true;   // v2.22: virtual entry reacts on the tick the price crosses
+   if(crossed || g_dirty || now-g_lastSyncMs>=(ulong)(InpTurbo?150:300))
      {
       g_dirty=false;
       SyncAll();
