@@ -613,6 +613,14 @@ bool CfgB(const string key,const bool inp)
    return eff;
   }
 
+double CfgD(const string key,const double inp)
+  {
+   bool changed=(!CfgHas("in_"+key) || MathAbs(StringToDouble(CfgGet("in_"+key))-inp)>1e-12);
+   double eff=(changed || !CfgHas(key))?inp:StringToDouble(CfgGet(key));
+   CfgSet("in_"+key,DoubleToString(inp,8));
+   CfgSet(key,DoubleToString(eff,8));
+   return eff;
+  }
 string CfgS(const string key,const string inp)
   {
    bool changed=(!CfgHas("in_"+key) || CfgGet("in_"+key)!=inp);
@@ -7017,8 +7025,8 @@ void OnTick()
            }
         }
      }
-   if(!crossed && now-g_lastSyncMs>=(InpTurbo?20:50) && VirtualWake()) crossed=true;   // v2.22: virtual entry reacts on the tick the price crosses
-   if(crossed || g_dirty || now-g_lastSyncMs>=(InpTurbo?150:300))
+   if(!crossed && now-g_lastSyncMs>=(ulong)(InpTurbo?20:50) && VirtualWake()) crossed=true;   // v2.22: virtual entry reacts on the tick the price crosses
+   if(crossed || g_dirty || now-g_lastSyncMs>=(ulong)(InpTurbo?150:300))
      {
       g_dirty=false;
       SyncAll();
