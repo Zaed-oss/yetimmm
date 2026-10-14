@@ -7,7 +7,7 @@
 //   6  deploys the Worker, detects its URL, patches index.html
 // The only things no tool can do for you: the Cloudflare browser login, the bot token (BotFather owns it) and
 // BotFather's /setdescriptionpicture. Flags: --yes (never ask)  --no-push  --no-mt5
-import { readFileSync, writeFileSync, existsSync, mkdirSync, copyFileSync, readdirSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync, mkdirSync, copyFileSync, readdirSync, chmodSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { join, dirname, basename } from "node:path";
@@ -33,7 +33,7 @@ function ask(q, def = "", secret = false) {
 // local, git-ignored state: generated secrets + bot token (so re-runs are silent)
 const stateFile = P(".env");
 const env = Object.fromEntries(rd(".env").split(/\r?\n/).map((l) => /^\s*([A-Z_]+)\s*=\s*(.*)$/.exec(l)).filter(Boolean).map((m) => [m[1], m[2].trim().replace(/^"|"$/g, "")]));
-const save = () => writeFileSync(stateFile, Object.entries(env).map(([k, v]) => `${k}="${v}"`).join("\n") + "\n");
+const save = () => { writeFileSync(stateFile, Object.entries(env).map(([k, v]) => `${k}="${v}"`).join("\n") + "\n", { mode: 0o600 }); try { chmodSync(stateFile, 0o600); } catch {} };   // v4.18: .env holds the bot token + passwords: owner-only on Unix (Windows ignores the mode)
 const rnd = (n) => randomBytes(n).toString("base64url").replace(/[-_]/g, "x").slice(0, n);
 const digits = (n) => Array.from(randomBytes(n), (b) => b % 10).join("");
 
@@ -110,11 +110,18 @@ if (dep.status) { warn("wrangler deploy failed"); process.exit(1); }
 let worker = (/https:\/\/[a-z0-9-]+(?:\.[a-z0-9-]+)*\.workers\.dev/i.exec(out) || [])[0] || env.WORKER_URL || "";
 if (!worker) worker = (await ask("Worker URL not detected. Paste it:")).replace(/\/+$/, "");
 env.WORKER_URL = worker; save();
+// v4.18: baseUrl lives in app.js; the CSP connect-src in index.html must name the SAME Worker origin (kept in sync here, verified by npm run check)
+let appjs = rd("app.js");
+const nj = appjs.replace(/(baseUrl:\s*")https:\/\/[^"]+(")/, `$1${worker}$2`);
+if (nj !== appjs) writeFileSync(P("app.js"), nj);
 let html = rd("index.html");
-const nh = html.replace(/(baseUrl:\s*")https:\/\/[^"]+(")/, `$1${worker}$2`);
+const nh = html.replace(/(connect-src )https:\/\/[^ ;"]+/, `$1${worker}`);
 if (nh !== html) writeFileSync(P("index.html"), nh);
-let chk = {}; try { chk = await (await fetch(worker + "/")).json(); } catch {}
-ok(`Worker ${worker} · pairConfigured=${chk.pairConfigured} · cors=${chk.corsConfigured}`);
+const { probeWorker } = await import("./probe.mjs");
+const pr = await probeWorker(worker);
+if (!pr.up) warn("Worker did not answer GET / yet (" + (pr.note || "no answer") + ") - it may need a few seconds");
+else if (pr.pair === "missing") { warn("the Worker has NO PAIR_CODE (503 pair_not_configured). Re-run `npm run setup` or: npx wrangler secret put PAIR_CODE"); process.exit(1); }
+else ok(`Worker ${worker} v${pr.v} is up · pairing ${pr.pair}`);
 
 // 7-9 ─ MT5 (Windows)
 const cfgText = `url=${worker}\npair=${env.PAIR_CODE}\n`;

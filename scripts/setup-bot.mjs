@@ -1,7 +1,7 @@
 // Telegram bot presentation setup - ZERO manual values. Run:  npm run setup:bot
 // Everything is detected, you only confirm with Enter:
 //   BOT_TOKEN    env BOT_TOKEN -> .env file -> hidden prompt (never written to disk)
-//   WORKER_URL   env WORKER_URL -> api.baseUrl inside index.html (the single source of truth the Mini App already uses)
+//   WORKER_URL   env WORKER_URL -> api.baseUrl inside app.js (the single source of truth the Mini App already uses)
 //   MINI_APP_URL env MINI_APP_URL -> GitHub Pages URL built from `git remote origin` -> wrangler.toml ALLOWED_ORIGIN + folder name
 // The URLs are verified live (HTTP 200 + banner reachable) before anything is changed. Flags: --yes (no questions), --dry
 // The description PICTURE is the only thing the Bot API cannot set: @BotFather -> /setdescriptionpicture -> assets/banner-640.png
@@ -28,7 +28,7 @@ function ask(q, def = "", secret = false) {
 
 // ── detect ─────────────────────────────────────────────────────────────────────────────
 const dotenv = Object.fromEntries(read(".env").split(/\r?\n/).map((l) => /^\s*([A-Z_]+)\s*=\s*"?([^"#]*)"?/.exec(l)).filter(Boolean).map((m) => [m[1], m[2].trim()]));
-const detWorker = process.env.WORKER_URL || dotenv.WORKER_URL || (/baseUrl:\s*"(https:\/\/[^"]+)"/.exec(read("index.html")) || [])[1] || "";
+const detWorker = process.env.WORKER_URL || dotenv.WORKER_URL || (/baseUrl:\s*"(https:\/\/[^"]+)"/.exec(read("app.js")) || [])[1] || "";
 function detPages() {
   const g = spawnSync("git", ["config", "--get", "remote.origin.url"], { cwd: root, encoding: "utf8" });
   const m = /github\.com[:/]+([^/]+)\/([^/.]+?)(?:\.git)?\s*$/.exec(g.stdout || "");

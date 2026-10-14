@@ -1,11 +1,11 @@
-// Yetimmm bridge v4.15.1 — ONE bot, ONE link, login by MT5 account number + ONE app password.
+// Yetimmm bridge v4.19.0 — ONE bot, ONE link, login by MT5 account number + ONE app password.
 //   EA  -> POST /api/ea/sync  (headers X-EA-Secret [+ X-EA-Pair while pairing])  body {login, srv, fresh, reset, cv, state, ack}
 //   App -> POST /login        body {login, pw, init}                -> {ok, sess}
 //   App -> POST /verify       headers X-Login + X-Session, body {init} -> {ok, hard, checks:{session,account,telegram,bot}}
 //   App -> GET  /state        headers X-Login + X-Session
 //   App -> POST /command      headers X-Login + X-Session
 //   App -> POST /logout       headers X-Login + X-Session
-// Secrets (wrangler secret put): BOT_TOKEN, APP_PASSWORD, PAIR_CODE (EA <-> account pairing; falls back to APP_PASSWORD)
+// Secrets (wrangler secret put): BOT_TOKEN, APP_PASSWORD, PAIR_CODE (EA <-> account pairing; no default value anywhere, no fallback unless ALLOW_PAIR_FALLBACK=1)
 // Each MT5 account gets its own isolated hub (Durable Object "acc-<login>").
 // The EA's MT5 trading password is NEVER requested or stored.
 
@@ -17,14 +17,16 @@
 //    • SESSION_EPOCH bumped -> everybody is signed out instantly (panic button)
 // ═════════════════════════════════════════════════════════════════════════
 import { Notify } from "./news.js";
-export const VERSION = "4.15.1", EA_PROTOCOL = "2.29";   // v4.8: the ONE place the release number lives (package.json / README / CHANGELOG / EA must match: npm run check enforces it)
+export const VERSION = "4.19.0", EA_PROTOCOL = "2.31";   // v4.8: the ONE place the release number lives (package.json / README / CHANGELOG / EA must match: npm run check enforces it)
 export { Notify };
 
 const CONFIG = {
   PASSWORD: "",              // leave EMPTY and set it as a secret:  wrangler secret put APP_PASSWORD   (login is refused until a password exists)
-  LOCK_SECONDS: 120,         // lock duration after too many wrong passwords = 2 minutes
-  MAX_ATTEMPTS: 8,           // wrong passwords allowed before the lock
-  FAIL_WINDOW_SEC: 600,      // wrong attempts older than this are forgotten
+  // v4.18: the wrong-password lock (LOCK_SECONDS / MAX_ATTEMPTS / FAIL_WINDOW_SEC) was REMOVED by owner decision: unlimited attempts, no ban of any kind.
+  TG_AUTH_MAX_AGE_SEC: 86400, // Telegram initData older than this is refused (auth_date). Telegram recommends at most a day.
+  OWNER_TG_MAX_AGE_SEC: 3600, // PASSWORD-LESS owner sign-in (OWNER_TG) needs initData no older than this (a captured initData must not open the app for a whole day). Older = reopen the Mini App.
+  MAX_SESSIONS: 1000,        // safety ceiling of VALID sessions per MT5 account. It only REFUSES a new sign-in (error too_many_sessions); it never signs anybody out. 0 = unlimited.
+  TG_FUTURE_SKEW_SEC: 60,    // an auth_date this far in the FUTURE is tolerated (clock drift); more is refused
   SESSION_DAYS: 30,          // sliding session lifetime (refreshed on every successful verify)
   EA_STALE_SEC: 20,          // EA counts as offline after this many seconds without a sync
   SESSION_EPOCH: 1,          // bump (1 -> 2) to sign EVERYONE out at once
@@ -38,12 +40,14 @@ const num = (v, d) => { const n = Number(v); return Number.isFinite(n) && n > 0 
 function cfg(env) {
   return {
     password: String(env.APP_PASSWORD || CONFIG.PASSWORD),
-    lockMs: num(env.LOCK_SECONDS, CONFIG.LOCK_SECONDS) * 1000,
-    max: Math.max(1, Math.floor(num(env.MAX_ATTEMPTS, CONFIG.MAX_ATTEMPTS))),
-    winMs: num(env.FAIL_WINDOW_SEC, CONFIG.FAIL_WINDOW_SEC) * 1000,
+    tgMaxAge: num(env.TG_AUTH_MAX_AGE_SEC, CONFIG.TG_AUTH_MAX_AGE_SEC),
+    tgSkew: num(env.TG_FUTURE_SKEW_SEC, CONFIG.TG_FUTURE_SKEW_SEC),
+    ownerMaxAge: num(env.OWNER_TG_MAX_AGE_SEC, CONFIG.OWNER_TG_MAX_AGE_SEC),
+    maxSess: Math.max(0, Math.floor(num(env.MAX_SESSIONS, CONFIG.MAX_SESSIONS))),
     sessMs: num(env.SESSION_DAYS, CONFIG.SESSION_DAYS) * 86400000,
     staleSec: num(env.EA_STALE_SEC, CONFIG.EA_STALE_SEC),
     epoch: String(env.SESSION_EPOCH || CONFIG.SESSION_EPOCH),
+    chatProblems: String(env.CHAT_PROBLEMS || "0") === "1",   // v4.19: 1 = also push technical problems to the chat (default: the chat shows ORDERS and ALERTS only)
     requireTg: String(env.REQUIRE_TG !== undefined ? env.REQUIRE_TG : CONFIG.REQUIRE_TG ? "1" : "0") !== "0",
     salt: String(env.BOT_TOKEN || ""),
     owners: String(env.OWNER_TG || "").split(",").map((x) => x.trim()).filter((x) => /^\d{3,15}$/.test(x)),   // v4.14: Telegram ids that sign in WITHOUT a password (identity proven by Telegram initData)
@@ -56,6 +60,16 @@ function cfg(env) {
 }
 
 // "GMT+3", "GMT-5", "GMT+5:30" from an offset in seconds (the MT5 server time offset reported by the EA)
+// v4.19: the chat carries ORDERS (placed / modified / activated / SL / TP / closed / reversal / start-stop) and the user's ALERTS - never technical problems.
+// Problems are kept in the diagnostics ring (/admin/diag). Two items concern an OPEN position and stay visible: critical protection failure and emergency close.
+const CHAT_KEEP_ALWAYS = /CRITICAL PROTECTION FAILURE|EMERGENCY CLOSE/i;
+const CHAT_ORDER = /PLACED|ACTIVATED|STOP LOSS|TAKE PROFIT|POSITION CLOSED|MODIFIED|ORDER DELETED|MARKET REVERSAL|EXECUTION REJECTED|PROTECTION RESTORED|YETIMMM STARTED|STOP EXECUTED/i;
+function chatWorthy(title) {
+  const t = String(title || "");
+  if (CHAT_KEEP_ALWAYS.test(t)) return true;
+  if (/^\s*(\u26A0|\u{1F6AB}\s*UNAUTHORIZED)/u.test(t)) return false;      // warnings (RaiseAlert) and unauthorized-access notices are problems
+  return CHAT_ORDER.test(t);
+}
 function gmtLabel(off) { off = Math.round((Number(off) || 0) / 60); const sg = off < 0 ? "-" : "+", m = Math.abs(off), h = Math.floor(m / 60), mm = m % 60; return "GMT" + (off === 0 ? "" : sg + h + (mm ? ":" + String(mm).padStart(2, "0") : "")); }
 
 const json = (o, status = 200) =>
@@ -91,27 +105,41 @@ async function nshard(c, srv) {
 }
 const notifyStub = async (env, c, srv) => env.NOTIFY.get(env.NOTIFY.idFromName(await nshard(c, srv)));
 // Verifies Telegram Mini App initData with the bot token. Returns the Telegram user id or null.
-async function tgUser(initData, botToken) {
+// v4.18: signature (HMAC over the data-check-string, sorted by KEY as Telegram specifies) + a REQUIRED numeric auth_date that must be neither older
+// than TG_AUTH_MAX_AGE_SEC nor further in the future than TG_FUTURE_SKEW_SEC; duplicated keys and a non-numeric / non-positive user id are refused.
+async function tgUser(initData, botToken, c) { const r = await tgCheck(initData, botToken, c); return r ? r.id : null; }
+async function tgCheck(initData, botToken, c) {      // -> { id, age } (age in seconds) or null
   try {
-    if (!initData || !botToken) return null;
+    if (!initData || !botToken || initData.length > 4096) return null;
+    const maxAge = c ? c.tgMaxAge : CONFIG.TG_AUTH_MAX_AGE_SEC, skew = c ? c.tgSkew : CONFIG.TG_FUTURE_SKEW_SEC;
     const p = new URLSearchParams(initData);
-    const hash = p.get("hash");
-    if (!hash) return null;
+    const keys = [...p.keys()];
+    if (new Set(keys).size !== keys.length) return null;
+    const hash = String(p.get("hash") || "").toLowerCase();
+    if (!/^[0-9a-f]{64}$/.test(hash)) return null;
     p.delete("hash");
-    const dcs = [...p.entries()].map(([k, v]) => k + "=" + v).sort().join("\n");
+    const dcs = [...p.entries()].sort((x, y) => (x[0] < y[0] ? -1 : x[0] > y[0] ? 1 : 0)).map(([k, v]) => k + "=" + v).join("\n");
     const secret = await hmacRaw(enc.encode("WebAppData"), botToken);
     if (!safeEq(hex(await hmacRaw(secret, dcs)), hash)) return null;
-    if (Date.now() / 1000 - Number(p.get("auth_date") || 0) > 86400) return null;
+    const ad = String(p.get("auth_date") || "");
+    if (!/^\d{9,11}$/.test(ad)) return null;
+    const age = Date.now() / 1000 - Number(ad);
+    if (age > maxAge || age < -skew) return null;
     const u = JSON.parse(p.get("user") || "{}");
-    return u.id ? String(u.id) : null;
+    return u && Number.isSafeInteger(u.id) && u.id > 0 ? { id: String(u.id), age: Math.max(0, age) } : null;
   } catch (e) { return null; }
 }
 
+// v4.18 CORS: only an origin listed in ALLOWED_ORIGIN ("*" = open, local testing only) gets Access-Control-* headers. A browser request from any other origin gets none
+// (the old code answered with the FIRST allowed origin). CORS is NOT authentication: every sensitive route still needs a valid session / EA secret / admin key.
+// a request body that is not a JSON OBJECT (null, array, number, text, broken JSON) is treated as {} : it can never make a handler throw
+const jobj = (x) => { try { const v = JSON.parse(x); return v && typeof v === "object" && !Array.isArray(v) ? v : {}; } catch (e) { return {}; } };
+const originAllowed = (o, c) => !o || c.origins.includes("*") || c.origins.includes(o);
 function cors(req, c) {
   const o = req.headers.get("Origin");
   if (!o) return {};
-  const allow = c.origins.includes("*") ? "*" : (c.origins.includes(o) ? o : (c.origins[0] || "null"));
-  return { "Access-Control-Allow-Origin": allow, "Access-Control-Allow-Headers": "Content-Type, X-Login, X-Session, X-EA-Secret", "Access-Control-Allow-Methods": "GET, POST, OPTIONS", Vary: "Origin" };
+  if (!originAllowed(o, c)) return { Vary: "Origin" };
+  return { "Access-Control-Allow-Origin": c.origins.includes("*") ? "*" : o, "Access-Control-Allow-Headers": "Content-Type, X-Login, X-Session", "Access-Control-Allow-Methods": "GET, POST, OPTIONS", "Access-Control-Max-Age": "600", Vary: "Origin" };
 }
 
 // ═════════════ v4.7 — PUBLIC (Mini App) vs INTERNAL (diagnostics) separation ═════════════
@@ -126,9 +154,27 @@ function classify(raw) {
   return { text: t, cat: /offline|not connected|no connection|autotrading|market (is )?closed|trade server/i.test(t) ? "ops" : "user" };
 }
 const rid = (id) => "r-" + String(id == null ? "" : id).replace(/[^\w-]/g, "").slice(0, 8);
+// v4.18 (XSS defence in depth): whatever reaches the app's HTML is typed here. Numbers are numbers, sides are BUY/SELL or empty, so a hostile or corrupted
+// state can never smuggle markup through pos.no / orders[].ticket / price fields. The app ALSO escapes everything it renders (index.html esc()).
+const fin = (x) => { const v = Number(x); return Number.isFinite(v) ? v : 0; };
+const sideOf = (x) => { const t = String(x == null ? "" : x).toUpperCase(); return t.startsWith("B") ? "BUY" : t.startsWith("S") ? "SELL" : ""; };
+const ident = (x, n) => String(x == null ? "" : x).replace(/[^A-Za-z0-9_.:+\/ -]/g, "").slice(0, n || 40);
+function typedObj(x, nums, bools) {
+  if (!x || typeof x !== "object") return x;
+  const y = { ...x };
+  for (const k of nums) if (k in y) y[k] = fin(y[k]);
+  for (const k of bools || []) if (k in y) y[k] = !!y[k];
+  if ("side" in y) y.side = sideOf(y.side);
+  return y;
+}
 function publicOf(st) {
   const o = { ...st };
+  delete o.__proto__; delete o.constructor;       // an own "__proto__" key from a hostile EA state must never reach the app
   delete o.cmds;                                   // EA command log (Apply / Waiting / Superseded / failed ...) = internal, never a trade
+  if (o.pos && typeof o.pos === "object") o.pos = typedObj(o.pos, ["pid", "entry", "sl", "tp", "lot", "est", "risk", "no", "profit"]);
+  if (Array.isArray(o.orders)) o.orders = o.orders.slice(0, 40).map((x) => typedObj(x, ["ticket", "price", "lot", "sl", "tp"]));
+  if (Array.isArray(o.waits)) o.waits = o.waits.slice(0, 8).map((x) => typedObj(x, ["level", "trig", "now", "dist"], ["placing"]));
+  for (const k of ["state", "mode", "breach", "entry", "wcode", "sym", "ver"]) if (k in o) o[k] = ident(o[k], 40);   // enum-like fields: letters, digits and _ . : + - / space only
   const m = classify(o.msg); o.msg = m.text; if (m.cat === "tech") o.msgCat = "tech";
   if (o.lastCmd && typeof o.lastCmd === "object") { const c = classify(o.lastCmd.text); o.lastCmd = { id: o.lastCmd.id, ok: !!o.lastCmd.ok, text: c.text, cat: c.cat, rid: c.cat === "tech" ? rid(o.lastCmd.id) : undefined }; }
   for (const k of ["waits", "orders"]) if (Array.isArray(o[k])) o[k] = o[k].map((x) => { if (!x || typeof x !== "object") return x; const y = { ...x }; for (const f of ["why", "note", "text", "msg", "err", "reason"]) if (typeof y[f] === "string") y[f] = classify(y[f]).text; return y; });
@@ -156,8 +202,6 @@ export async function tgWebhookSecret(token) {
   const d = await crypto.subtle.digest("SHA-256", new TextEncoder().encode("yt-webhook:" + token));
   return [...new Uint8Array(d)].map((b) => b.toString(16).padStart(2, "0")).join("").slice(0, 48);
 }
-const _seenByNs = new WeakMap();   // per Durable Object namespace binding (isolate lifetime)
-const seenLogins = (ns) => { let x = _seenByNs.get(ns); if (!x) _seenByNs.set(ns, (x = new Set())); return x; };
 let _menuUrl = { u: "", t: 0 };
 async function tgMenuUrl(token) {
   if (_menuUrl.u && Date.now() - _menuUrl.t < 300000) return _menuUrl.u;
@@ -192,60 +236,72 @@ export default {
     const url = new URL(req.url);
     const c = cfg(env);
     const ch = cors(req, c);
-    if (req.method === "OPTIONS") return new Response(null, { status: 204, headers: ch });
-    const done = (res) => { const h = new Headers(res.headers); for (const [k, v] of Object.entries(ch)) h.set(k, v); return new Response(res.body, { status: res.status, headers: h }); };
+    if (req.method === "OPTIONS") return new Response(null, { status: originAllowed(req.headers.get("Origin"), c) ? 204 : 403, headers: ch });
+    // v4.18 hardening: every API answer is non-cacheable, non-sniffable, non-frameable and sends no referrer (CORS headers are added below)
+    const SEC = { "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff", "X-Frame-Options": "DENY", "Referrer-Policy": "no-referrer", "Content-Security-Policy": "default-src 'none'; frame-ancestors 'none'" };
+    const done = (res) => { const h = new Headers(res.headers); for (const [k, v] of Object.entries(SEC)) h.set(k, v); for (const [k, v] of Object.entries(ch)) h.set(k, v); return new Response(res.body, { status: res.status, headers: h }); };
     const P = url.pathname;
-    if (P === "/") return done(json({ ok: true, service: "yetimmm-bridge", v: VERSION, release: VERSION, ea_protocol: EA_PROTOCOL, pairConfigured: !!c.pairKey, corsOpen: c.origins.includes("*"), corsConfigured: c.origins.length > 0 }));
+    if (P === "/") {
+      if (req.method !== "GET" && req.method !== "HEAD") return done(json({ error: "method" }, 405));
+      // v4.18: the public root says only that the service is up. Configuration facts (pairing configured, CORS state, protocol) are admin-only (X-Admin-Key = secret ADMIN_KEY).
+      const o = { ok: true, service: "yetimmm-bridge", v: VERSION };
+      if (env.ADMIN_KEY && safeEq(String(req.headers.get("X-Admin-Key") || ""), String(env.ADMIN_KEY))) Object.assign(o, { release: VERSION, ea_protocol: EA_PROTOCOL, pairConfigured: !!c.pairKey, corsOpen: c.origins.includes("*"), corsConfigured: c.origins.length > 0 });
+      return done(json(o));
+    }
     if (P === "/tg/webhook" && req.method === "POST") return tgWebhook(req, env);   // Telegram -> bot chat (no CORS / no account)
+    // browser-facing routes also refuse a request whose Origin is not allowed (the EA never sends an Origin, so /api/ea/sync is not affected)
+    if (P !== "/api/ea/sync" && !originAllowed(req.headers.get("Origin"), c)) return done(json({ ok: false, error: "origin" }, 403));
     try {
       let login = "", body = "";
       if (P === "/api/ea/sync" || P === "/login") {
+        if (req.method !== "POST") return done(json({ error: "method" }, 405));
         body = await req.text();
         if (body.length > (P === "/login" ? 8192 : 2000000)) return done(json({ ok: false, error: "too_large" }, 413));
-        let b = {}; try { b = JSON.parse(body); } catch (e) {}
-        login = String(b.login || "").trim();
+        const b = jobj(body);
+        login = String((b && b.login) || "").trim();
       } else if (P === "/admin/diag" || P === "/state" || P === "/command" || P === "/logout" || P === "/verify" || P.startsWith("/news/") || P === "/order-alert") {
+        if (P === "/state" && req.method !== "GET") return done(json({ error: "method" }, 405));      // GET never changes anything but the caller's own sliding session
+        if ((P === "/command" || P === "/logout" || P === "/verify") && req.method !== "POST") return done(json({ error: "method" }, 405));
         login = (req.headers.get("X-Login") || "").trim();
         if (req.method === "POST") { body = await req.text(); if (body.length > 65536) return done(json({ ok: false, error: "too_large" }, 413)); }
       } else return done(json({ error: "not found" }, 404));
       let autoLogin = false;
-      if (P === "/login" && !/^\d{3,12}$/.test(login)) {            // owner (Telegram-proven) may omit the account number: the only MT5 account that ever synced is used
-        let b0 = {}; try { b0 = JSON.parse(body); } catch (e) {}
-        const tg0 = await tgUser(String(b0.init || ""), env.BOT_TOKEN || "");
-        if (tg0 && c.owners.includes(tg0)) {
+      if (P === "/login" && !/^\d{3,12}$/.test(login)) {            // owner (Telegram-proven) may omit the account number: the only VERIFIED MT5 account that synced is used
+        const b0 = jobj(body);
+        const t0 = await tgCheck(String((b0 && b0.init) || ""), env.BOT_TOKEN || "", c), tg0 = t0 && t0.id;
+        if (tg0 && c.owners.includes(tg0) && t0.age <= c.ownerMaxAge) {
           const dl = await (await env.HUB.get(env.HUB.idFromName("dir")).fetch("https://hub/dir", { method: "POST", body: JSON.stringify({ op: "list" }) })).json();
           if (dl.logins.length === 1) { login = dl.logins[0]; autoLogin = true; }
           else return done(json({ ok: false, error: dl.logins.length ? "pick_account" : "no_account", accounts: dl.logins }, 404));
         }
       }
       if (!/^\d{3,12}$/.test(login)) return done(json({ ok: false, error: "login" }, P === "/login" ? 400 : 401));
+      if (P === "/api/ea/sync") {
+        // v4.18 edge pre-checks: nothing below creates, writes or lists anything for a request that cannot possibly be authentic.
+        const sec = (req.headers.get("X-EA-Secret") || "").trim(), pair = (req.headers.get("X-EA-Pair") || "").trim().slice(0, 256);
+        if (sec.length < 16) return done(json({ ok: false, error: "secret" }, 401));
+        if (pair && !(c.pairKey && (await pwEq(c, pair, c.pairKey)))) {
+          // a wrong / unconfigured pairing code can only succeed when the EA ALSO holds a valid secret of an already VERIFIED account (listed in the directory): everything else stops here
+          const known = await (await env.HUB.get(env.HUB.idFromName("dir")).fetch("https://hub/dir", { method: "POST", body: JSON.stringify({ op: "has", login }) })).json().catch(() => ({}));
+          if (!known.has) return done(json(c.pairKey ? { ok: false, error: "pair_bad" } : { ok: false, error: "pair_not_configured" }, c.pairKey ? 403 : 503));
+        }
+      }
       const hub = env.HUB.get(env.HUB.idFromName("acc-" + login));
       const call = (path, extra) => hub.fetch("https://hub" + path, { method: "POST", body: JSON.stringify(extra) });
-      if (P === "/api/ea/sync" && !seenLogins(env.HUB).has(login)) {         // account directory (owner auto-login). Once per isolate; failures never block the sync
-        seenLogins(env.HUB).add(login);
-        try { await env.HUB.get(env.HUB.idFromName("dir")).fetch("https://hub/dir", { method: "POST", body: JSON.stringify({ op: "add", login }) }); } catch (e) { seenLogins(env.HUB).delete(login); }
-      }
+      // v4.18: the account is added to the directory ONLY by the Hub, after a sync that proved the pairing code or the EA secret. Receiving a request never registers anything.
       if (P === "/api/ea/sync") return done(await call("/sync", { secret: (req.headers.get("X-EA-Secret") || "").trim(), pair: (req.headers.get("X-EA-Pair") || "").trim().slice(0, 256), body, tok: env.BOT_TOKEN || "", login }));
       if (P === "/login") {
-        const b = JSON.parse(body);
-        const tg = await tgUser(String(b.init || ""), env.BOT_TOKEN || "");
-        const gate = env.HUB.get(env.HUB.idFromName("gate-" + (tg ? "tg" + tg : "ip" + (req.headers.get("CF-Connecting-IP") || "x"))));
-        const gcall = async (op) => (await gate.fetch("https://hub/gate", { method: "POST", body: JSON.stringify(op) })).json();
-        const owner = !!(tg && c.owners.includes(tg));
+        const b = jobj(body);
+        const ti = await tgCheck(String(b.init || ""), env.BOT_TOKEN || "", c), tg = ti ? ti.id : null;
+        // a Telegram-proven owner needs NO password, so that proof must be FRESH (OWNER_TG_MAX_AGE_SEC); an older initData of the owner only counts as an ordinary Telegram identity
+        const owner = !!(tg && c.owners.includes(tg) && ti.age <= c.ownerMaxAge);
+        if (!c.password && !owner && tg && c.owners.includes(tg)) return done(json({ ok: false, error: "tg_stale" }, 401));
         if (!c.password && !owner) return done(json({ ok: false, error: c.owners.length ? "tg_only" : "not_configured" }, c.owners.length ? 403 : 503));   // no APP_PASSWORD set: refuse instead of running with a default password
-        const g0 = await gcall({});
-        if (!g0.ok) return done(json({ ok: false, error: "locked", retry: g0.retry }, 429));
         if (c.requireTg && !tg) return done(json({ ok: false, error: "tg_only" }, 403));
-        if (!owner && !(await pwEq(c, b.pw, c.password))) {
-          const g = await gcall({ fail: true });
-          if (!g.ok) return done(json({ ok: false, error: "locked", retry: g.retry }, 429));
-          return done(json({ ok: false, error: "bad_pw", left: g.left }, 401));
-        }
+        // v4.18: NO attempt counter, NO lock, NO delay: a wrong password is simply refused and the user may try again immediately and without limit (owner decision).
+        if (!owner && !(await pwEq(c, b.pw, c.password))) return done(json({ ok: false, error: "bad_pw" }, 401));
         const res = await call("/login", { tg });
-        if (res.status === 503) return done(res);                      // bot offline is NOT a wrong password: never count it toward the lock
-        if (res.status !== 200) { await gcall({ fail: true }); return done(res); }
-        await gcall({ reset: true });
-        if (autoLogin) { const j = await res.json(); return done(json({ ...j, login })); }
+        if (autoLogin && res.status === 200) { const j = await res.json(); return done(json({ ...j, login })); }
         return done(res);
       }
       if (P === "/admin/diag") {            // internal diagnostics: admin key only (secret ADMIN_KEY); unset = endpoint does not exist
@@ -256,7 +312,7 @@ export default {
       if (P.startsWith("/news/") || P === "/order-alert") {          // news calendar + unified notifications (news.js) and per-account order alerts (Hub)
         const au = await (await call("/auth", { sess, login })).json();
         if (!au.ok) return done(json({ ok: false, error: "session", why: au.why }, 401));
-        let b = {}; try { b = JSON.parse(body || "{}"); } catch (e) {}
+        const b = jobj(body);                // v4.18 (found by fuzzing): JSON null / array / scalar bodies used to throw -> HTTP 500
         const nt = await notifyStub(env, c, au.srv);
         const nc = (path, o) => nt.fetch("https://n" + path, { method: "POST", body: JSON.stringify({ ...o, uid: au.uid, login }) });
         if (P === "/news/calendar") return done(await nc("/cal", {}));
@@ -268,8 +324,8 @@ export default {
         return done(json({ error: "not found" }, 404));
       }
       if (P === "/verify") {
-        let b = {}; try { b = JSON.parse(body || "{}"); } catch (e) {}
-        const tg = await tgUser(String(b.init || ""), env.BOT_TOKEN || "");
+        const b = jobj(body);
+        const tg = await tgUser(String(b.init || ""), env.BOT_TOKEN || "", c);
         return done(await call("/verify", { sess, tg }));
       }
       if (P === "/state") return done(await call("/state", { sess }));
@@ -281,24 +337,109 @@ export default {
 };
 
 export class Hub {
-  constructor(ctx, env) { this.ctx = ctx; this.env = env || {}; this.c = cfg(env || {}); this.st = null; this.ts = 0; this.oa = null; this.miss = {}; this.hxSig = ""; this.wkc = null; this.dseen = new Set(); }
+  constructor(ctx, env) { this.ctx = ctx; this.env = env || {}; this.c = cfg(env || {}); this.st = null; this.ts = 0; this.oa = null; this.miss = {}; this.hxSig = ""; this.wkc = null; this.dseen = new Set(); this.mq = Promise.resolve(); this.migrated = false; this.dirAt = 0; }
   age() { return this.ts ? (Date.now() - this.ts) / 1000 : null; }
+  // v4.19: the last EA snapshot survives a Worker restart / eviction. Without it a restart answered "STOPPED, price 0" until the EA synced again,
+  // i.e. the app looked like a brand-new session. The saved copy keeps its ORIGINAL timestamp, so age()/botUp() stay truthful (an old snapshot is never "online").
+  async restoreSt() {
+    if (this.st || this.lstDone) return;
+    this.lstDone = true;
+    try {
+      const l = await this.ctx.storage.get("lst");
+      if (l && l.st && typeof l.st === "object" && Number(l.ts) > 0 && !this.st) { this.st = l.st; this.ts = Number(l.ts); }
+    } catch (e) { /* a missing snapshot only means a cold start */ }
+  }
+  async persistSt(st) {
+    const t = Date.now();
+    if (t - (this.lstT || 0) < 5000) return;      // at most one write per 5 s (the EA syncs every second or two)
+    this.lstT = t;
+    try { const j = JSON.stringify(st); if (j.length < 120000) await this.ctx.storage.put("lst", { st, ts: this.ts }); } catch (e) { /* persistence must never break the EA sync */ }
+  }
   botUp() { const g = this.age(); return g !== null && g < this.c.staleSec; }
   bound(a) { return !!(a.eaSecretH || a.eaSecret); }
-  // v4.6: every authenticated request slides the session (persisted at most once per SESSION_TOUCH_SEC so /state polling never hammers storage)
-  async touch(a, s) { const now = Date.now(); if (now - s.t > this.c.touchMs) { s.t = now; await this.ctx.storage.put("acc", a); } }
+
+  // ═════ v4.18 SESSIONS ═════
+  // Every sign-in is its OWN record "ses:<sha256(token)>" = { h, tg, t, c, pwv, ep, srv }. There is NO shared list, NO maximum number of sessions and NO "keep the last N":
+  // a new device can never push an older one out, a refresh / reconnect / EA restart never replaces one, and signing out removes only the caller's own record.
+  // A session ends only when: it expires (sliding SESSION_DAYS), the user signs out, SESSION_EPOCH is bumped, APP_PASSWORD changes, the EA asks explicitly (InpBrResetPw)
+  // or the MT5 SERVER of the account changes. Records that are ALREADY invalid are deleted at the next sign-in (cleanup, never a limit).
+  // Account-level fields (EA secret, server, Telegram chats ...) live in the separate "acc" record and are changed ONLY through upd() = fresh read -> synchronous change -> write,
+  // serialized by mutex(): two overlapping requests (EA sync + a login + a poll) can no longer overwrite each other's change (the old whole-record rewrites could drop a new session).
+  mutex(fn) { const r = this.mq.then(fn); this.mq = r.then(() => {}, () => {}); return r; }
+  async upd(fn) {
+    return this.mutex(async () => {
+      const a = await this.S();
+      const r = fn(a);
+      if (r !== false) await this.ctx.storage.put("acc", a);
+      return a;
+    });
+  }
+  // one-time import of the pre-4.18 array "acc.sessions" into per-session records (idempotent)
+  async migrate() {
+    if (this.migrated) return;
+    await this.mutex(async () => {
+      const a = await this.ctx.storage.get("acc");
+      if (a && Array.isArray(a.sessions)) {
+        const put = {};
+        for (const x of a.sessions) if (x && typeof x === "object" && x.h) put["ses:" + x.h] = x;
+        const ks = Object.keys(put);
+        for (let i = 0; i < ks.length; i += 100) { const part = {}; for (const k of ks.slice(i, i + 100)) part[k] = put[k]; await this.ctx.storage.put(part); }
+        delete a.sessions; await this.ctx.storage.put("acc", a);
+      }
+    });
+    this.migrated = true;
+  }
+  // sliding expiry: persisted at most once per SESSION_TOUCH_SEC so /state polling never hammers storage. Touches ONLY this session's record (and never resurrects a signed-out one).
+  async touch(r, force) {
+    const now = Date.now();
+    if (!force && now - r.s.t <= this.c.touchMs) return;
+    await this.mutex(async () => { const cur = await this.ctx.storage.get(r.k); if (cur) { cur.t = now; await this.ctx.storage.put(r.k, cur); } });
+  }
+  async sessionKeys() { return [...(await this.ctx.storage.list({ prefix: "ses:" })).keys()]; }
+  async dropSessions() {     // explicit "sign everybody out" only (EA reset input / MT5 server changed)
+    await this.mutex(async () => { const ks = await this.sessionKeys(); for (let i = 0; i < ks.length; i += 100) await this.ctx.storage.delete(ks.slice(i, i + 100)); });
+  }
+  // deletes sessions that are ALREADY invalid (expired / other epoch / old password) and un-registers Telegram chats that no longer have any session. Never removes a valid session.
+  async cleanup(pwv) {
+    const now = Date.now(), all = await this.ctx.storage.list({ prefix: "ses:" }), dead = [], alive = new Set();
+    for (const [k, x] of all) { if (!x || typeof x !== "object" || now - x.t > this.c.sessMs || x.ep !== this.c.epoch || x.pwv !== pwv) dead.push(k); else if (x.tg) alive.add(x.tg); }
+    for (let i = 0; i < dead.length; i += 100) await this.ctx.storage.delete(dead.slice(i, i + 100));
+    if (dead.length) { const a = await this.S(), keep = a.tg.filter((g) => alive.has(g)); if (keep.length !== a.tg.length) { a.tg = keep; a.cfgv = (a.cfgv || 0) + 1; await this.ctx.storage.put("acc", a); } }
+  }
+  // v4.18 account directory (owner auto-login). ONLY accounts whose EA proved the pairing code / secret are ever added (see sync()). Stored as { login: lastSeenMs } under "dir2"
+  // (the old "dir" list, which any unverified request could fill, is ignored). A live account is never replaced by a new one: when full, only an entry unseen for 30 days may go.
+  async dir(b) {
+    return this.mutex(async () => {
+      const now = Date.now(), DAY30 = 30 * 86400000, MAX = 200;
+      const m = (await this.ctx.storage.get("dir2")) || {};
+      const lg = String(b.login || "");
+      if (b.op === "has") return json({ ok: true, has: !!(m[lg] && now - m[lg] < DAY30) });
+      if (b.op === "add" && /^\d{3,12}$/.test(lg)) {
+        if (m[lg] === undefined || now - m[lg] > 3600000) {
+          if (m[lg] === undefined && Object.keys(m).length >= MAX) {
+            const old = Object.entries(m).filter(([, t]) => now - t > DAY30).sort((x, y) => x[1] - y[1])[0];
+            if (!old) return json({ ok: false, full: true, logins: Object.keys(m).filter((k) => now - m[k] < DAY30) });
+            delete m[old[0]];
+          }
+          m[lg] = now; await this.ctx.storage.put("dir2", m);
+        }
+      }
+      return json({ ok: true, logins: Object.keys(m).filter((k) => now - m[k] < DAY30) });
+    });
+  }
+  async dirReg(login) {      // called by sync() AFTER the request proved the pairing code or the EA secret; at most once an hour per Hub
+    const now = Date.now();
+    if (!/^\d{3,12}$/.test(String(login || "")) || (this.dirAt && now - this.dirAt < 3600000)) return;
+    try { const r = await this.env.HUB.get(this.env.HUB.idFromName("dir")).fetch("https://hub/dir", { method: "POST", body: JSON.stringify({ op: "add", login: String(login) }) }); if (r.ok) this.dirAt = now; } catch (e) { /* never blocks the sync */ }
+  }
   // v4.6: order-match tolerance comes from the SYMBOL (tick size / point / Max Deviation reported by the EA), never from a % of price.
   // Fallback 0.30 only for an EA older than v2.21 that does not report them yet.
   tolOf(st) { const tick = Number(st.tick) || 0, pt = Number(st.pt) || tick, dev = Number(st.maxDev) || 0, t = Math.max(tick * 3, dev * pt); return t > 0 ? t : 0.3; }
   async fetch(req) {
     const p = new URL(req.url).pathname;
     const b = await req.json().catch(() => ({}));
-    if (p === "/dir") {
-      let l = (await this.ctx.storage.get("dir")) || [];
-      if (b.op === "add" && /^\d{3,12}$/.test(String(b.login || "")) && !l.includes(String(b.login))) { l = [...l, String(b.login)].slice(-20); await this.ctx.storage.put("dir", l); }
-      return json({ ok: true, logins: l });
-    }
-    if (p === "/gate") return this.gate(b);
+    if (p === "/dir") return this.dir(b);
+    await this.migrate();
     if (p === "/sync") return this.sync(b);
     if (p === "/login") return this.login(b);
     if (p === "/verify") return this.verify(b);
@@ -312,42 +453,43 @@ export class Hub {
     return json({ error: "not found" }, 404);
   }
   async S() {
-    const a = (await this.ctx.storage.get("acc")) || { sessions: [], tg: [], cfgv: 0 };
-    a.sessions = (a.sessions || []).filter((x) => x && typeof x === "object");   // v3 string sessions are dropped once
+    const a = (await this.ctx.storage.get("acc")) || { tg: [], cfgv: 0 };
     a.tg = a.tg || [];
     return a;
   }
-  // A session is valid only if: it exists (stored hashed), is not expired, belongs to the current SESSION_EPOCH,
+  // A session is valid only if: its record exists, is not expired, belongs to the current SESSION_EPOCH,
   // was created under the CURRENT password, and the MT5 server of the account did not change since.
   async chk(a, sess) {
     if (!sess) return { why: "none" };
-    const h = await sha(sess);
-    const s = a.sessions.find((x) => safeEq(x.h, h));
-    if (!s) return { why: "gone" };
+    const k = "ses:" + (await sha(sess)), s = await this.ctx.storage.get(k);
+    if (!s || typeof s !== "object") return { why: "gone" };
     if (Date.now() - s.t > this.c.sessMs) return { why: "expired" };
     if (s.ep !== this.c.epoch) return { why: "revoked" };
     if (s.pwv !== (await pwVersion(this.c))) return { why: "pw" };
     if (a.srv && s.srv && a.srv !== s.srv) return { why: "acct" };
-    return { s };
+    return { s, k };
   }
   deny(why) { return json({ ok: false, error: "session", why }, 401); }
 
   // ---- user identity + order alerts (account-bound, stored here next to the EA state; delivery goes through the shared Notify engine) ----
   uidOf(s, a) { return s && s.tg ? String(s.tg) : "a" + (a.login || ""); }
   async auth(m) {
-    const a = await this.S(); if (m.login && a.login !== m.login) { a.login = String(m.login); await this.ctx.storage.put("acc", a); }
-    const r = await this.chk(a, m.sess);
-    if (r.s) await this.touch(a, r.s);
+    const a = await this.S(), r = await this.chk(a, m.sess);
+    if (r.s) await this.touch(r);
     return json(r.s ? { ok: true, uid: this.uidOf(r.s, a), srv: a.srv || "" } : { ok: false, why: r.why });
   }
   async loadOa() { if (!this.oa) { this.oa = {}; for (const [k, v] of await this.ctx.storage.list({ prefix: "oa:" })) this.oa[k] = v; } return this.oa; }
   async oaMine(uid) { const o = await this.loadOa(); return Object.values(o).filter((r) => r.user_id === uid && r.enabled && (r.status === "armed" || (r.status === "fired" && Date.now() - (r.fired_at || 0) < 86400000))).map((r) => ({ key: r.event_id, status: r.status })); }
+  // v4.19: one-line confirmations in the chat when an alert is switched on / off (unique id per action, so re-arming later is announced again)
+  async chatNote(a, rec, kind, title, body) {
+    try { await (await notifyStub(this.env, this.c, a.srv)).fetch("https://n/emit", { method: "POST", body: JSON.stringify({ uid: rec.user_id, account_id: rec.account_id, type: "order", event_id: rec.id, alert_type: kind + Date.now(), title, body }) }); } catch (e) { /* a confirmation must never break the alert itself */ }
+  }
   hsig(h) { return h.no + "|" + h.entry + "|" + h.exit; }
   async oalert(m) {
     const a = await this.S(), r = await this.chk(a, m.sess); if (!r.s) return this.deny(r.why);
-    await this.touch(a, r.s);
+    await this.touch(r);
     const uid = this.uidOf(r.s, a), key = String(m.key || ""), st = this.st || {}, o = await this.loadOa(), sk = "oa:" + uid + ":" + key, old = o[sk];
-    if (m.enabled === false) { if (old && old.enabled) { old.enabled = false; old.status = "off"; old.updated_at = Date.now(); await this.ctx.storage.put(sk, old); } return json({ ok: true }); }
+    if (m.enabled === false) { if (old && old.enabled) { const was = old.status; old.enabled = false; old.status = "off"; old.updated_at = Date.now(); await this.ctx.storage.put(sk, old); if (was === "armed") await this.chatNote(a, old, "off", "\u{1F515} Alert Cancelled \u00B7 \u062A\u0645 \u0625\u0644\u063A\u0627\u0621 \u0627\u0644\u062A\u0646\u0628\u064A\u0647", `${old.side} ${old.sym || ""} @ ${old.price}`); } return json({ ok: true }); }
     if (old && old.enabled && old.status === "armed") return json({ ok: true, dup: true });          // pressing Allow twice never creates a second alert
     let src = null;
     if (key[0] === "t") { const q = (st.orders || []).find((x) => String(x.ticket) === key.slice(1)); if (q) src = { side: String(q.side).toUpperCase().startsWith("B") ? "BUY" : "SELL", price: Number(q.price), lot: q.lot, sl: q.sl, tp: q.tp }; }
@@ -356,6 +498,8 @@ export class Hub {
     const now = Date.now(), rec = old || { id: crypto.randomUUID().replace(/-/g, "").slice(0, 16), user_id: uid, account_id: String(a.login || ""), type: "order", event_id: key, created_at: now };
     Object.assign(rec, src, { enabled: true, kind: "activated", status: "armed", updated_at: now, sym: st.sym || "XAUUSD", hseen: (st.hist || []).slice(0, 8).map((h) => this.hsig(h)), pos0: st.pos ? st.pos.entry + "|" + st.pos.no : "" });
     delete rec.fired_at; o[sk] = rec; this.miss = {}; await this.ctx.storage.put(sk, rec);
+    const lv = [`${rec.side} ${rec.sym} @ ${rec.price}`]; if (rec.sl || rec.tp) lv.push(`SL ${rec.sl || "-"} \u00B7 TP ${rec.tp || "-"}`);
+    await this.chatNote(a, rec, "armed", "\u2705 Alert Enabled \u00B7 \u062A\u0645 \u062A\u0641\u0639\u064A\u0644 \u0627\u0644\u062A\u0646\u0628\u064A\u0647", lv.join("\n") + "\nYou will be notified here when it activates \u00B7 \u0633\u064A\u0635\u0644\u0643 \u0625\u0634\u0639\u0627\u0631 \u0647\u0646\u0627 \u0639\u0646\u062F \u0627\u0644\u062A\u0641\u0639\u064A\u0644");
     return json({ ok: true });
   }
   // Stateless check against every EA sync: a pending order that vanished AND became a position (or a just-closed trade) = activated.
@@ -375,7 +519,7 @@ export class Hub {
       const done = !act && hist.find((h) => String(h.side).toUpperCase().startsWith(r.side[0]) && near(h.entry) && !r.hseen.includes(this.hsig(h)));
       if (!act && !done) { r.status = "gone"; r.updated_at = Date.now(); await this.ctx.storage.put(k, r); continue; }   // removed / cancelled: no activation message
       const e = act ? p : done, off = Number(a.tzo) || 0, hh = new Date(Date.now() + off * 1000).toISOString().slice(11, 16) + " " + gmtLabel(off);
-      const res = await (await notifyStub(this.env, this.c, a.srv)).fetch("https://n/emit", { method: "POST", body: JSON.stringify({ uid: r.user_id, account_id: r.account_id, type: "order", event_id: r.id, alert_type: "activated", title: "Order Activated · تفعيل أوردر", body: `${r.side} ${r.sym}\nVolume: ${e.lot != null ? e.lot : r.lot}\nEntry: ${e.entry}\nTime: ${hh}` }) });
+      const res = await (await notifyStub(this.env, this.c, a.srv)).fetch("https://n/emit", { method: "POST", body: JSON.stringify({ uid: r.user_id, account_id: r.account_id, type: "order", event_id: r.id, alert_type: "activated", title: "\u{1F3AF} Order Activated · تفعيل أوردر", body: `${r.side} ${r.sym}\nTarget reached · تم الوصول للمطلوب: ${r.price}\nEntry: ${e.entry}\nVolume: ${e.lot != null ? e.lot : r.lot}${e.sl || r.sl ? `\nSL: ${e.sl || r.sl}` : ""}${e.tp || r.tp ? ` · TP: ${e.tp || r.tp}` : ""}\nTime: ${hh}` }) });
       if (res.ok) { r.status = "fired"; r.fired_at = Date.now(); r.updated_at = r.fired_at; await this.ctx.storage.put(k, r); }   // if emit failed it stays armed and is retried on the next sync (dedupe makes that safe)
     }
   }
@@ -387,56 +531,66 @@ export class Hub {
     const calv = typeof body.calv === "string" && /^[0-9a-f]{1,16}$/.test(body.calv) ? body.calv : "";
     const rows = Array.isArray(body.cal) && calv ? body.cal.slice(0, 600) : null;
     const tzChanged = okTz && a.tzo !== tzo, beat = !!calv && !rows && calv === a.calv && now - (a.calBeat || 0) > 300000;
-    let dirty = false, need = false;
-    if (tzChanged) { a.tzo = tzo; dirty = true; }
+    let need = false;
+    if (tzChanged) { a.tzo = tzo; await this.upd((x) => { x.tzo = tzo; }); }
     if (rows || tzChanged || beat) {
       const res = await (await notifyStub(this.env, this.c, a.srv)).fetch("https://n/mt5", { method: "POST", body: JSON.stringify({ login: a.login || "", srv: a.srv || "", tzo: a.tzo, calv: rows || beat ? calv : undefined, rows }) });
       const j = await res.json().catch(() => ({}));
       if (j && j.ok) {
         if (rows) a.calv = calv;
         if (j.need) { a.calv = ""; need = true; }          // Notify lost the table (restart / data older than the heartbeat): ask the EA again
-        a.calBeat = now; dirty = true;
+        a.calBeat = now;
+        // v4.18: only these three fields are written, on top of a FRESH record (the network call above took time; a login / pairing that happened meanwhile must survive)
+        await this.upd((x) => { x.calv = a.calv; x.calBeat = a.calBeat; });
       }
     }
-    if (dirty) await this.ctx.storage.put("acc", a);
     return need || (!!calv && !rows && calv !== a.calv);
   }
 
   // ---- EA side ----
   async sync(m) {
-    let body = {}; try { body = JSON.parse(m.body || "{}"); } catch (e) {}
-    const a = await this.S();
+    const body = jobj(m.body);
     const secret = String(m.secret || "");
     if (secret.length < 16) return json({ ok: false, error: "secret" }, 401);
-    const sh = await sha("yt-ea|" + secret), now0 = Date.now();
-    const matched = a.eaSecretH ? safeEq(a.eaSecretH, sh) : (a.eaSecret ? safeEq(a.eaSecret, secret) : false);
-    // v4.6 PAIRING (replaces "first EA wins"): an account is bound only by an EA that proves the pairing code (Worker secret PAIR_CODE, or APP_PASSWORD when unset).
+    const a0 = await this.S(), sh = await sha("yt-ea|" + secret), now0 = Date.now();
+    const matched = a0.eaSecretH ? safeEq(a0.eaSecretH, sh) : (a0.eaSecret ? safeEq(a0.eaSecret, secret) : false);
+    // v4.6 PAIRING (replaces "first EA wins"): an account is bound only by an EA that proves the pairing code (Worker secret PAIR_CODE).
     // A valid code makes the SERVER mint the EA secret (CSPRNG) and hand it over once (es); afterwards the secret alone authenticates. Already-bound v4.5 accounts keep working
-    // and are upgraded the first time the EA presents the code. A stranger who syncs first can no longer take the account: without the code he is refused (403).
-    let ok = matched, issued = "", paired = false, dirty = false;
+    // and are upgraded the first time the EA presents the code. A stranger who syncs first can no longer take the account: without the code he is refused.
+    // v4.18: every refusal below happens BEFORE any write: a failed / incomplete / unauthenticated request changes nothing (no account record, no directory entry, no session).
+    let ok = matched, issued = "", paired = false;
     const pair = String(m.pair || "");
-    if (pair && !matched && !this.c.pairKey) return json({ ok: false, error: "pair_not_configured" }, 503);   // v4.8: no PAIR_CODE secret = pairing refused (never falls back to the app password)
+    if (pair && !matched && !this.c.pairKey) return json({ ok: false, error: "pair_not_configured" }, 503);   // no PAIR_CODE = pairing refused (never falls back to the app password)
     if (pair) {
       // v4.15.1: pairing lockout REMOVED by owner request - wrong codes are never locked out, unlimited attempts.
       if (this.c.pairKey && (await pwEq(this.c, pair, this.c.pairKey))) {
-        a.pf = { n: 0, until: 0 }; paired = true; ok = true; dirty = true;
-        if (!matched || !a.eaIssued) { issued = rnd(32); a.eaSecretH = await sha("yt-ea|" + issued); delete a.eaSecret; a.eaIssued = true; a.pairedAt = now0; }
+        paired = true; ok = true;
+        if (!matched || !a0.eaIssued) issued = rnd(32);
       } else if (!matched) {
         return json({ ok: false, error: "pair_bad" }, 403);
       }
     }
-    if (!ok) return json({ ok: false, error: this.bound(a) ? "secret" : "pair_required" }, this.bound(a) ? 401 : 403);
-    if (matched && a.eaSecret) { a.eaSecretH = sh; delete a.eaSecret; dirty = true; }   // v4.5 stored the raw secret: keep only its hash from now on
+    // an account that is not bound / a wrong secret is answered identically: the response never tells a stranger whether an account number is known (v4.18)
+    if (!ok) return json({ ok: false, error: "secret" }, 401);
+    const issuedH = issued ? await sha("yt-ea|" + issued) : "";
     // v4: an EA restart NO LONGER signs anybody out. The app re-verifies on open (account + Telegram + bot) and enters by itself.
-    // Sessions are revoked only when: the EA asks explicitly (reset), or the MT5 SERVER of this account changed.
-    const srv = String(body.srv || "").slice(0, 64);
-    if (srv && a.srv !== srv) { if (a.srv && a.sessions.length) a.sessions = []; a.srv = srv; dirty = true; }
-    if (body.reset && a.sessions.length) { a.sessions = []; dirty = true; }
-    if (!a.seen || now0 - a.seen > 15000) { a.seen = now0; dirty = true; }
-    // single shared bot: config v changes when the chat list or the token changes
+    // Sessions are revoked only when: the EA asks explicitly (reset = input InpBrResetPw), or the MT5 SERVER of this account changed.
+    const srv = String(body.srv || "").slice(0, 64), login = String(m.login || "");
     const tsig = hex(await hmacRaw(enc.encode("t"), m.tok || "")).slice(0, 8);
-    if (a.tsig !== tsig) { a.tsig = tsig; a.cfgv = (a.cfgv || 0) + 1; dirty = true; }
-    if (dirty) await this.ctx.storage.put("acc", a);
+    let dropAll = !!body.reset;
+    const a = await this.upd((x) => {
+      let dirty = false;
+      if (issued) { x.eaSecretH = issuedH; delete x.eaSecret; x.eaIssued = true; x.pairedAt = now0; dirty = true; }
+      else if (matched && x.eaSecret) { x.eaSecretH = sh; delete x.eaSecret; dirty = true; }   // v4.5 stored the raw secret: keep only its hash from now on
+      if (/^\d{3,12}$/.test(login) && x.login !== login) { x.login = login; dirty = true; }
+      if (srv && x.srv !== srv) { if (x.srv) dropAll = true; x.srv = srv; dirty = true; }
+      if (!x.seen || now0 - x.seen > 15000) { x.seen = now0; dirty = true; }
+      // single shared bot: config v changes when the chat list or the token changes
+      if (x.tsig !== tsig) { x.tsig = tsig; x.cfgv = (x.cfgv || 0) + 1; dirty = true; }
+      return dirty ? undefined : false;
+    });
+    if (dropAll) await this.dropSessions();
+    await this.dirReg(login);                       // verified by now (pairing code or EA secret): the ONLY place an account enters the directory
     // v4.15 SECOND-COPY DETECTION. The MT5 lock only covers copies inside ONE terminal; the Worker sees every EA that syncs this account
     // (another PC, a VPS ...). The first live instance id owns the account; a different id while the owner is fresh (< 20 s) is told dupInst,
     // gets no commands and its state is NOT stored, so two copies can never overwrite each other's view or execute the same command twice.
@@ -447,7 +601,7 @@ export class Hub {
         if (!cur || cur.id !== inst || tn - cur.t > 5000) await this.ctx.storage.put("inst", { id: inst, t: tn });
       } else return json({ ok: true, dupInst: true, commands: [], staleSec: this.c.staleSec });
     }
-    if (body.state && typeof body.state === "object") { this.st = body.state; this.ts = Date.now(); try { await this.watch(a); } catch (e) { /* alerts must never break the EA sync */ } try { await this.archive(body.state, a); await this.diagFrom(body.state); } catch (e) { /* the internal archive / diagnostics must never break the EA sync */ } }
+    if (body.state && typeof body.state === "object") { this.st = body.state; this.ts = Date.now(); this.lstDone = true; await this.persistSt(body.state); try { await this.watch(a); } catch (e) { /* alerts must never break the EA sync */ } try { await this.archive(body.state, a); await this.diagFrom(body.state); } catch (e) { /* the internal archive / diagnostics must never break the EA sync */ } }
     let evack = [];
     if (Array.isArray(body.ev) && body.ev.length) { try { evack = await this.events(body.ev, a, String(m.login || "")); } catch (e) { /* notifications must never break the EA sync */ } }
     let calNeed = false;
@@ -462,7 +616,8 @@ export class Hub {
     if (issued) out.es = issued;
     if (paired) out.paired = true;
     if (calNeed) out.calNeed = true;
-    if (String(a.cfgv) !== String(body.cv !== undefined ? body.cv : 0)) out.cfg = { v: String(a.cfgv), tok: (body.state && body.state.evp) ? "" : (m.tok || ""), auth: a.tg.join(",") };   // v4.8: an EA that routes notifications through the Worker never receives the Bot Token
+    const aF = await this.S();                       // fresh: a sign-in that happened while this sync ran is included
+    if (String(aF.cfgv) !== String(body.cv !== undefined ? body.cv : 0)) out.cfg = { v: String(aF.cfgv), tok: (body.state && body.state.evp) ? "" : (m.tok || ""), auth: aF.tg.join(",") };   // v4.8: an EA that routes notifications through the Worker never receives the Bot Token
     return json(out);
   }
 
@@ -479,6 +634,10 @@ export class Hub {
       if (k === "act" && userAlert) { ack.push(id); continue; }   // the user's own Order Alert is the single source for the activation message
       const title = String(e.t || "").slice(0, 120), body = String(e.b || "").slice(0, 600);
       if (!title) { ack.push(id); continue; }
+      if (!this.c.chatProblems && !chatWorthy(title)) {        // a problem, not an order: acknowledged (the EA stops re-sending) and kept for diagnostics only
+        try { const d = (await this.ctx.storage.get("diag")) || []; d.push({ id, rid: rid(id), t: Date.now(), src: "ea-notice", cmd: "", cat: "problem", raw: (title + " " + body).slice(0, 300) }); await this.ctx.storage.put("diag", d.slice(-300)); } catch (x) { /* diagnostics must never block the ack */ }
+        ack.push(id); continue;
+      }
       const r = await nt.fetch("https://n/emit", { method: "POST", body: JSON.stringify({ uid: "ea" + (login || id.split(":")[0]), account_id: login || id.split(":")[0], type: "ea", event_id: id, alert_type: k, title, body }) });
       if (r.ok) ack.push(id);                                   // not acked on failure -> the EA re-sends the same id (emit is idempotent)
     }
@@ -486,18 +645,24 @@ export class Hub {
   }
   // ---- App side ----
   async login(m) {
-    const a = await this.S();
-    if (!this.bound(a) || !this.botUp()) return json({ ok: false, error: "ea_offline" }, 503);   // EA must be running on this account
-    const sess = rnd(24);
-    const entry = { h: await sha(sess), tg: m.tg || "", t: Date.now(), pwv: await pwVersion(this.c), ep: this.c.epoch, srv: a.srv || "" };
-    a.sessions = [...a.sessions, entry].slice(-10);
-    if (m.tg && !a.tg.includes(m.tg)) { a.tg = [...a.tg, m.tg].slice(-5); a.cfgv = (a.cfgv || 0) + 1; }   // Telegram identity proven by Telegram itself
-    await this.ctx.storage.put("acc", a);
+    const a0 = await this.S();
+    if (!this.bound(a0) || !this.botUp()) return json({ ok: false, error: "ea_offline" }, 503);   // EA must be running on this account
+    const sess = rnd(24), h = await sha(sess), pwv = await pwVersion(this.c), now = Date.now();
+    let full = false;
+    await this.mutex(async () => {
+      await this.cleanup(pwv);
+      if (this.c.maxSess > 0 && (await this.sessionKeys()).length >= this.c.maxSess) { full = true; return; }   // refuse the NEW sign-in; nobody is signed out
+      const a = await this.S();
+      await this.ctx.storage.put("ses:" + h, { h, tg: m.tg || "", t: now, c: now, pwv, ep: this.c.epoch, srv: a.srv || "" });   // a NEW record: no other session is touched
+      if (m.tg && !a.tg.includes(m.tg)) { a.tg = [...a.tg, m.tg]; a.cfgv = (a.cfgv || 0) + 1; await this.ctx.storage.put("acc", a); }   // Telegram identity proven by Telegram itself (no cap)
+    });
+    if (full) return json({ ok: false, error: "too_many_sessions" }, 429);
     return json({ ok: true, sess });
   }
   // Fast connection check used by the app's "verify" popup. Four independent checks, so the UI can tell
   // a HARD failure (must sign in again) from a SOFT one (the bot is simply off right now -> keep waiting, auto-enter when it is back).
   async verify(m) {
+    await this.restoreSt();
     const a = await this.S();
     const r = await this.chk(a, m.sess);
     const bot = this.botUp() && this.bound(a);
@@ -506,30 +671,22 @@ export class Hub {
     const telegram = m.tg ? s.tg === m.tg && a.tg.includes(m.tg) : !this.c.requireTg && !s.tg;
     const checks = { session: true, account: true, telegram, bot };
     const hard = !telegram;
-    if (!hard) { s.t = Date.now(); await this.ctx.storage.put("acc", a); }   // sliding expiry
+    if (!hard) await this.touch(r, true);   // sliding expiry (this session's record only)
     return json({ ok: telegram && bot, hard, why: hard ? "tg" : "", checks });
   }
-  // brute-force guard per Telegram user / IP (the password is shared, so the limit is NOT per account: that would let a stranger lock the owner out)
-  // v4: a real lock — after MAX_ATTEMPTS failures the key is locked for LOCK_SECONDS (2 min) and the exact remaining time is returned.
-  async gate(m) {
-    const now = Date.now(), c = this.c;
-    let g = (await this.ctx.storage.get("g")) || { n: 0, t: now, until: 0 };
-    if (g.until && now >= g.until) g = { n: 0, t: now, until: 0 };
-    if (!g.until && now - g.t > c.winMs) g = { n: 0, t: now, until: 0 };
-    if (m.reset) g = { n: 0, t: now, until: 0 };
-    else if (m.fail && !(g.until && now < g.until)) { g.n++; if (g.n >= c.max) g.until = now + c.lockMs; }
-    const locked = !!(g.until && now < g.until);
-    await this.ctx.storage.put("g", g);
-    return json({ ok: !locked, retry: locked ? Math.ceil((g.until - now) / 1000) : 0, left: Math.max(0, c.max - g.n) });
-  }
+  // v4.18: signing out ends THIS session only. Other devices / browsers of the same account (or the same Telegram user) stay signed in.
+  // The Telegram chat is un-registered only when no other session of that Telegram user remains.
   async logout(m) {
-    const a = await this.S();
-    const h = await sha(m.sess || "");
-    const mine = a.sessions.find((x) => safeEq(x.h, h));
-    a.sessions = a.sessions.filter((x) => !safeEq(x.h, h));
-    // signing out also removes this Telegram user's registration on the account when no other session of theirs remains
-    if (mine && mine.tg && !a.sessions.some((x) => x.tg === mine.tg) && a.tg.includes(mine.tg)) { a.tg = a.tg.filter((x) => x !== mine.tg); a.cfgv = (a.cfgv || 0) + 1; }
-    await this.ctx.storage.put("acc", a);
+    const k = "ses:" + (await sha(m.sess || ""));
+    await this.mutex(async () => {
+      const mine = await this.ctx.storage.get(k);
+      if (!mine) return;
+      await this.ctx.storage.delete(k);
+      if (mine.tg) {
+        const rest = [...(await this.ctx.storage.list({ prefix: "ses:" })).values()];
+        if (!rest.some((x) => x && x.tg === mine.tg)) { const a = await this.S(); if (a.tg.includes(mine.tg)) { a.tg = a.tg.filter((x) => x !== mine.tg); a.cfgv = (a.cfgv || 0) + 1; await this.ctx.storage.put("acc", a); } }
+      }
+    });
     return json({ ok: true });
   }
   // ---- v4.7 internal archive (all closed trades, kept forever, one key per week) + diagnostics ring ----
@@ -570,10 +727,11 @@ export class Hub {
     return json({ ok: true, now: Date.now(), tzo: a.tzo || 0, eaAge: this.age(), diag: (await this.ctx.storage.get("diag")) || [], commandLog: (this.st && this.st.cmds) || [], lastCmdRaw: (this.st && this.st.lastCmd) || null, archivedWeeks: weeks });
   }
   async state(m) {
+    await this.restoreSt();
     const a = await this.S();
     const r = await this.chk(a, m.sess);
     if (!r.s) return this.deny(r.why);
-    await this.touch(a, r.s);
+    await this.touch(r);
     const ag = this.age();
     const pub = publicOf(this.st || { price: 0, run: false, state: "STOPPED" });
     const oal = await this.oaMine(this.uidOf(r.s, a));
@@ -586,10 +744,11 @@ export class Hub {
     return json({ ...pub, eaAge: ag, eaOnline: this.botUp(), eaStaleSec: this.c.staleSec, oalerts: oal });
   }
   async command(m) {
+    await this.restoreSt();
     const a = await this.S();
     const r = await this.chk(a, m.sess);
     if (!r.s) return this.deny(r.why);
-    await this.touch(a, r.s);
+    await this.touch(r);
     let b = null; try { b = JSON.parse(m.body || "null"); } catch (e) {}
     const allowed = ["start", "stop", "close", "reset", "apply", "settings", "delete", "cancel", "delpend", "modify", "place", "newcycle"];
     if (!b || !allowed.includes(String(b.cmd))) return json({ error: "bad command" }, 400);
@@ -607,6 +766,7 @@ export class Hub {
       if (b[k] === undefined || b[k] === null || b[k] === "") continue;
       const n = Number(b[k]);
       if (!Number.isFinite(n)) return json({ error: "bad number: " + k }, 400);
+      if (k === "ticket" && !(Number.isSafeInteger(n) && n > 0)) return json({ error: "bad ticket" }, 400);   // v4.18: a ticket is a positive integer, nothing else reaches the EA
       c[k] = n;
     }
     if (b.side !== undefined && b.side !== null && b.side !== "") {

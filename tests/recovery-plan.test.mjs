@@ -77,8 +77,9 @@ test("guard: risk-% cap blocks only when the next risk exceeds the share of the 
   assert.equal(guard({ seq: 6, accLoss: 6.8, curRisk: 2.01, balance: 100, maxPct: 2 }), "WAITING_RISKCAP");
   assert.equal(guard({ seq: 0, accLoss: 0, curRisk: 1, balance: 0, maxPct: 2 }), "WAITING_RISKCAP");     // no balance -> never arm
 });
-test("EA v2.24 contains the exact recurrence, the guard, both inputs, both wait codes and both hooks", () => {
-  assert.match(ea, /return\s*\(L\+g_target\)\/g_rr;/);
+test("EA contains the binding recurrence (v2.30: R x 1.05 per loss), the guard, both inputs, both wait codes and both hooks", () => {
+  assert.match(ea, /g_curRisk=g_curRisk\*GrowthFactor\(\);/);
+  assert.ok(!ea.includes("NextRiskFor"), "the old (loss+target)/RR recurrence must be gone");
   for (const need of ["bool RecoveryGuardBlocks(", "void PrintRecoveryPlan(", "input int    InpMaxSeqLosses", "input double InpMaxRiskPctBal", "WAITING_SEQCAP", "WAITING_RISKCAP"]) assert.ok(ea.includes(need), need);
   assert.equal((ea.match(/RecoveryGuardBlocks\(rgw,rgc\)/g) || []).length, 2);
 });

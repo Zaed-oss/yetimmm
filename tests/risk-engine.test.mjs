@@ -6,7 +6,7 @@ import { readFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
-const html = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "index.html"), "utf8");
+const html = readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "index.html"), "utf8") + "\n" + readFileSync(join(dirname(fileURLToPath(import.meta.url)), "..", "app.js"), "utf8");
 const core = html.split("/*RISK-CORE-BEGIN*/")[1].split("/*RISK-CORE-END*/")[0];
 const { calcRisk, SIM_PROFILES } = new Function(core + "; return { calcRisk, SIM_PROFILES };")();
 const P = (n) => ({ ...SIM_PROFILES[n] });
