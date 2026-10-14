@@ -613,14 +613,6 @@ bool CfgB(const string key,const bool inp)
    return eff;
   }
 
-double CfgD(const string key,const double inp)
-  {
-   bool changed=(!CfgHas("in_"+key) || MathAbs(StringToDouble(CfgGet("in_"+key))-inp)>1e-12);
-   double eff=(changed || !CfgHas(key))?inp:StringToDouble(CfgGet(key));
-   CfgSet("in_"+key,DoubleToString(inp,8));
-   CfgSet(key,DoubleToString(eff,8));
-   return eff;
-  }
 string CfgS(const string key,const string inp)
   {
    bool changed=(!CfgHas("in_"+key) || CfgGet("in_"+key)!=inp);
@@ -1341,72 +1333,6 @@ bool PendingOrderCheck(const bool buy,const double lot,const double level,const 
    if(rc==TRADE_RETCODE_TRADE_DISABLED) { code="WAITING_BROKER"; why="Trading is currently disabled by the server."; coolMs=30000; return false; }
    if(rc==TRADE_RETCODE_INVALID_STOPS || rc==TRADE_RETCODE_INVALID_PRICE) { code="WAITING_PRICE"; why="The server refuses the price/stops at this moment - waiting for the market."; coolMs=3000; return false; }
    return true;     // unknown / filling-mode / transport code: the real OrderSend decides
-  }
-
-//--- v2.31 TURBO: momentum detector + "hot" state. EA code is single-threaded: a WebRequest in progress blocks OnTick for up to 2 s,
-//--- so while the price is moving fast or sits near an entry level NO network call is started (see NetDeferForEntry).
-ulong  g_hotUntil=0;
-double g_mpx[16]; ulong g_mms[16]; int g_mi=0; int g_mn=0;
-void TurboFeed(const MqlTick &tk,const ulong now)
-  {
-   if(!InpTurbo || tk.bid<=0.0 || tk.ask<=0.0) return;
-   double mid=(tk.bid+tk.ask)*0.5;
-   g_mpx[g_mi]=mid; g_mms[g_mi]=now; g_mi=(g_mi+1)%16; if(g_mn<16) g_mn++;
-   double lo=mid,hi=mid;
-   for(int i=0;i<g_mn;i++)
-     {
-      if(now-g_mms[i]>(ulong)MathMax(100,InpTurboMomMs)) continue;
-      if(g_mpx[i]<lo) lo=g_mpx[i];
-      if(g_mpx[i]>hi) hi=g_mpx[i];
-     }
-   if((hi-lo)>=(double)MathMax(1,InpTurboMomPts)*g_point) g_hotUntil=now+(ulong)MathMax(500,InpTurboHotMs);
-  }
-
-//--- true while the market is near an entry level / trigger (a spike can start any moment) or the hot state is on
-bool TurboHot(const ulong now)
-  {
-   if(!InpTurbo) return false;
-   if(now<g_hotUntil) return true;
-   if(g_state!=YT_ARMED && g_state!=YT_WAITING_REENTRY) return false;
-   MqlTick t;
-   if(!SymbolInfoTick(g_sym,t) || t.bid<=0.0 || t.ask<=0.0) return false;
-   double nr=(double)MathMax(1,InpTurboNearPts)*g_point;
-   if(g_buyLevel>0.0 && MathAbs(t.ask-g_buyLevel)<=nr) return true;
-   if(g_sellLevel>0.0 && MathAbs(t.bid-g_sellLevel)<=nr) return true;
-   return false;
-  }
-
-//--- v2.31-C (SMART STRICT / TURBO): ONE slippage ceiling.
-//--- InpTurboDevPts is the REAL final cap while TURBO is on (it is no longer MathMax-ed with Max Slippage Check, which could silently exceed it).
-int TurboDevCeiling()
-  {
-   int c=(InpTurbo && InpTurboDevPts>0)?InpTurboDevPts:g_maxDev;
-   return (c<0)?0:c;
-  }
-
-//--- adaptive tolerance sent with a market order: base (Max Slippage Check) + a spread cushion, + room for the move while the request
-//--- travels when the market is "hot" (momentum). Always <= TurboDevCeiling(). It is recomputed from the LIVE market on every attempt and is
-//--- NEVER widened to obtain a fill: a retry gets the same or a smaller tolerance. A heuristic rule, not a statistical slippage model.
-int TurboDeviationLimit(const ulong now)
-  {
-   int ceilPts=TurboDevCeiling();
-   if(!InpTurbo) return ceilPts;
-   double spreadPts=LiveSpread()/g_point;
-   double allow=(double)g_maxDev+2.0*spreadPts;
-   if(now<g_hotUntil) allow+=0.5*(double)MathMax(1,InpTurboMomPts);
-   if(allow>(double)ceilPts) allow=(double)ceilPts;
-   if(allow<0.0) allow=0.0;
-   return (int)MathCeil(allow-1e-9);
-  }
-
-//--- conservative entry used ONLY to size the lot: the quoted price moved AGAINST the trade by the allowed slippage (rounded away to the tick).
-//--- Buy: Ask + slippage. Sell: Bid - slippage. The SL distance is larger, so the lot is smaller and the loss at SL stays inside the target.
-double TurboWorstEntry(const bool buy,const double quoted,const int devPts)
-  {
-   double tk=(g_tick>0.0)?g_tick:g_point;
-   double px=buy?quoted+(double)devPts*g_point:quoted-(double)devPts*g_point;
-   px=buy?MathCeil(px/tk-1e-6)*tk:MathFloor(px/tk+1e-6)*tk;
-   return NormalizeDouble(px,g_digits);
   }
 
 //--- Risk Amount -> Lot, using real broker specifications (explicit entry AND explicit SL)
@@ -3263,19 +3189,8 @@ long RegisterPosition(const ulong pid)
    LogOrder("TRIGGERED",otype,orderPrice,vol,order,0,"Trade #"+TNo(g_tradeNo)+" fill "+PX(entry));
    TgQueue((buy?"🟢 BUY ACTIVATED":"🔴 SELL ACTIVATED")+"\nTrade #: "+TNo(g_tradeNo)+"\nEntry: "+PX(entry)+"\nSL: "+PX(sl)+"\nTP: "+PX(tp)+"\nLot: "+LotS(vol)+
            "\nRisk: $"+D2(g_curRisk)+"\nBuy Level: "+PX(g_buyLevel)+"\nSell Level: "+PX(g_sellLevel)+"\nTime: "+TimeToString(topen,TIME_DATE|TIME_SECONDS));
-   double devLimit=(double)TurboDevCeiling();   // v2.31-C: ONE ceiling (InpTurboDevPts in TURBO, Max Slippage Check otherwise)
-   //--- v2.31-C: REAL risk at the actual fill (actual entry -> SL, actual lot, + commission). The planned risk is never assumed to be the loss.
-   if(sl>0.0 && vol>0.0)
-     {
-      double plf=PerLotLossSL(buy,entry,sl);
-      if(plf>0.0)
-        {
-         double realRisk=vol*(plf+CommissionPerLot());
-         YLog("Risk at fill | Trade #"+TNo(g_tradeNo)+" | target $"+D2(g_curRisk)+" | real worst-case loss at SL $"+D2(realRisk)+" | slippage "+DoubleToString(dev,0)+" pts");
-         if(InpRiskPolicy!=YT_RISK_CLAMP_MIN && realRisk>g_curRisk*1.005+0.01)   // CLAMP_TO_MIN knowingly exceeds the target
-            RaiseAlert("RISKOVER","Risk above target at the actual fill: worst-case loss at SL $"+D2(realRisk)+" > target $"+D2(g_curRisk)+" (slippage "+DoubleToString(dev,0)+" pts, Trade #"+TNo(g_tradeNo)+"). The real result is recorded after the close.",true,true);
-        }
-     }
+   double devLimit=(double)g_maxDev;
+   if(InpTurbo && (double)InpTurboDevPts>devLimit) devLimit=(double)InpTurboDevPts;   // v2.31 TURBO: a rocket candle slips - the fill is kept up to InpTurboDevPts
    if(dev>devLimit)
      {
       RaiseAlert("DEV","Deviation exceeded: fill slippage "+DoubleToString(dev,0)+" pts > max "+DoubleToString(devLimit,0)+" pts (Trade #"+TNo(g_tradeNo)+").",true,true);
@@ -4088,9 +4003,17 @@ bool TryMarketReverse(const int force=0)   // force: 0 = reversal after an SL, 1
    string why;
    if(!TradingAllowedNow(why)) { g_waitReason="Market reversal waiting: "+why; g_nextRevMs=nowMs+3000; return true; }
 
-   //--- 1) REAL quoted price, SL = the opposite level
+   //--- 1) REAL execution price, SL = the opposite level, TP from the REAL entry and the REAL SL distance
+   //---    (so profit at TP = risk x R/R exactly as the recovery maths assumes, even after a gap)
    double entry=revBuy?tk.ask:tk.bid;
    double slp=RoundTick(slLvl);
+   double realDist=MathAbs(entry-slp);
+   double tpp=0.0;
+   {
+    SRiskResult rk0;
+    if(RiskCompute(g_curRisk,revBuy,entry,slp,rk0) && rk0.vol>0.0) tpp=TPPriceLot(revBuy,entry,slp,rk0.vol,rk0.perLot);   // v2.30: from the actual lot
+    if(tpp<=0.0) tpp=RoundTick(revBuy?entry+realDist*g_rr:entry-realDist*g_rr);                                            // fallback only
+   }
    //--- v2.23 MAX REVERSAL DISTANCE: a market entry far beyond the level is a different trade (different SL distance / lot): do not take it
    if(force==0 && InpMaxRevGap>0.0 && MathAbs(entry-lvl)>InpMaxRevGap)
      {
@@ -4100,35 +4023,7 @@ bool TryMarketReverse(const int force=0)   // force: 0 = reversal after an SL, 1
       return false;
      }
 
-   //--- 2) v2.31-C: the lot is sized from a CONSERVATIVE entry (quoted price + the allowed slippage), not from the ideal quote.
-   //---    STRICT: if no legal lot fits the risk at that entry the order is NOT sent (never forced to the minimum lot) - it waits.
-   string rgw="",rgc="";
-   if(RecoveryGuardBlocks(rgw,rgc))
-     {
-      g_wcode=rgc; g_waitReason=rgw; g_nextRevMs=nowMs+5000;
-      RaiseAlert("RPGUARD"+rgc,rgw,false,true);
-      return true;
-     }
-   int    devPts=InpTurbo?TurboDeviationLimit(nowMs):g_maxDev;
-   double sizeEntry=InpTurbo?TurboWorstEntry(revBuy,entry,devPts):entry;
-   double lot=0,est=0; string err="";
-   if(!CalcLotSL(g_curRisk,revBuy,sizeEntry,slp,lot,est,err))
-     {
-      //--- no legal volume at THIS price is a WAIT (the price may move to a better entry), never a hard failure
-      HandleLotError(err);
-      g_nextRevMs=nowMs+5000;
-      return true;
-     }
-   //--- 3) TP from the FINAL lot (same lot that is sent): the distance needed for the net target is measured on the sizing entry,
-   //---    then anchored at the quoted price (the expected fill). Any shortfall caused by a worse fill is carried by the existing debt logic.
-   double perLotAtSize=g_rk.perLot;
-   double tpp=0.0;
-   {
-    double tpW=TPPriceLot(revBuy,sizeEntry,slp,lot,perLotAtSize);
-    if(tpW>0.0) tpp=RoundTick(revBuy?entry+MathAbs(tpW-sizeEntry):entry-MathAbs(tpW-sizeEntry));
-    if(tpp<=0.0) tpp=RoundTick(revBuy?entry+MathAbs(entry-slp)*g_rr:entry-MathAbs(entry-slp)*g_rr);   // fallback only
-   }
-   //--- PRE-FLIGHT against the real market: SL/TP on the correct side and outside the Stops Level
+   //--- 2) PRE-FLIGHT against the real market: SL/TP on the correct side and outside the Stops Level
    if(!MarketPreflight(revBuy,slp,tpp,why))
      {
       g_revFails++;
@@ -4142,6 +4037,23 @@ bool TryMarketReverse(const int force=0)   // force: 0 = reversal after an SL, 1
       return true;
      }
 
+   //--- 3) lot from the REAL entry to the SL (a gap makes the SL farther -> a smaller lot; the risk stays = requested risk)
+   double lot=0,est=0; string err="";
+   string rgw="",rgc="";
+   if(RecoveryGuardBlocks(rgw,rgc))
+     {
+      g_wcode=rgc; g_waitReason=rgw; g_nextRevMs=nowMs+5000;
+      RaiseAlert("RPGUARD"+rgc,rgw,false,true);
+      return true;
+     }
+   if(!CalcLotSL(g_curRisk,revBuy,entry,slp,lot,est,err))
+     {
+      //--- v2.23: no legal volume at THIS price is a WAIT (the price may move to a better entry), never a hard failure
+      HandleLotError(err);
+      g_nextRevMs=nowMs+5000;
+      return true;
+     }
+
    //--- 4) one-position rule: no pending order may survive next to the market order
    ulong od[];
    int no=OwnOrders(od);
@@ -4151,11 +4063,10 @@ bool TryMarketReverse(const int force=0)   // force: 0 = reversal after an SL, 1
    //--- 5) send; the expected protection AND the expected price are remembered:
    //---    SL/TP -> repaired by the protection guard if missing; price -> REAL slippage is measured after the fill (RegisterPosition)
    GS("RVSL",slp); GS("RVTP",tpp); GS("RVEXP",entry);
-   g_trade.SetDeviationInPoints(devPts);   // v2.31-C: adaptive tolerance <= TurboDevCeiling(); the lot was sized for exactly this worst fill
+   g_trade.SetDeviationInPoints(InpTurbo?MathMax(g_maxDev,InpTurboDevPts):g_maxDev);   // v2.31 TURBO: a rocket candle moves while the request travels - accept the slip instead of a requote
    //--- the expected price is sent with the request, so Max Slippage Check also works as a PRICE GUARD (a requote / reject instead of a bad fill)
    bool r=revBuy?g_trade.Buy(lot,g_sym,entry,slp,tpp,"Yetimmm"):g_trade.Sell(lot,g_sym,entry,slp,tpp,"Yetimmm");
    uint rc=g_trade.ResultRetcode();
-   g_trade.SetDeviationInPoints(g_maxDev);   // restore the default for every other request
    bool ok=(r && (rc==TRADE_RETCODE_DONE || rc==TRADE_RETCODE_PLACED || rc==TRADE_RETCODE_DONE_PARTIAL));
    long ot=revBuy?(long)ORDER_TYPE_BUY:(long)ORDER_TYPE_SELL;
    if(ok)
@@ -4164,7 +4075,7 @@ bool TryMarketReverse(const int force=0)   // force: 0 = reversal after an SL, 1
       g_revHard=0;
       g_waitReason="";
       double gapPts=MathAbs(entry-lvl)/g_point;
-      LogOrder("MARKET_REVERSAL",ot,entry,lot,g_trade.ResultOrder(),rc,"level "+PX(lvl)+" already crossed (gap "+DoubleToString(gapPts,0)+" pts) | quoted "+PX(entry)+" sizing-entry "+PX(sizeEntry)+" dev "+IntegerToString(devPts)+" pts | SL "+PX(slp)+" TP "+PX(tpp)+" | worst-case loss at SL $"+D2(est));
+      LogOrder("MARKET_REVERSAL",ot,entry,lot,g_trade.ResultOrder(),rc,"level "+PX(lvl)+" already crossed (gap "+DoubleToString(gapPts,0)+" pts) | SL "+PX(slp)+" TP "+PX(tpp)+" | est. loss at SL $"+D2(est));
       YLog(string(revBuy?"Buy":"Sell")+" opened at market @ "+PX(entry)+" (level "+PX(lvl)+" already crossed after the Stop Loss) | lot "+LotS(lot)+" | est. loss at SL $"+D2(est));
       TgQueue("🔁 MARKET REVERSAL\n"+(revBuy?"BUY":"SELL")+" opened at market\nLevel crossed: "+PX(lvl)+" | Expected entry: "+PX(entry)+"\nLot: "+LotS(lot)+" (risk $"+D2(g_curRisk)+", est. loss at SL $"+D2(est)+")\nSL: "+PX(slp)+"\nTP: "+PX(tpp));
       g_dirty=true;
@@ -4174,7 +4085,7 @@ bool TryMarketReverse(const int force=0)   // force: 0 = reversal after an SL, 1
    string cm=g_trade.ResultComment();
    g_revFails++;
    if(!RevRetcodeTransient(rc)) g_revHard++;
-   LogOrder("MARKET_REVERSAL_FAILED",ot,entry,lot,0,rc,cm+" | dev "+IntegerToString(devPts)+" pts");
+   LogOrder("MARKET_REVERSAL_FAILED",ot,entry,lot,0,rc,cm);
    YLog("Market reversal rejected: retcode "+IntegerToString((int)rc)+" "+cm+" (attempt "+IntegerToString(g_revFails)+")");
    g_nextRevMs=nowMs+(ulong)MathMin(15000.0,2000.0*g_revFails);
    if(InpTurbo && RevRetcodeTransient(rc) && g_revFails<=8) g_nextRevMs=nowMs+150;   // v2.31 TURBO: requote / price changed in a fast market = retry at once (bounded)
@@ -6995,6 +6906,39 @@ void OnDeinit(const int reason)
    YLog("EA stopped (reason "+IntegerToString(reason)+")."+((wasOwner||(g_inited && !g_halt))?" State saved.":" (this copy never owned the instance lock - nothing saved)."));
   }
 
+//--- v2.31 TURBO: momentum detector + "hot" state. EA code is single-threaded: a WebRequest in progress blocks OnTick for up to 2 s,
+//--- so while the price is moving fast or sits near an entry level NO network call is started (see NetDeferForEntry).
+ulong  g_hotUntil=0;
+double g_mpx[16]; ulong g_mms[16]; int g_mi=0; int g_mn=0;
+void TurboFeed(const MqlTick &tk,const ulong now)
+  {
+   if(!InpTurbo || tk.bid<=0.0 || tk.ask<=0.0) return;
+   double mid=(tk.bid+tk.ask)*0.5;
+   g_mpx[g_mi]=mid; g_mms[g_mi]=now; g_mi=(g_mi+1)%16; if(g_mn<16) g_mn++;
+   double lo=mid,hi=mid;
+   for(int i=0;i<g_mn;i++)
+     {
+      if(now-g_mms[i]>(ulong)MathMax(100,InpTurboMomMs)) continue;
+      if(g_mpx[i]<lo) lo=g_mpx[i];
+      if(g_mpx[i]>hi) hi=g_mpx[i];
+     }
+   if((hi-lo)>=(double)MathMax(1,InpTurboMomPts)*g_point) g_hotUntil=now+(ulong)MathMax(500,InpTurboHotMs);
+  }
+
+//--- true while the market is near an entry level / trigger (a spike can start any moment) or the hot state is on
+bool TurboHot(const ulong now)
+  {
+   if(!InpTurbo) return false;
+   if(now<g_hotUntil) return true;
+   if(g_state!=YT_ARMED && g_state!=YT_WAITING_REENTRY) return false;
+   MqlTick t;
+   if(!SymbolInfoTick(g_sym,t) || t.bid<=0.0 || t.ask<=0.0) return false;
+   double nr=(double)MathMax(1,InpTurboNearPts)*g_point;
+   if(g_buyLevel>0.0 && MathAbs(t.ask-g_buyLevel)<=nr) return true;
+   if(g_sellLevel>0.0 && MathAbs(t.bid-g_sellLevel)<=nr) return true;
+   return false;
+  }
+
 void OnTick()
   {
    if(g_halt) return;
@@ -7025,8 +6969,8 @@ void OnTick()
            }
         }
      }
-   if(!crossed && now-g_lastSyncMs>=(ulong)(InpTurbo?20:50) && VirtualWake()) crossed=true;   // v2.22: virtual entry reacts on the tick the price crosses
-   if(crossed || g_dirty || now-g_lastSyncMs>=(ulong)(InpTurbo?150:300))
+   if(!crossed && now-g_lastSyncMs>=(InpTurbo?20:50) && VirtualWake()) crossed=true;   // v2.22: virtual entry reacts on the tick the price crosses
+   if(crossed || g_dirty || now-g_lastSyncMs>=(InpTurbo?150:300))
      {
       g_dirty=false;
       SyncAll();
