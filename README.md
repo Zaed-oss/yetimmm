@@ -1,4 +1,4 @@
-# Yetimmm v4.19.0
+# Yetimmm v4.23.0
 
 > **v4.16 (EA 2.30) — المواصفة الملزمة:** مخاطرة ابتدائية 1$ (لا لوت ثابت) · اللوت يُحسب تلقائياً من مواصفات الرمز لدى الوسيط · المخاطرة ×1.05 بعد كل خسارة · TP محسوب من اللوت الفعلي ليبقى **20$ صافياً** بعد تعويض كل الخسائر · لا تصفير إلا عند تحقيق ذلك · جدول 80 صفقة (EA + Mini App + `Plan80.csv`). التفاصيل: `docs/RECOVERY-PLAN.md` و`CHANGELOG.md`. **F7 ثم Demo إلزاميان** (`docs/MT5-TESTING.md`).
 
@@ -82,7 +82,7 @@ npm run deploy
 ## التطوير والتحقق
 ```bash
 npm run check    # فحص صياغة JS + ملفات الواجهة + wrangler + بنية الـ EA
-npm test         # 155 اختباراً في المجموع: 45 اختباراً للـ Worker (tests/worker.test.mjs) + اختبارات v4.18 (جلسات متعددة الأجهزة، دليل الحسابات، XSS، initData، CORS، مسبار النشر، فحوص EA البنيوية) + محرك المخاطرة وخطة التعويض
+npm test         # 201 اختباراً في المجموع (منها 16 لتحسينات v4.21 في tests/v433-pace.test.mjs): 45 اختباراً للـ Worker (tests/worker.test.mjs) + اختبارات v4.18 (جلسات متعددة الأجهزة، دليل الحسابات، XSS، initData، CORS، مسبار النشر، فحوص EA البنيوية) + محرك المخاطرة وخطة التعويض
 npm run dev      # تشغيل محلي (انسخ worker/.dev.vars.example إلى worker/.dev.vars)
 ```
 
@@ -119,7 +119,7 @@ npm run dev      # تشغيل محلي (انسخ worker/.dev.vars.example إلى
 ## v4.8.0 / EA 2.23 — محرك Broker/Risk (تنفيذ تقرير التدقيق الشامل)
 - **لا يوجد «خطأ لوت» قاتل بعد الآن:** الطلب أصغر من أقل حجم للوسيط ⇒ `WAITING_VOLUME` (بلا أمر، بلا خطأ، بلا إيقاف، تنبيه واحد). `STRICT` (الافتراضي) لا يتجاوز المخاطرة المطلوبة أبداً؛ `CLAMP_TO_MIN` يستخدم أقل لوت ويعرض **المخاطرة الفعلية** صراحةً.
 - **BrokerSpec حي** (min/max/step/limit/contract/tick/currency/stops/freeze/modes…) يُنشر من الـ EA في كل مزامنة؛ الواجهة لا تفترض `100/0.01/2 decimals/$` وتعرض المخاطرة المطلوبة/أقل مخاطرة/الفعلية والعملة الحقيقية.
-- `OrderCheck` قبل كل أمر معلّق، `SYMBOL_VOLUME_LIMIT`، انتهاء الأمر حسب `SYMBOL_EXPIRATION_MODE`، `MaxSpread` للتسليح، التحقق الصارم `PAIR_NOT_EXECUTABLE`.
+- `OrderCheck` قبل كل أمر معلّق، `SYMBOL_VOLUME_LIMIT`، انتهاء الأمر حسب `SYMBOL_EXPIRATION_MODE`، التحقق الصارم `PAIR_NOT_EXECUTABLE`.
 - **قناة إشعارات واحدة** EA → Worker → Telegram بمعرّف حدث فريد (لا تكرار حتى بعد إعادة التشغيل)، و**Bot Token لا يصل MT5 أبداً**، ولا Telegram عام (Public) بعد الآن.
 - **أوامر بعمر (TTL)** وتنبيه الواجهة فقط لأوامرها هي. `PAIR_CODE` إلزامي.
 - ⚠️ **الـ EA لم يُترجم ولم يُختبر على MT5 هنا** (لا MetaEditor): اضغط F7 ثم Strategy Tester ثم Demo (`docs/MT5-TESTING.md`). ما نُفّذ وما لم يُنفّذ بالتفصيل: `docs/V4.18-FIXES.md` و`docs/SECURITY-AUDIT.md`.

@@ -11,7 +11,7 @@ const fail = (m) => { bad++; console.log("  FAIL " + m); };
 const read = (p) => readFileSync(join(root, p), "utf8");
 
 // 1) JavaScript syntax
-for (const f of ["worker/worker.js", "worker/news.js", "news/yt-news.js", "anim/yt-anim.js", "app.js"]) {
+for (const f of ["worker/worker.js", "worker/budget.js", "worker/news.js", "news/yt-news.js", "anim/yt-anim.js", "app.js"]) {
   try { execFileSync(process.execPath, ["--check", join(root, f)], { stdio: "pipe" }); ok(f + " syntax"); } catch (e) { fail(f + " syntax: " + String(e.stderr).split("\n")[0]); }
 }
 // 2) inline script of index.html
@@ -29,7 +29,7 @@ const dup = ids.filter((x, i) => ids.indexOf(x) !== i);
 dup.length ? fail("duplicate ids: " + [...new Set(dup)].join(", ")) : ok("no duplicate element ids");
 // 5) wrangler.toml essentials
 const toml = read("worker/wrangler.toml");
-for (const need of ['main = "worker.js"', 'class_name = "Hub"', 'class_name = "Notify"', 'new_sqlite_classes = ["Hub"]', 'new_sqlite_classes = ["Notify"]'])
+for (const need of ['main = "worker.js"', 'class_name = "Hub"', 'class_name = "Notify"', 'new_sqlite_classes = ["Hub"]', 'new_sqlite_classes = ["Notify"]', 'class_name = "Budget"', 'new_sqlite_classes = ["Budget"]'])
   toml.includes(need) ? ok("wrangler.toml has " + need) : fail("wrangler.toml missing " + need);
 // 6) no default password in code
 /PASSWORD:\s*"[^"]+"/.test(read("worker/worker.js")) ? fail("worker.js contains a hard-coded password") : ok("worker.js has no hard-coded password");

@@ -8,7 +8,7 @@
 | `InpBreachPolicy` | `BREACH_WAIT` | بعد SL يُعاد تسليح الزوج؛ `WAITING_REENTRY` حتى يمكن وضع الأمرين. Market Reversal مطفأ |
 | `InpRiskPolicy` | `STRICT` | لا تتجاوز المخاطرة المطلوبة أبداً |
 | `InpOrderCheck` | `true` | `OrderCheck` قبل كل أمر معلّق |
-| `InpMaxSpread` | `0` (مطفأ) | فوقه: أوامر جديدة تنتظر `WAITING_SPREAD` |
+| `InpMaxSpread` | `0` (**مهجور v2.34**) | لا يؤثر على أي أمر: السبريد يُقاس ويُسجَّل فقط (`InpWarnSpread` تنبيه للعلم) |
 | `InpTpResetNetOnly` | `true` | TP يصفّر التسلسل فقط إذا غطّى صافي الصفقة الخسارة المتراكمة |
 | `InpTgViaWorker` | `true` | إشعارات عبر الـ Worker؛ لا Token في MT5؛ لا polling |
 | `InpCmdTtlSec` | `30` | أمر أقدم من ذلك = EXPIRED |
@@ -21,7 +21,7 @@
 - مثال: خسارة اللوت 145، مخاطرة 1 ⇒ raw 0.0069 < 0.01 ⇒ STRICT ينتظر (أقل مخاطرة قابلة للتنفيذ 1.45)؛ CLAMP_TO_MIN ينفّذ 0.01 بمخاطرة فعلية 1.45.
 
 ## حالات الانتظار (`wcode`) — ليست أخطاء
-`WAITING_VOLUME` · `WAITING_MARGIN` · `WAITING_SPREAD` · `WAITING_MARKET` · `WAITING_BROKER` · `WAITING_PRICE` · `WAITING_REENTRY` · `WAITING_SEQCAP` · `WAITING_RISKCAP` (حارس خطة التعويض، v2.24). الخطأ الحقيقي (`ERROR`) يبقى فقط لتكرار فشل إرسال غير قابل للتعافي (8 مرات متتالية).
+`WAITING_VOLUME` · `WAITING_MARGIN` · `WAITING_MARKET` · `WAITING_BROKER` · `WAITING_PRICE` · `WAITING_REENTRY` · `WAITING_SEQCAP` · `WAITING_RISKCAP` (حارس خطة التعويض، v2.24). الخطأ الحقيقي (`ERROR`) يبقى فقط لتكرار فشل إرسال غير قابل للتعافي (8 مرات متتالية).
 
 ## التحقق
 - `PAIR_NOT_EXECUTABLE`: عرض المنطقة < `2 × Stops Level + Spread الحي` ⇒ يُرفض عند التطبيق (وضع PENDING).

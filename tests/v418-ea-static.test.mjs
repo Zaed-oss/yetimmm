@@ -31,8 +31,8 @@ test("config file: sealed with acct + chk and refused when it does not match", (
   assert.match(ea, /FileWriteString\(h,"chk="\+seal/);
   assert.match(ea, /FAILED its integrity \/ account check/);
 });
-test("versions agree: EA 2.31 = Worker EA_PROTOCOL", () => {
-  assert.match(ea, /#define YT_VER "2\.31"/); assert.match(ea, /#property version   "2\.31"/);
+test("versions agree: EA 2.34 = Worker EA_PROTOCOL", () => {
+  assert.match(ea, /#define YT_VER "2\.34"/); assert.match(ea, /#property version   "2\.34"/);
 });
 test("risk decisions untouched: ValidateRisk / InpMaxSeqLosses / InpMaxRiskPctBal still present and identical in count", () => {
   const orig = readFileSync(new URL("../tests/fixtures/risk-markers.json", import.meta.url), "utf8");

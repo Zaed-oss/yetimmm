@@ -7,6 +7,7 @@ enabled = true
 
 # ── Durable Objects ─────────────────────────────────────────────────────
 # HUB    : one isolated hub per MT5 account (EA state, sessions, commands, order alerts)
+# BUDGET : v4.23 ONE shared request counter for the whole Cloudflare account (all hubs report to it; ~1,000 extra requests/day, counted)
 # NOTIFY : economic calendar + unified notifications (news alerts, order alerts, Telegram delivery)
 [[durable_objects.bindings]]
 name = "HUB"
@@ -16,6 +17,10 @@ class_name = "Hub"
 name = "NOTIFY"
 class_name = "Notify"
 
+[[durable_objects.bindings]]
+name = "BUDGET"
+class_name = "Budget"
+
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["Hub"]
@@ -23,6 +28,10 @@ new_sqlite_classes = ["Hub"]
 [[migrations]]
 tag = "v2"
 new_sqlite_classes = ["Notify"]
+
+[[migrations]]
+tag = "v3"
+new_sqlite_classes = ["Budget"]
 
 # ── Secrets (never put these in this file) ──────────────────────────────
 #   wrangler secret put BOT_TOKEN      REQUIRED  Telegram bot token (also used to verify Telegram identity)
@@ -52,3 +61,15 @@ ALLOWED_ORIGIN = "https://zaed-oss.github.io"
 # MT5_FEED       = "1"        # "0" = ignore the MT5 calendar and use only the external feeds
 # NEWS_PROVIDER  = "auto"     # auto | ff | te
 # MARKET_TZ      = "UTC"      # fallback platform time zone (the EA reports the real broker offset itself)
+# ── v4.23 unified request budget (Cloudflare Workers Free = 100,000 requests/day, reset 00:00 UTC) ──────────────────────────────────────────────────────
+# Layers: CF_DAILY_LIMIT (real plan limit) > DAILY_REQ_BUDGET (internal, always clamped to 90 % of the limit minus EXTERNAL_REQ_DAILY) > normal ceiling (budget minus RESERVE_PCT, which UI refreshes never spend).
+# DAILY_REQ_BUDGET = "80000"   # internal operating budget. "0" = governor off (paid plan)
+# CF_DAILY_LIMIT   = "100000"  # the REAL limit of your plan (set it when you are not on the Free plan)
+# RESERVE_PCT      = "12"      # % of the internal budget kept for trading-critical traffic only
+# PLAN_HOURS       = "12"      # one continuous session the budget is planned for (PACE_PLAN_HOURS of v4.21 is still understood)
+# EXTERNAL_REQ_DAILY = "0"     # requests/day of OTHER services on the same Cloudflare account (they eat the same limit)
+# OVERHEAD_PCT     = "8"       # Cloudflare counts requests no hub sees (CORS preflight, edge rejections, news, webhook): added to every reading
+# IDLE_SYNC_SEC    = "3"       # EA full sync interval while NO app is open and no order alert is armed (1 = off, max 5)
+# WATCH_SYNC_SEC   = "2"       # EA full sync interval while the app only WATCHES (no tap for 45 s) (1 = off, max 5)
+# BUDGET_SHARED    = "1"       # "0" = every hub counts alone (no shared counter)
+# Optional - the REAL number from Cloudflare analytics (secrets, never in this file):  wrangler secret put CF_API_TOKEN (Account Analytics: Read)  and  wrangler secret put CF_ACCOUNT_ID

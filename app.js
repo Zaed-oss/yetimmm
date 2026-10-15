@@ -10,7 +10,7 @@ const CONFIG={
   mode:"live",
   sessionStore:"local",                        // "local" = stay signed in across launches (default) | "session" = token lives only until the app is closed (safer if XSS ever happens; you sign in again each launch)
   staleSec:20,                                 // FALLBACK only: the server reports the real timeout (eaStaleSec in /state) so Worker and app can never disagree
-  api:{baseUrl:"https://yetimmm-bridge.sayfhazeem078.workers.dev",pollMs:1000,headers:{}},
+  api:{baseUrl:"https://yetimmm-bridge.sayfhazeem078.workers.dev",pollMs:1500,pxMs:500,headers:{}},
   telegram:{token:"",chatId:"",notify:true},
   origins:[]                                   // allowed origins for window.postMessage commands
 };
@@ -105,7 +105,8 @@ tr_auto:["زر AutoTrading في MT5 مطفي","AutoTrading is OFF in MT5"],tr_ex
 trOffT:["التداول معطّل في MT5","Trading is disabled in MT5"],
 wfT:["بانتظار السعر","WAITING FOR PRICE"],wfR:["السبب","Reason"],wfR1:["السعر خارج منطقة وضع الأوامر — ستوضع الأوامر تلقائياً عند دخول السعر المنطقة","Price is outside the placement zone — the orders are placed automatically when the market enters it"],wfR2:["بانتظار دخول السوق إلى منطقة وضع الأوامر","Waiting for the market to enter the placement zone"],
 rrHi:["ℹ️ نسبة فعلية 1:{0} — الهدف TP يبعد {0} ضعف مسافة الوقف ({1}$) · شراء TP {2} · بيع TP {3}","ℹ️ Effective ratio 1:{0} — TP is {0}× the SL distance (${1}) · BUY TP {2} · SELL TP {3}"],
-aVol:["حجم الصفقات المفتوحة","Open volume"],aNp:["الصفقات المفتوحة","Open positions"],aMl:["مستوى الهامش","Margin level"],aSrv:["السيرفر","Server"],aLot:["لوت","lots"]});
+aVol:["حجم الصفقات المفتوحة","Open volume"],aNp:["الصفقات المفتوحة","Open positions"],aMl:["مستوى الهامش","Margin level"],aSrv:["السيرفر","Server"],aLot:["لوت","lots"],
+pfT:["قياس الأداء","Performance"],pfLane:["الخط السريع","Fast lane"],pfOn:["يعمل","Running"],pfIdle:["بانتظار الاستخدام","Standby"],pfSusp:["موقوف مؤقتاً (حماية التنفيذ)","Paused (execution guard)"],pfOff:["مُعطَّل","Off"],pfCmdL:["وصول الأمر · خط سريع","Command arrival · fast lane"],pfCmdF:["وصول الأمر · مزامنة عادية","Command arrival · full sync"],pfTrig:["من لمس السعر إلى الأمر في السيرفر","Trigger → order on server"],pfRtt:["رحلة الشبكة من MT5","MT5 network round trip"],pfDuty:["حجب","blocked"],pfPx:["رحلة السعر للتطبيق","Price trip to the app"],pfAge:["عمر السعر","price age"],pfReq:["طلبات Cloudflare اليوم","Cloudflare requests today"],pfHr:["ساعة","h"],bdT:["ميزانية الطلبات (Cloudflare)","Request budget (Cloudflare)"],bdSt:["حالة حاكم الميزانية","Budget governor"],bd_normal:["طبيعي","normal"],bd_watch:["مراقبة","watching"],bd_easing:["تخفيف تدريجي","easing"],bd_saving:["توفير","saving"],bd_critical:["حرج","critical"],bd_reserve:["الاحتياطي قيد الاستخدام","reserve in use"],bd_exhausted:["الميزانية نفدت","budget spent"],bd_off:["متوقف (خطة مدفوعة)","off (paid plan)"],bdUsed:["المستهلك اليوم ≈ (كل الحسابات)","Used today ≈ (all accounts)"],bdOwn:["عدّاد هذا الحساب (فعلي)","This account's counter (measured)"],bdLim:["الميزانية الداخلية / الحد الفعلي","Internal budget / real limit"],bdPct:["مستهلك / متبقٍّ ≈","used / left ≈"],bdRes:["الاحتياطي المحجوز","Reserve held back"],bdRate:["المعدل الحالي (5 · 15 · 60 د)","Rate now (5 · 15 · 60 min)"],bdAvg:["متوسط الساعة منذ بداية اليوم ≈","Average per hour today ≈"],bdProj:["التوقع بعد 3 · 6 · 12 ساعة ≈","Forecast in 3 · 6 · 12 h ≈"],bdEta:["الوقت المتوقع لبلوغ السقف ≈","Time to the ceiling ≈"],bdSlow:["تخفيض التحديث (السعر · الحالة)","Refresh slow-down (price · state)"],bdCls:["حسب الأولوية: حرج · تشغيلي · تجميلي","By priority: critical · operational · cosmetic"],bdReset:["إعادة ضبط الميزانية (UTC)","Budget reset (UTC)"],bdCf:["عدّاد Cloudflare الرسمي","Cloudflare's own counter"],bdCfNo:["غير مفعّل (لا CF_API_TOKEN)","not configured (no CF_API_TOKEN)"],bdNote:["الأرقام المسبوقة بـ ≈ تقدير داخلي وليست عدّاد Cloudflare الرسمي.","Figures marked ≈ are internal estimates, not Cloudflare's official counter."],bdWarn:["⚠️ استهلاك الطلبات بلغ","⚠️ Request usage reached"],bdAgo:["منذ","ago"],bdMin:["د","min"],bdHrs:["س","h"],bdLeft:["متبقٍّ","left"]});
 const $=i=>document.getElementById(i);
 const ic=n=>`<svg class="ic i3 i-${n}"><use href="#i-${n}"/></svg>`;
 const idn=v=>{const n=Math.trunc(Number(v));return Number.isFinite(n)&&n>=0?String(n):"0"};   /* ticket / trade numbers are printed ONLY through this */
@@ -225,7 +226,7 @@ const Ops={m:new Map(),dids:new Set(),log:[],TO:{delete:15000,_:12000},
     return changed},
   snapshot(){return{open:[...this.m.values()].map(o=>({cmd:o.c,id:o.id,ageMs:Date.now()-o.at})),log:this.log.slice(0,60)}}
 };
-const Bridge={ok:null,auth:false,at:0,init:false,lc:"",mine:new Set(),dirty:false,applyId:null,busy:false,again:false,pend:[],
+const Bridge={ok:null,auth:false,at:0,init:false,lc:"",mine:new Set(),dirty:false,applyId:null,busy:false,again:false,pend:[],f:1,f2:1,f3:1,sg:"",stSame:0,wl:0,tAt:Date.now(),pxR:[],pxSame:0,pxAge:null,
   async req(path,opt){
     const r=await fetch(CONFIG.api.baseUrl+path,{...opt,headers:{"Content-Type":"application/json","X-Login":SES.l,"X-Session":SES.s,...CONFIG.api.headers}});
     if(r.status===401){let w="";try{w=(await r.clone().json()).why||""}catch(e){}Login.out(false,w==="pw"||w==="revoked"?"e_pw_changed":w==="expired"?"e_expired":w==="acct"?"e_acct":"e_relogin")}
@@ -234,8 +235,14 @@ const Bridge={ok:null,auth:false,at:0,init:false,lc:"",mine:new Set(),dirty:fals
   async pull(){
     if(this.busy){this.again=true;return}this.busy=true;
     try{
-      const d=await this.req("/state");
-      cleanState(d);prev=S.price||d.price;Object.assign(S,d);snapSave(d);this.pend=this.pend.filter(p=>Date.now()-p.at<900000);this.ok=true;this.auth=false;this.at=Date.now();
+      const cond=this.init&&this.sg&&!Ops.active()&&!this.again;   /* v4.23: conditional refresh - while an operation is open (or right after a change) always the FULL state */
+      const d=await this.req("/state?m="+this.mode()+(cond?"&sg="+this.sg:""));
+      if(d&&d.same===true){          /* nothing slow-changing happened: take only price, link state, perf and pace; skip the heavy render path */
+        prev=S.price||d.price;this.stSame++;this.paceIn(d.pace);
+        for(const k of["price","ask","perf","eaAge","eaOnline","eaStaleSec","pace"])if(k in d)S[k]=d[k];
+        this.ok=true;this.auth=false;this.at=Date.now();Ops.settle();this.busy=false;setMode();render();if(this.again){this.again=false;setTimeout(()=>this.pull(),120)}return}
+      this.stSame=0;if(d&&d.pace&&_n(d.pace.w)>this.wl&&_n(d.pace.w)>=2){toast(t("bdWarn")+" "+Math.round(_n(d.pace.u)/Math.max(1,_n(d.pace.b))*100)+"%")}if(d&&d.pace)this.wl=_n(d.pace.w);if(d&&d.sg)this.sg=String(d.sg).replace(/[^a-z0-9]/gi,"").slice(0,12);
+      cleanState(d);prev=S.price||d.price;this.paceIn(d.pace);Object.assign(S,d);snapSave(d);this.pend=this.pend.filter(p=>Date.now()-p.at<900000);this.ok=true;this.auth=false;this.at=Date.now();
       const lc=d.lastCmd;
       if(!this.init){this.init=true;this.lc=lc?lc.id:"";fillInputs(true)}
       else if(lc&&lc.id!==this.lc){this.lc=lc.id;Ops.ack(lc);if(this.mine.has(lc.id)&&!Ops.dids.has(lc.id))toast(lc.cat==="tech"?"❌ "+t("e_generic"):(lc.ok?"":"❌ ")+trEA(String(lc.text||"").replace(/^[\u274C\u2705\u2139\u26A0\uFE0F\s]+/,"")));if(lc.ok&&lc.id===this.applyId)this.dirty=false}
@@ -245,6 +252,26 @@ const Bridge={ok:null,auth:false,at:0,init:false,lc:"",mine:new Set(),dirty:fals
     Ops.settle();this.busy=false;setMode();render();
     if(this.again){this.again=false;setTimeout(()=>this.pull(),120)}
   },
+  /* v4.20: price lane. The card follows the broker tick the EA reads (same SymbolInfoTick the orders use) ~3x per second through the light /px route; the full state keeps its own 1 s pull */
+  async px(){
+    if(this.pb)return;this.pb=true;
+    try{
+      const t0=performance.now(),d=await this.req("/px?m="+this.mode());
+      this.pxR.push(performance.now()-t0);if(this.pxR.length>20)this.pxR.shift();
+      if(d){this.paceIn(d);this.pxAge=d.age==null?null:_n(d.age)}
+      if(d&&d.eaOnline&&d.p>0){if(d.p!==S.price||(d.a>0&&d.a!==S.ask)){this.pxSame=0;prev=S.price;S.price=+d.p;if(d.a>0)S.ask=+d.a;feed();renderPrice()}else this.pxSame++}
+    }catch(e){}
+    this.pb=false},
+  /* v4.21 ACTIVITY TIERS + PACE. A = the user is interacting (tap / key in the last 45 s, or an operation is open): full speed. B = watching: slower. C = idle 5 min: slowest and the EA's fast lane stops.
+     The Worker's pace factor `f` (Cloudflare budget governor) multiplies every delay. A hidden tab never calls the network. Before: fixed 1000 ms + 350 ms for as long as the app was open (~30k requests/hour with the EA). */
+  mode(){const ia=Date.now()-this.tAt;return(Ops.active()||ia<45000)?"A":ia>300000?"C":"B"},
+  /* v4.23 PRIORITY CLASSES. p2 = /state (operational): f2 slows it gently; p3 = /px (cosmetic): f3 slows it first and hardest. Both come from the Worker's governor, which starts easing BEFORE the budget is in danger.
+     Source reduction (not just delay): A 500 ms price / 1.5 s state, B 1.5 s / 4 s, C 4 s / 10 s (v4.22: 350 ms / 1 s, 800 ms / 2 s, 2 s / 5 s). An unchanged state signature stretches the state poll (x2 after 20, x3 after 60 identical answers; never while an operation is open). A still price stretches the price poll. */
+  paceIn(p){if(!p)return;const c=(v,m)=>Math.max(1,Math.min(m,_n(v)||1));this.f=c(p.f,10);this.f2=c(p.f2!==undefined?p.f2:p.f,6);this.f3=c(p.f3!==undefined?p.f3:p.f,10)},
+  dState(){const m=this.mode(),b=m==="A"?CONFIG.api.pollMs:m==="B"?4000:10000,k=(m==="A"&&Ops.active())?1:this.stSame>=60?3:this.stSame>=20?2:1;return Math.min(20000,Math.round(b*k*this.f2))},
+  dPx(){const m=this.mode(),b=m==="A"?CONFIG.api.pxMs:m==="B"?1500:4000,k=(m!=="A"&&this.pxSame>=30)||(m==="A"&&this.pxSame>=60)?2:1;return Math.min(15000,Math.round(b*k*this.f3))},
+  loop(fn,dl){const go=async()=>{try{if(!document.hidden&&Login.has()&&Verify.ok)await fn.call(this)}catch(e){}setTimeout(go,dl.call(this))};setTimeout(go,dl.call(this))},
+  touch(){const idle=Date.now()-this.tAt;this.tAt=Date.now();if(idle>120000&&!document.hidden&&Login.has()&&Verify.ok)this.pull()},
   /* fast polling only while an operation is open (500 ms), so the result shows up as soon as MT5 reports it */
   fast(){if(this.fl)return;this.fl=true;const loop=async()=>{if(!Ops.active()){this.fl=false;render();return}await this.pull();setTimeout(loop,500)};setTimeout(loop,300)},
   async cmd(c,p){
@@ -532,7 +559,7 @@ function renderDash(){
   if(live()&&link()==="off")NT.push(`<div class="note er"><b>${ic("alert")} ${t("offT")}</b><br>${t("offB")}${linkRows()}</div>`);
   else if(live()&&link()==="srv")NT.push(`<div class="note er"><b>${ic("alert")} ${t("l_srv")}</b><br>${t("l_srvS")}${linkRows()}</div>`);
   else if(live()&&link()==="ok"&&tradeWhy())NT.push(`<div class="note er"><b>${ic("alert")} ${t("trOffT")}</b><br>${t(tradeWhy())}${linkRows()}</div>`);
-  if(live()&&link()==="ok"&&S.frz)NT.push(`<div class="note er" style="display:flex;justify-content:space-between;align-items:center;gap:8px"><span>${ic("pause")} ${t("frzL")} · ${f(S.price)}</span><button class="btn go" style="padding:8px 12px" data-oc="start">${t("rst")}</button></div>`);
+  if(live()&&link()==="ok"&&S.frz)NT.push(`<div class="note er" style="display:flex;justify-content:space-between;align-items:center;gap:8px"><span>${ic("pause")} ${t("frzL")} · ${f(S.frzPx>0?S.frzPx:S.price)}</span><button class="btn go" style="padding:8px 12px" data-oc="start">${t("rst")}</button></div>`);
   if(live()&&link()==="ok"&&S.wcode&&!S.frz&&D["w_"+S.wcode])NT.push(`<div class="note"><b>⏳ ${t("w_"+S.wcode)}</b>${S.msg?`<br><small>${esc(trEA(S.msg))}</small>`:""}</div>`);
   if(live()&&link()==="ok"&&!(parseFloat(S.ver)>=2.18))NT.push(`<div class="note er">${t("oldEA")}</div>`);
   h=alertsHtml(NT)+h;
@@ -569,9 +596,9 @@ function renderHist(){
   const h=`<div class="card"><h3><span class="hl">${ic("dollar")}${t("net")}</span><span class="mu num" style="font-size:11px">${wkRange()}</span></h3><div class="big num ${cl(net)}" style="margin-bottom:6px">${sg(net)}$</div>${eqSvg(eq.pts)}${eq.pts.length>2?`<div class="eqm"><span>${t("hCur")}</span><span>${t("hDd")} <b class="num dn">${eq.dd>0?"−"+f(eq.dd)+"$":"0$"}</b></span></div>`:""}<div class="kv" style="margin-top:12px">${k(t("tot"),n)}${k(t("win"),w,"up")}${k(t("rate"),(n?f(w/n*100,0):0)+"%")}</div></div>${statsCard()}<div class="card"><h3><span class="hl">${ic("hist")}${t("logT")}</span><button class="ib" id="hCsv" type="button" style="width:36px;height:36px" aria-label="${t("hCsv")}" title="${t("hCsv")}">${ic("save")}</button></h3><small class="mu" style="display:block;margin:-6px 0 10px">${t("wkR")}</small>${RW.length?`<div class="chips" id="hF">${chips}</div>`:""}${rows}</div>`;
   if(h!==_histH){_histH=h;$("hist").innerHTML=h}
 }
-function feed(){if(!(S.price>0)||S.frz)return;SP.push(S.price);if(SP.length>40)SP.shift()}
+function feed(){if(!(S.price>0))return;SP.push(S.price);if(SP.length>40)SP.shift()}
 function renderPrice(){
-  const d=S.frz?0:S.price-prev;$("qc").classList.toggle("frozen",!!S.frz);$("pr").textContent=S.price>0?fp(S.price):"—";$("pr").className="pr num "+(d>0?"up":d<0?"dn":"");$("chg").textContent=S.price>0?sg(d):"";$("chg").className="chg num "+cl(d);
+  const d=S.price-prev;$("qc").classList.toggle("frozen",false);$("pr").textContent=S.price>0?fp(S.price):"—";$("pr").className="pr num "+(d>0?"up":d<0?"dn":"");$("chg").textContent=S.price>0?sg(d):"";$("chg").className="chg num "+cl(d);
   if(SP.length>1){const mn=Math.min(...SP),mx=Math.max(...SP),sp=mx-mn||1;const pts=SP.map((v,i)=>(i*200/(SP.length-1)).toFixed(1)+","+(36-(v-mn)/sp*32).toFixed(1)).join(" ");$("spl").setAttribute("points",pts);$("spa").setAttribute("points",pts+" 200,40 0,40")}
 }
 const isB=s=>String(s).toUpperCase().startsWith("B");
@@ -660,7 +687,7 @@ function resetUI(){ask2(t("q_reset"),t("q_resetB2",f(S.risk),S.seq||0,f(S.acc||0
 
 /* shell: tabs, theme, language */
 /* ═════ v4.17 · shell helpers: smart folds, sticky mini quote, sliding nav indicator, settings tab ═════ */
-const APP_V="4.17.0";
+const APP_V="4.23.0";
 const FD=()=>UI.fold||(UI.fold={}),isFold=(k,d)=>{const v=FD()[k];return v===undefined?!!d:!!v};
 function fold(k,label,body,def,force){const o=!!force||isFold(k,def);return `<div class="fd${o?" open":""}" data-fd="${k}"><button class="fdt" type="button" data-fdt="${k}" aria-expanded="${o}"><span>${label}</span><svg class="chev" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg></button><div class="fb"><div class="fi">${body}</div></div></div>`}
 function applyFolds(){document.querySelectorAll(".fd[data-fd]").forEach(el=>{if(el.dataset.def===undefined)return;const o=isFold(el.dataset.fd,el.dataset.def==="1");el.classList.toggle("open",o);const b=el.querySelector(":scope>[data-fdt]");b&&b.setAttribute("aria-expanded",o)})}
@@ -681,13 +708,50 @@ function advSum(){const e=$("advS");if(e)e.textContent=cs()+f(S.risk)+" · +"+f(
 function navInd(){const n=$("nav"),b=n&&n.querySelector("button.on");if(!b)return;n.style.setProperty("--ix",(b.offsetLeft+b.offsetWidth*.3)+"px");n.style.setProperty("--iw",(b.offsetWidth*.4)+"px")}
 window.addEventListener("resize",navInd);
 let _setD="",_setA="";
+function perfRows(){
+  const P=S.perf,pc=S.pace||{};
+  if(!live()||!P||typeof P!=="object")return"";
+  const ms=v=>_n(v)>0?Math.round(_n(v))+" ms":"—",
+    st=o=>o&&_n(o.n)>0?`${ms(o.p50)} · p95 ${ms(o.p95)} <span class="mu">(${idn(o.n)})</span>`:"—",
+    row=(k,v)=>`<div class="rw"><span class="lb">${t(k)}</span><b class="num">${v}</b></div>`,
+    xs=[...Bridge.pxR].sort((a,b)=>a-b),x50=xs.length?xs[Math.floor(xs.length/2)]:0,
+    rq=_n(pc.b)>0?`${idn(pc.n)} / ${idn(pc.b)}`:idn(pc.n);
+  return `<div class="lb" style="margin:10px 0 4px">${t("pfT")}</div>`
+    +row("pfLane",_n(P.fast)?(_n(P.susp)?t("pfSusp"):_n(P.on)?t("pfOn"):t("pfIdle")):t("pfOff"))
+    +row("pfCmdL",st(P.cmdL))+row("pfCmdF",st(P.cmdF))+row("pfTrig",st(P.trig))
+    +row("pfRtt",ms(P.rtt)+" · "+t("pfDuty")+" "+_n(P.duty).toFixed(1)+"%")
+    +row("pfPx",ms(x50)+(Bridge.pxAge!=null?" · "+t("pfAge")+" "+ms(Bridge.pxAge):""))
+    +row("pfReq",rq+(_n(pc.h)>0?" · "+idn(pc.h)+"/"+t("pfHr"):"")+(_n(pc.f)>1.05?" · ×"+_n(pc.f).toFixed(1):""))}
+function budgetRows(){
+  const pc=S.pace;if(!live()||!pc||typeof pc!=="object")return"";
+  const N=v=>new Intl.NumberFormat().format(Math.round(_n(v))),row=(k,v,cls)=>`<div class="rw"><span class="lb">${t(k)}</span><b class="num${cls?" "+cls:""}">${v}</b></div>`,
+    en=pc.en!==false&&_n(pc.b)>0,B=_n(pc.b),u=_n(pc.u),pct=B>0?Math.min(999,u/B*100):0,sk=en?String(pc.st||"normal").replace(/[^a-z]/g,""):"off",
+    hrs=Math.max(0.25,(Date.now()%864e5)/36e5),pr=Array.isArray(pc.pr)?pc.pr:[],r=pc.r||{},c=pc.c||{},
+    eta=pc.eta==null?"—":_n(pc.eta)>=48?"48+ "+t("bdHrs"):_n(pc.eta).toFixed(1)+" "+t("bdHrs"),
+    rs=_n(pc.reset)>0?new Date(_n(pc.reset)).toLocaleTimeString([],{hour:"2-digit",minute:"2-digit"})+" · "+Math.max(0,Math.round((_n(pc.reset)-Date.now())/3600000*10)/10)+" "+t("bdHrs"):"—",
+    cf=pc.cf&&pc.cf.req!=null?`${N(pc.cf.req)} <span class="mu">(${t("bdAgo")} ${Math.round(_n(pc.cf.age)/60)} ${t("bdMin")})</span>`:t("bdCfNo"),
+    bad=sk==="exhausted"||sk==="reserve"||sk==="critical";
+  return `<div class="lb" style="margin:10px 0 4px">${t("bdT")}</div>`
+    +row("bdSt",t("bd_"+sk)+(_n(pc.f3)>1.05?" · ×"+_n(pc.f3).toFixed(1):""),bad?"dn":"")
+    +row("bdUsed",`≈ ${N(u)}`)+row("bdOwn",N(pc.n))
+    +row("bdLim",`${N(B)} / ${N(pc.lim)}`+(pc.clamped?" ↓":""))
+    +row("bdPct",en?`${pct.toFixed(0)}% / ${Math.max(0,100-pct).toFixed(0)}%`:"—")
+    +row("bdRes",en?`${N(pc.R)}`+(_n(pc.rs)>0?" (−"+N(pc.rs)+")":""):"—")
+    +row("bdRate",`${N(r.m5)} · ${N(r.m15)} · ${N(r.m60)} /${t("bdHrs")}`)
+    +row("bdAvg",`≈ ${N(u/hrs)} /${t("bdHrs")}`)
+    +row("bdProj",pr.length===3?`${N(pr[0])} · ${N(pr[1])} · ${N(pr[2])}`:"—")
+    +row("bdEta",eta)
+    +row("bdSlow",`×${_n(pc.f3).toFixed(1)} · ×${_n(pc.f2).toFixed(1)}`)
+    +row("bdCls",`${N(c.p1)} · ${N(c.p2)} · ${N(c.p3)}`)
+    +row("bdReset",rs)+row("bdCf",cf)
+    +`<div class="mu" style="font-size:11px;margin-top:6px">${t("bdNote")}</div>`}
 function renderSettings(){
   const ac=$("setAccC");if(!ac)return;
   ac.hidden=!live();
   if(live()){const a=S.acct||{},lg=a.login||SES.l||"",h=`<div class="rw"><span class="lb">${t("aId")}</span><b class="num">#${esc(lg)}</b></div>`+(a.srv?`<div class="rw"><span class="lb">${t("aSrv")}</span><b class="num">${esc(a.srv)}${a.cur?" · "+esc(a.cur):""}</b></div>`:"")+`<button class="btn dg" style="width:100%;margin-top:12px" data-oc="logoutAsk">${LOGOUT_IC}${t("outB")}</button>`;
     if(h!==_setA){_setA=h;$("setAcc").innerHTML=h}}
   const lk=live()?linkRows():"",ver=`<div class="rw"><span class="lb">${t("verA")}</span><b class="num mu">${APP_V}</b></div><div class="rw"><span class="lb">${t("verE")}</span><b class="num mu">${S.ver?esc(S.ver):"—"}</b></div>`,
-    h2=(lk?`<div class="dg2">${lk}</div>`:"")+ver;
+    h2=(lk?`<div class="dg2">${lk}</div>`:"")+(perfRows()?`<div class="dg2">${perfRows()}</div>`:"")+(budgetRows()?`<div class="dg2">${budgetRows()}</div>`:"")+ver;
   if(h2!==_setD){_setD=h2;$("setDiag").innerHTML=h2}
 }
 
@@ -856,13 +920,13 @@ applyFolds();$("in_b").value=S.buy;$("in_s").value=S.sell;$("in_r").value=S.risk
 const phoneLang=()=>{try{const w=TG.wa||(window.Telegram&&Telegram.WebApp),u=w&&w.initDataUnsafe&&w.initDataUnsafe.user,l=String((u&&u.language_code)||navigator.language||(navigator.languages&&navigator.languages[0])||"ar").toLowerCase();return l.indexOf("ar")===0?0:1}catch(e){return 0}};
 setLang(UI.lgManual?(UI.lg||0):phoneLang());   // phone language (Telegram / system) unless the user switched manually with the language button
 window.addEventListener("load",()=>{if(!UI.lgManual){const v=phoneLang();if(v!==LG)setLang(v)}});   // the Telegram script loads async: re-check once it is there
-if(live()){if(Login.has())Verify.run();else Login.show(Login.msg());setInterval(()=>{if(!document.hidden&&Login.has()&&Verify.ok)Bridge.pull()},CONFIG.api.pollMs);setInterval(()=>{setMode();renderLink()},1000);document.addEventListener("visibilitychange",()=>{if(!document.hidden&&Login.has()&&Verify.ok)Bridge.pull()})}else setInterval(tick,1200);
+if(live()){if(Login.has())Verify.run();else Login.show(Login.msg());Bridge.loop(Bridge.pull,Bridge.dState);Bridge.loop(Bridge.px,Bridge.dPx);["pointerdown","keydown","touchstart","wheel"].forEach(ev=>document.addEventListener(ev,()=>Bridge.touch(),{passive:true,capture:true}));setInterval(()=>{setMode();renderLink()},1000);document.addEventListener("visibilitychange",()=>{if(!document.hidden&&Login.has()&&Verify.ok){Bridge.px();Bridge.pull()}})}else setInterval(tick,1200);
 /* ── v2 polish: tick flash, loading skeleton, retry, Esc, a11y, haptics ── */
 (function(){
   document.body.classList.add("loading");
   const o=Bridge.pull.bind(Bridge);let lp=0;
   Bridge.pull=async function(){await o();document.body.classList.remove("loading")};
-  const rp=renderPrice;renderPrice=function(){const old=lp;rp();if(old&&S.price>0&&!S.frz&&S.price!==old){const e=$("pr");e.classList.remove("tu","td");void e.offsetWidth;e.classList.add(S.price>old?"tu":"td")}lp=S.price};
+  const rp=renderPrice;renderPrice=function(){const old=lp;rp();if(old&&S.price>0&&S.price!==old){const e=$("pr");e.classList.remove("tu","td");void e.offsetWidth;e.classList.add(S.price>old?"tu":"td")}lp=S.price};
   $("retryB").onclick=()=>{vib();Bridge.ok=null;if(Login.has()&&Verify.ok)Bridge.pull()};
   document.addEventListener("keydown",e=>{if(e.key==="Escape")shut()});
   $("sheet").setAttribute("role","dialog");$("sheet").setAttribute("aria-modal","true");$("ssh").setAttribute("role","alertdialog");$("toast").setAttribute("role","status");$("toast").setAttribute("aria-live","polite");

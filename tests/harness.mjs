@@ -8,6 +8,7 @@ export function boot(extra = {}) {
   const env = { BOT_TOKEN: TOKEN, APP_PASSWORD: "S3cret-pass", PAIR_CODE: PAIR, REQUIRE_TG: "0", ...extra };
   env.HUB = ns(W.Hub, env);
   env.NOTIFY = ns(W.Notify, env);
+  env.BUDGET = ns(W.Budget, env);   // v4.23: the shared account-wide request counter
   const eas = {};
   const call = async (path, { method = "POST", body, headers = {} } = {}) => {
     const r = await W.default.fetch(new Request("https://w" + path, { method, body: body === undefined ? undefined : JSON.stringify(body), headers }), env);

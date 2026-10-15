@@ -145,6 +145,6 @@ test("exact reference numbers of the plan with the requested risk (80th trade)",
   near(risk, 47.2, 0.01); near(cum, 971.23, 0.01);
 });
 test("Worker release matches the EA protocol and the Mini App sends the 4-decimal risk", () => {
-  assert.ok(readFileSync(join(root, "worker", "worker.js"), "utf8").includes('EA_PROTOCOL = "2.31"'));
+  assert.ok(readFileSync(join(root, "worker", "worker.js"), "utf8").includes('EA_PROTOCOL = "2.34"'));
   assert.ok(ea.includes('DoubleToString(g_curRisk,4)'));
 });

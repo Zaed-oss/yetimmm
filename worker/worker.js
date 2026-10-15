@@ -1,4 +1,4 @@
-// Yetimmm bridge v4.19.0 — ONE bot, ONE link, login by MT5 account number + ONE app password.
+// Yetimmm bridge v4.23.0 — ONE bot, ONE link, login by MT5 account number + ONE app password.
 //   EA  -> POST /api/ea/sync  (headers X-EA-Secret [+ X-EA-Pair while pairing])  body {login, srv, fresh, reset, cv, state, ack}
 //   App -> POST /login        body {login, pw, init}                -> {ok, sess}
 //   App -> POST /verify       headers X-Login + X-Session, body {init} -> {ok, hard, checks:{session,account,telegram,bot}}
@@ -17,8 +17,9 @@
 //    • SESSION_EPOCH bumped -> everybody is signed out instantly (panic button)
 // ═════════════════════════════════════════════════════════════════════════
 import { Notify } from "./news.js";
-export const VERSION = "4.19.0", EA_PROTOCOL = "2.31";   // v4.8: the ONE place the release number lives (package.json / README / CHANGELOG / EA must match: npm run check enforces it)
-export { Notify };
+import { Budget, budgetCfg, Rates, plan, stepFactor, classFactors, levelOf, warnOf, honestUsed, hubAllowance } from "./budget.js";   // v4.23: unified daily request budget (pure logic + shared counter)
+export const VERSION = "4.23.0", EA_PROTOCOL = "2.34";   // v4.8: the ONE place the release number lives (package.json / README / CHANGELOG / EA must match: npm run check enforces it)
+export { Notify, Budget };
 
 const CONFIG = {
   PASSWORD: "",              // leave EMPTY and set it as a secret:  wrangler secret put APP_PASSWORD   (login is refused until a password exists)
@@ -33,6 +34,10 @@ const CONFIG = {
   ALLOWED_ORIGIN: "",        // v4.6.1: fail-closed. CORS origin of the web app, e.g. "https://you.github.io" (set in wrangler.toml [vars]; env wins). "*" = open, testing only
   REQUIRE_TG: true,          // true = login only from inside the Telegram bot (env REQUIRE_TG="0" allows browsers)
   SESSION_TOUCH_SEC: 600,    // v4.6: any authenticated request slides the session expiry (persisted at most once per this many seconds)
+  DAILY_REQ_BUDGET: 80000,   // v4.23 INTERNAL operating budget per UTC day (always clamped below CF_DAILY_LIMIT x 90 %). 0 = governor off (paid plan). Details, layers and every other knob: worker/budget.js (BUDGET_DEFAULTS)
+  IDLE_SYNC_SEC: 3,          // the EA's FULL sync runs every second around the clock = 86,400 requests/day even with the app closed. While NO app is open (and no armed order alert needs the 1 s granularity) the Worker asks for one full sync every this many seconds (1..5; 1 = off). A notification or a command from the app is never delayed beyond it.
+  WATCH_SYNC_SEC: 2,         // v4.23: while the app only WATCHES (tier B: no tap for 45 s) the EA's full sync is asked every this many seconds (1 = off). Commands and notifications still arrive at once (lane / EA event bypass).
+  PACE_PLAN_HOURS: 12,       // v4.23: the budget is planned for one continuous session of this many hours (was 6). Env PLAN_HOURS or PACE_PLAN_HOURS. This is the "HOURS_PLAN_PACE" of the repair report.
   NEWS_SCOPE: "server",      // v4.6: "server" = one calendar/notification shard per broker server (multi-broker safe) | "global" = legacy single shard
 };
 
@@ -55,6 +60,11 @@ function cfg(env) {
     // v4.8: PAIR_CODE is MANDATORY and separate from APP_PASSWORD (a leaked app password must not pair a rogue EA). ALLOW_PAIR_FALLBACK="1" restores the old fallback (not recommended).
   pairKey: String(env.PAIR_CODE || (String(env.ALLOW_PAIR_FALLBACK || "") === "1" ? (env.APP_PASSWORD || CONFIG.PASSWORD) : "")),
     touchMs: num(env.SESSION_TOUCH_SEC, CONFIG.SESSION_TOUCH_SEC) * 1000,
+    bud: budgetCfg(env, { DAILY_REQ_BUDGET: CONFIG.DAILY_REQ_BUDGET, PLAN_HOURS: CONFIG.PACE_PLAN_HOURS, IDLE_SYNC_SEC: CONFIG.IDLE_SYNC_SEC }),   // v4.23: layers limit > budget > ceiling, reserve, plan hours, shared counter, Cloudflare reconcile
+    get reqBudget() { return this.bud.budget; },   // kept for older readers: 0 = no governor
+    get planHours() { return this.bud.planHours; },
+    idleSyncSec: Math.max(1, Math.min(5, Math.round(num(env.IDLE_SYNC_SEC, CONFIG.IDLE_SYNC_SEC)))),
+    watchSyncSec: Math.max(1, Math.min(5, Math.round(num(env.WATCH_SYNC_SEC, CONFIG.WATCH_SYNC_SEC)))),
     newsScope: String(env.NEWS_SCOPE || CONFIG.NEWS_SCOPE).toLowerCase() === "global" ? "global" : "server",
   };
 }
@@ -167,9 +177,27 @@ function typedObj(x, nums, bools) {
   if ("side" in y) y.side = sideOf(y.side);
   return y;
 }
+// v4.21: the EA's measurement block (round trips, lane duty, command latency) is forwarded to the app as plain numbers only.
+function perfOf(p) {
+  if (!p || typeof p !== "object") return undefined;
+  const n = (v) => { const x = Number(v); return Number.isFinite(x) ? Math.round(x * 10) / 10 : 0; };
+  const st = (q) => ({ n: n(q && q.n), p50: n(q && q.p50), p95: n(q && q.p95) });
+  const o = {};
+  for (const k of ["fast", "on", "susp", "ms", "rtt", "duty", "blk", "ln", "zone", "hf", "hs", "ia"]) o[k] = n(p[k]);
+  for (const k of ["cmdL", "cmdF", "exec", "trig", "rttS"]) o[k] = st(p[k]);
+  return o;
+}
+// v4.23: 32-bit FNV-1a signature of the slow-changing part of the public state (volatile keys excluded). A false "changed" only costs a full answer; a false "same" is impossible for the included fields.
+function sigOf(pub, oal) {
+  const o = { ...pub }; delete o.price; delete o.ask; delete o.perf; delete o.pace;
+  const t = JSON.stringify(o) + "|" + JSON.stringify(oal || []);
+  let h = 0x811c9dc5; for (let i = 0; i < t.length; i++) { h ^= t.charCodeAt(i); h = Math.imul(h, 0x01000193) >>> 0; }
+  return h.toString(36);
+}
 function publicOf(st) {
   const o = { ...st };
   delete o.__proto__; delete o.constructor;       // an own "__proto__" key from a hostile EA state must never reach the app
+  if ("perf" in o) { const pf = perfOf(o.perf); if (pf) o.perf = pf; else delete o.perf; }
   delete o.cmds;                                   // EA command log (Apply / Waiting / Superseded / failed ...) = internal, never a trade
   if (o.pos && typeof o.pos === "object") o.pos = typedObj(o.pos, ["pid", "entry", "sl", "tp", "lot", "est", "risk", "no", "profit"]);
   if (Array.isArray(o.orders)) o.orders = o.orders.slice(0, 40).map((x) => typedObj(x, ["ticket", "price", "lot", "sl", "tp"]));
@@ -259,8 +287,8 @@ export default {
         if (body.length > (P === "/login" ? 8192 : 2000000)) return done(json({ ok: false, error: "too_large" }, 413));
         const b = jobj(body);
         login = String((b && b.login) || "").trim();
-      } else if (P === "/admin/diag" || P === "/state" || P === "/command" || P === "/logout" || P === "/verify" || P.startsWith("/news/") || P === "/order-alert") {
-        if (P === "/state" && req.method !== "GET") return done(json({ error: "method" }, 405));      // GET never changes anything but the caller's own sliding session
+      } else if (P === "/admin/diag" || P === "/state" || P === "/px" || P === "/command" || P === "/logout" || P === "/verify" || P.startsWith("/news/") || P === "/order-alert") {
+        if ((P === "/state" || P === "/px") && req.method !== "GET") return done(json({ error: "method" }, 405));      // GET never changes anything but the caller's own sliding session
         if ((P === "/command" || P === "/logout" || P === "/verify") && req.method !== "POST") return done(json({ error: "method" }, 405));
         login = (req.headers.get("X-Login") || "").trim();
         if (req.method === "POST") { body = await req.text(); if (body.length > 65536) return done(json({ ok: false, error: "too_large" }, 413)); }
@@ -328,7 +356,10 @@ export default {
         const tg = await tgUser(String(b.init || ""), env.BOT_TOKEN || "", c);
         return done(await call("/verify", { sess, tg }));
       }
-      if (P === "/state") return done(await call("/state", { sess }));
+      const am = String(url.searchParams.get("m") || "").slice(0, 1);        // v4.21: the app says how it is being used: A = interacting, B = watching, C = idle
+      const asg = String(url.searchParams.get("sg") || "").slice(0, 12).replace(/[^a-z0-9]/gi, "");   // v4.23: the state signature the app already holds (conditional refresh)
+      if (P === "/state") return done(await call("/state", { sess, m: am, sg: asg }));
+      if (P === "/px") return done(await call("/px", { sess, m: am }));        // v4.20: price-only lane for the app (no history / archive / alerts work per call)
       if (P === "/command") return done(await call("/command", { sess, body }));
       if (P === "/logout") return done(await call("/logout", { sess }));
     } catch (e) { return done(json({ error: "server" }, 500)); }
@@ -337,8 +368,77 @@ export default {
 };
 
 export class Hub {
-  constructor(ctx, env) { this.ctx = ctx; this.env = env || {}; this.c = cfg(env || {}); this.st = null; this.ts = 0; this.oa = null; this.miss = {}; this.hxSig = ""; this.wkc = null; this.dseen = new Set(); this.mq = Promise.resolve(); this.migrated = false; this.dirAt = 0; }
+  constructor(ctx, env) { this.ctx = ctx; this.env = env || {}; this.c = cfg(env || {}); this.st = null; this.ts = 0; this.oa = null; this.miss = {}; this.hxSig = ""; this.wkc = null; this.dseen = new Set(); this.mq = Promise.resolve(); this.migrated = false; this.dirAt = 0; this.rq = null; this.rts = new Rates(); this.pf = 1; this.pfAt = 0; this.rqSaved = 0; this.allow = 0; this.appMode = "A"; this.g = null; this.gAt = 0; this.calib = 1; this.pl = null; this.pfc = { f: 1, f2: 1, f3: 1 }; this.hid = ""; }
   age() { return this.ts ? (Date.now() - this.ts) / 1000 : null; }
+  // ---- v4.23 UNIFIED BUDGET GOVERNOR (logic: worker/budget.js) --------------------------------------------------------------------------------------------------
+  // Every call that reaches this hub is one Cloudflare request, so every call is COUNTED and CLASSED:
+  //   p1 trading-critical (EA full sync that carries commands / events / state, app commands, order alerts, sign-in): never slowed here
+  //   p2 operational (the app's /state)                                                                                : slowed gently
+  //   p3 cosmetic (the price lane /px, the EA's light lane without a command)                                         : slowed first and hardest
+  // The plan is for a PLAN_HOURS (12) session against what is really left of the day (not a fixed 6 h), with a reserve the UI never spends,
+  // and the account TOTAL (all hubs, plus the optional Cloudflare analytics) decides - not this hub alone.
+  async tally(cls = "p2") {
+    const now = Date.now(), day = Math.floor(now / 86400000);
+    if (!this.rq) {
+      const sv = await this.ctx.storage.get("rq");
+      this.rq = sv && sv.d === day ? { d: sv.d, n: sv.n || 0, c: { p1: 0, p2: 0, p3: 0, ...(sv.c || {}) }, pf: sv.pf || 1 } : { d: day, n: 0, c: { p1: 0, p2: 0, p3: 0 }, pf: 1 };
+      this.pf = Math.min(8, Math.max(1, Number(this.rq.pf) || 1));    // a Worker restart keeps the factor: no stampede right after a restart
+      if (sv && sv.d === day) this.rts.t0 = now - 120000;               // we do not know the rate before the restart: assume a young but not brand-new window
+    }
+    if (this.rq.d !== day) { this.rq = { d: day, n: 0, c: { p1: 0, p2: 0, p3: 0 }, pf: 1 }; this.pf = 1; this.rts = new Rates(now); this.g = null; this.calib = 1; this.pl = null; }
+    this.rq.n++; this.rq.c[cls] = (this.rq.c[cls] || 0) + 1;
+    this.rts.add(now);
+    if (now - this.pfAt > 20000) { this.pfAt = now; this.paceEval(now); }
+    if (now - this.rqSaved > 30000) { this.rqSaved = now; try { const a = await this.ctx.storage.get("acc"); if (a) { this.hid = String(a.login || ""); this.rq.pf = Math.round(this.pf * 100) / 100; await this.ctx.storage.put("rq", this.rq); } } catch (e) { /* the counter is advisory. v4.18 rule kept: a request for an account that was never verified writes NOTHING */ } }
+    if (this.hid && this.c.bud.shared && this.env.BUDGET && now - this.gAt > this.c.bud.syncSec * 1000) { this.gAt = now; await this.shareSync(now); }
+  }
+  reclass(from, to) { if (this.rq && this.rq.c[from] > 0) { this.rq.c[from]--; this.rq.c[to]++; } }   // a light-lane call that turned out to carry a command / event is trading-critical
+  async shareSync(now) {
+    try {
+      const E = this.env, r = await E.BUDGET.get(E.BUDGET.idFromName("acct")).fetch("https://b/add", { method: "POST", body: JSON.stringify({ id: this.hid, d: this.rq.d, n: this.rq.n, c: this.rq.c, r: Math.round(this.rts.rate(now, 5)) }) });
+      const j = await r.json();
+      if (j && j.ok && j.d === this.rq.d) {
+        this.g = { ...j, mine: this.rq.n, at: now };
+        const k = j.cf && j.cf.internal > 200 ? j.cf.req / (j.cf.internal * (1 + this.c.bud.overheadPct / 100)) : 1;   // Cloudflare itself says more than we counted: scale UP (never down)
+        this.calib = Math.min(3, Math.max(1, k));
+      }
+    } catch (e) { /* the shared counter is advisory: the hub keeps governing on its own number (still honest: overhead included) */ }
+  }
+  rate(now) { return this.rts.rate(now, 5); }   // requests per hour over the last 5 minutes (a younger window is scaled to its real length)
+  // the honest reading and the plan for "now" (no side effects: used by the evaluation AND by the dashboard, so the numbers shown are always live)
+  calc(now) {
+    const bc = this.c.bud, g = this.g && this.g.d === this.rq.d ? this.g : null, hubs = g ? Math.max(1, g.hubs) : 1;
+    const used = honestUsed({ own: this.rq.n, others: g ? Math.max(0, g.total - g.mine) : 0, overheadPct: bc.overheadPct, calib: this.calib, cfReq: g && g.cf ? g.cf.req : 0 });
+    const R = this.rts.all(now);
+    const p0 = plan({ now, used, budget: bc.budget, reservePct: bc.reservePct, planHours: bc.planHours, idleReqH: bc.idleReqH, hubs, rates: R });
+    return { used, R, p: { ...p0, allowH: hubAllowance(p0.allowH, hubs, g ? g.othersRate : 0) } };
+  }
+  paceEval(now) {
+    const bc = this.c.bud;
+    if (!bc.enabled || !this.rq) { this.pf = 1; this.allow = 0; this.pl = null; this.pfc = { f: 1, f2: 1, f3: 1 }; return; }
+    const { used, R, p } = this.calc(now);
+    this.pf = stepFactor(this.pf, p, R, used >= bc.budget);
+    this.allow = p.allowH;
+    this.pfc = classFactors(this.pf, this.rq.c, bc.share, p.Cn);
+    this.pl = true;
+  }
+  seeApp(m) { this.appAt = Date.now(); this.appMode = /^[ABC]$/.test(String(m && m.m)) ? m.m : "A"; }   // no `m` (older app) = interacting: the pre-4.21 behaviour
+  modeNow() { return Date.now() - (this.appAt || 0) < 20000 ? this.appMode || "A" : "C"; }
+  // what the app and the dashboard see. Real counts and estimates are labelled apart: n = this hub's own counter, u = the unified honest estimate, cf = Cloudflare's own number (when configured)
+  paceInfo() {
+    const now = Date.now(), bc = this.c.bud;
+    if (this.rq && !this.pl && bc.enabled) this.paceEval(now);
+    const o = { f: this.pfc.f, f2: this.pfc.f2, f3: this.pfc.f3, n: this.rq ? this.rq.n : 0, b: bc.budget, h: Math.round(this.rate(now)), a: Math.round(this.allow), en: bc.enabled, lim: bc.limit, ov: bc.overheadPct, clamped: bc.clamped, plan: bc.planHours, c: this.rq ? { ...this.rq.c } : { p1: 0, p2: 0, p3: 0 }, cs: bc.share.map((x) => Math.round(x * 100)) };
+    const g = this.g && this.rq && this.g.d === this.rq.d ? this.g : null;
+    o.hubs = g ? g.hubs : 1; o.shared = !!g;
+    if (g && g.cf) { o.cf = { req: g.cf.req, age: Math.max(0, Math.round((now - g.cf.at) / 1000)), calib: Math.round(this.calib * 100) / 100 }; } else if (bc.cf) o.cf = { req: null, err: g ? String(g.cfErr || "") : "" };
+    if (this.rq && bc.enabled) {      // live numbers (not the last 20-second evaluation): what the dashboard shows is what the planner sees right now
+      const { used, R, p } = this.calc(now), lv = levelOf(this.pf, used, p);
+      Object.assign(o, { u: p.used, R: p.R, Cn: p.Cn, left: p.left, rs: p.reserveUsed, hl: p.hLeft, T: p.T, eta: p.etaH, pr: p.p3h, ed: p.endDay, r: { m5: Math.round(R.m5), m15: Math.round(R.m15), m60: Math.round(R.m60) }, lvl: lv.lvl, st: lv.st, w: warnOf(used, bc.budget), reset: p.resetAt, base: p.baseline });
+    }
+    return o;
+  }
+
   // v4.19: the last EA snapshot survives a Worker restart / eviction. Without it a restart answered "STOPPED, price 0" until the EA synced again,
   // i.e. the app looked like a brand-new session. The saved copy keeps its ORIGINAL timestamp, so age()/botUp() stay truthful (an old snapshot is never "online").
   async restoreSt() {
@@ -439,11 +539,13 @@ export class Hub {
     const p = new URL(req.url).pathname;
     const b = await req.json().catch(() => ({}));
     if (p === "/dir") return this.dir(b);
+    if (p !== "/tgs" && p !== "/diag") await this.tally(p === "/state" ? "p2" : p === "/px" ? "p3" : p === "/sync" ? (/"lite"\s*:\s*true/.test(String((b && b.body) || "")) ? "p3" : "p1") : "p1");   // v4.23: priority class of the call
     await this.migrate();
     if (p === "/sync") return this.sync(b);
     if (p === "/login") return this.login(b);
     if (p === "/verify") return this.verify(b);
     if (p === "/state") return this.state(b);
+    if (p === "/px") return this.pxGet(b);
     if (p === "/command") return this.command(b);
     if (p === "/logout") return this.logout(b);
     if (p === "/auth") return this.auth(b);
@@ -601,23 +703,42 @@ export class Hub {
         if (!cur || cur.id !== inst || tn - cur.t > 5000) await this.ctx.storage.put("inst", { id: inst, t: tn });
       } else return json({ ok: true, dupInst: true, commands: [], staleSec: this.c.staleSec });
     }
-    if (body.state && typeof body.state === "object") { this.st = body.state; this.ts = Date.now(); this.lstDone = true; await this.persistSt(body.state); try { await this.watch(a); } catch (e) { /* alerts must never break the EA sync */ } try { await this.archive(body.state, a); await this.diagFrom(body.state); } catch (e) { /* the internal archive / diagnostics must never break the EA sync */ } }
+    const lite = body.lite === true;     // v4.20: price + commands only (the EA sends it between its full 1 s syncs while the app is open)
+    if (lite) {
+      const po = body.px && typeof body.px === "object" ? body.px : null;
+      if (po) { const p1 = Number(po.p), q1 = Number(po.a); if (p1 > 0 && p1 < 1e9) this.px = { p: p1, a: q1 > 0 && q1 < 1e9 ? q1 : p1, t: Date.now() }; }
+    }
+    if (!lite && body.state && typeof body.state === "object") { this.st = body.state; this.ts = Date.now(); this.lstDone = true; await this.persistSt(body.state); try { await this.watch(a); } catch (e) { /* alerts must never break the EA sync */ } try { await this.archive(body.state, a); await this.diagFrom(body.state); } catch (e) { /* the internal archive / diagnostics must never break the EA sync */ } }
     let evack = [];
-    if (Array.isArray(body.ev) && body.ev.length) { try { evack = await this.events(body.ev, a, String(m.login || "")); } catch (e) { /* notifications must never break the EA sync */ } }
+    if (!lite && Array.isArray(body.ev) && body.ev.length) { try { evack = await this.events(body.ev, a, String(m.login || "")); } catch (e) { /* notifications must never break the EA sync */ } }
     let calNeed = false;
-    try { calNeed = await this.feed(body); } catch (e) { /* the news feed must never break the EA sync */ }
+    if (!lite) { try { calNeed = await this.feed(body); } catch (e) { /* the news feed must never break the EA sync */ } }
     let q = (await this.ctx.storage.get("cmds")) || [];
     const ack = Array.isArray(body.ack) ? body.ack : [];
     const now = Date.now();
     const next = q.filter((x) => !ack.includes(x.c.id) && now - x.t < 120000);
     if (next.length !== q.length) await this.ctx.storage.put("cmds", next);
-    const out = { ok: true, commands: next.map((x) => ({ ...x.c, age: Math.max(0, Math.round((now - x.t) / 1000)) })), staleSec: this.c.staleSec };   // v4.8: age lets the EA expire stale commands
+    const out = { ok: true, commands: next.map((x) => ({ ...x.c, age: Math.max(0, Math.round((now - x.t) / 1000)), ams: Math.max(0, now - x.t) })), staleSec: this.c.staleSec };   // v4.21: ams = queue time in ms (the EA measures command latency with it)   // v4.8: age lets the EA expire stale commands
+    if (lite && (out.commands.length || evack.length)) this.reclass("p3", "p1");   // v4.23: a light-lane call that delivers a command or an event is trading-critical, not cosmetic
     if (evack.length) out.evack = evack;
     if (issued) out.es = issued;
     if (paired) out.paired = true;
     if (calNeed) out.calNeed = true;
     const aF = await this.S();                       // fresh: a sign-in that happened while this sync ran is included
-    if (String(aF.cfgv) !== String(body.cv !== undefined ? body.cv : 0)) out.cfg = { v: String(aF.cfgv), tok: (body.state && body.state.evp) ? "" : (m.tok || ""), auth: aF.tg.join(",") };   // v4.8: an EA that routes notifications through the Worker never receives the Bot Token
+    const md = this.modeNow(), pf = this.pf, f3 = this.pfc.f3;
+    out.fast = md !== "C" && pf < 4;                          // v4.20: an app is looking right now -> the EA switches to its fast lane (not while it is idle, not while the budget is nearly spent: pace factor >= 4)
+    out.fm = Math.round((md === "A" ? 300 : 800) * f3);       // minimum lane interval (ms) the EA must respect: 300 while the user interacts, 800 while only watching, x the cosmetic-class factor f3 (v4.23: 1 + 1.5 x (pace factor - 1))
+    out.ia = md === "A";                                      // v4.21: the user is interacting -> the EA does not stretch the lane on an unchanged price
+    let sm = pf >= 2 ? Math.min(5, Math.round(pf)) : 1;         // seconds between the EA's full syncs when the budget is tight (never above 5: EA_STALE_SEC is 20). The full sync is trading-critical: it is never slowed beyond this
+    const looking = Date.now() - (this.appAt || 0) < 20000;
+    const slowSec = !looking || md === "C" ? this.c.idleSyncSec : md === "B" ? this.c.watchSyncSec : 1;   // nobody looks / the app is idle (tier C) -> IDLE_SYNC_SEC; the app only WATCHES (tier B) -> WATCH_SYNC_SEC; the user interacts (A) -> 1 s
+    if (slowSec > 1) {      // a slower full sync, unless an armed / just-fired order alert needs the 1 s granularity
+      const oa = await this.loadOa(), tn = Date.now();
+      const live = Object.values(oa).some((r) => r && r.enabled && (r.status === "armed" || (r.status === "fired" && tn - (r.fired_at || 0) < 120000)));
+      if (!live) sm = Math.max(sm, slowSec);
+    }
+    if (sm > 1) out.sm = sm;
+    if (!lite && String(aF.cfgv) !== String(body.cv !== undefined ? body.cv : 0)) out.cfg = { v: String(aF.cfgv), tok: (body.state && body.state.evp) ? "" : (m.tok || ""), auth: aF.tg.join(",") };   // v4.8: an EA that routes notifications through the Worker never receives the Bot Token
     return json(out);
   }
 
@@ -724,7 +845,7 @@ export class Hub {
   }
   async diag() {
     const a = await this.S(), weeks = [...(await this.ctx.storage.list({ prefix: "hx:" })).entries()].map(([k, v]) => ({ weekDay: Number(k.slice(3)), trades: v.length }));
-    return json({ ok: true, now: Date.now(), tzo: a.tzo || 0, eaAge: this.age(), diag: (await this.ctx.storage.get("diag")) || [], commandLog: (this.st && this.st.cmds) || [], lastCmdRaw: (this.st && this.st.lastCmd) || null, archivedWeeks: weeks });
+    return json({ ok: true, now: Date.now(), pace: this.paceInfo(), perf: (this.st && this.st.perf) || null, tzo: a.tzo || 0, eaAge: this.age(), diag: (await this.ctx.storage.get("diag")) || [], commandLog: (this.st && this.st.cmds) || [], lastCmdRaw: (this.st && this.st.lastCmd) || null, archivedWeeks: weeks });
   }
   async state(m) {
     await this.restoreSt();
@@ -734,6 +855,8 @@ export class Hub {
     await this.touch(r);
     const ag = this.age();
     const pub = publicOf(this.st || { price: 0, run: false, state: "STOPPED" });
+    this.seeApp(m);
+    if (this.px && this.px.t > (this.ts || 0) && Date.now() - this.px.t < 5000) { pub.price = this.px.p; pub.ask = this.px.a; }   // v4.20: the fast-lane tick is newer than the last full snapshot
     const oal = await this.oaMine(this.uidOf(r.s, a));
     // v4.7: the Mini App sees the CURRENT WEEK's closed trades only (from the internal archive: unique ids, survives refresh / Worker restart);
     // the EA's own all-time stats and last-40 list are not forwarded. Older weeks stay in the archive untouched.
@@ -741,7 +864,23 @@ export class Hub {
     pub.hist = [...wk].sort((x, y) => y.ts - x.ts);
     pub.stats = weekStats(wk);
     pub.week = { from: win.from, to: win.to, tzo: Number(a.tzo) || 0 };
-    return json({ ...pub, eaAge: ag, eaOnline: this.botUp(), eaStaleSec: this.c.staleSec, oalerts: oal });
+    // v4.23 CONDITIONAL REFRESH: sg = signature of everything slow-changing (price, ask, perf and the pace block are excluded). An app that already holds this signature gets a ~300 byte answer
+    // (price, link state, pace, perf) instead of the whole state + week archive. The request still counts for Cloudflare - the SAVING comes from the app, which backs off while the signature is unchanged.
+    const sg = sigOf(pub, oal);
+    if (m.sg && m.sg === sg) return json({ ok: true, same: true, sg, price: pub.price, ask: pub.ask, perf: pub.perf, eaAge: ag, eaOnline: this.botUp(), eaStaleSec: this.c.staleSec, pace: this.paceInfo() });
+    return json({ ...pub, sg, eaAge: ag, eaOnline: this.botUp(), eaStaleSec: this.c.staleSec, oalerts: oal, pace: this.paceInfo() });
+  }
+  // v4.20: price-only answer for the app's fast lane: one session check, no archive / history / alert work, no session write.
+  async pxGet(m) {
+    await this.restoreSt();
+    const a = await this.S();
+    const r = await this.chk(a, m.sess);
+    if (!r.s) return this.deny(r.why);
+    this.seeApp(m);
+    const st = this.st || {}, now = Date.now(), up = this.botUp();
+    let p = Number(st.price) || 0, q = Number(st.ask) || 0, t = this.ts || 0;
+    if (this.px && this.px.t > t && now - this.px.t < 5000) { p = this.px.p; q = this.px.a; t = this.px.t; }
+    return json({ ok: true, p, a: q > 0 ? q : p, age: t ? Math.max(0, now - t) : null, eaOnline: up, f: this.pfc.f, f2: this.pfc.f2, f3: this.pfc.f3 });
   }
   async command(m) {
     await this.restoreSt();
