@@ -160,7 +160,7 @@ enum ENUM_YT_RISKPOL
    YT_RISK_CLAMP_MIN=1   // use the broker minimum volume and SAY SO: Requested Risk / Effective Risk are both shown and logged
   };
 
-#define YT_VER "2.30"
+#define YT_VER "2.31"
 #define YT_DUP_HALT_SEC 30     // v2.29: the Worker keeps reporting another live copy for this long -> this copy halts
 #define YT_VANISH_WAIT_SEC 90  // v2.29: a vanished position keeps the SAFE state (no orders, sequence untouched) and the history is re-read every 5 s for this long
 #define YT_INST_STALE_SEC 15   // v2.28: a copy that has not refreshed its heartbeat for this long is considered dead

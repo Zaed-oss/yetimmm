@@ -1,4 +1,4 @@
-# Yetimmm v4.16.0
+# Yetimmm v4.17.0
 
 ## v4.12 — ربط الإكسبرت بالـ Worker (خطأ 4014 و HTTP 503)
 - **4014:** يلزم مرة واحدة تفعيل *Allow WebRequest for listed URL* وإضافة رابط الـ Worker و`https://api.telegram.org` (MT5 لا يسمح للإكسبرت بإضافتها بنفسه). الأسهل: أغلق MT5 ثم شغّل `tools/allow-urls.bat` (يقرأ الرابط من `InpBrUrl` ويعدّل `common.ini` لكل النسخ مع نسخة احتياطية). أو يدوياً: Tools ▸ Options ▸ Expert Advisors.
