@@ -50,3 +50,7 @@ ALLOWED_ORIGIN = "https://zaed-oss.github.io"
 # MT5_FEED       = "1"        # "0" = ignore the MT5 calendar and use only the external feeds
 # NEWS_PROVIDER  = "auto"     # auto | ff | te
 # MARKET_TZ      = "UTC"      # fallback platform time zone (the EA reports the real broker offset itself)
+
+[[migrations]]
+tag = "v3"
+
