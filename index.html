@@ -449,7 +449,7 @@ function calcRisk(bs,risk,entry,sl,policy){
 /*RISK-CORE-END*/
 const spec=()=>live()?(S.bs||null):SIM_PROFILES[SIMP];
 const ccyL=()=>{const b=spec();return(b&&b.ccy)||(S.acct&&S.acct.cur)||"USD"};
-const cs=()=>ccyL()==="USD"?"$":ccyL()+" ";
+const cs=()=>ccyL()==="USD"?"$":esc(ccyL())+" ";   /* v4.22: currency code comes from the EA -> escaped */
 const pd=()=>{const b=spec();return b&&b.digits!=null?b.digits:2};
 const vd=()=>{const b=spec();return b&&b.vdig!=null?b.vdig:2};
 const tickSz=()=>{const b=spec();return b&&b.tick>0?b.tick:.01};
@@ -874,7 +874,7 @@ function renderPrice(){
 const isB=s=>String(s).toUpperCase().startsWith("B");
 function rsn(r){r=String(r||"");const l=r.toLowerCase();
   const k=l==="sl"?"r_SL":l==="tp"?"r_TP":/^(manual stop|telegram stop)/.test(l)?"r_STOP":l.startsWith("telegram cancel")?"r_CANCEL":l.startsWith("manual")?"r_EXT":l.startsWith("stop out")?"r_SO":l.startsWith("deviation")?"r_DEV":l.startsWith("extra")?"r_EXTRA":l.startsWith("protection")?"r_PROT":l==="other"?"r_OTH":D["r_"+r]?"r_"+r:"";
-  return k?t(k):r}
+  return k?t(k):esc(r)}   /* v4.22: unmapped reason text is server data -> escaped */
 function fillInputs(force){
   const a=document.activeElement;if(!force&&a&&a.tagName==="INPUT")return;
   const m={in_b:S.buy,in_s:S.sell,in_r:S.risk,in_t:S.target,in_rr:S.rr};
@@ -1058,7 +1058,7 @@ rk_BELOW_MIN:["المخاطرة المطلوبة {0} أقل من أقل مخاط
 rk_ABOVE_MAX:["الحجم المطلوب يتجاوز الحد الأقصى للوسيط — البوت ينتظر","The required volume exceeds the broker maximum — the bot waits"],rk_ABOVE_LIMIT:["حد الحجم الإجمالي لدى الوسيط (Volume Limit) سيُتجاوز — البوت ينتظر","The broker's Volume Limit would be exceeded — the bot waits"],
 rk_CLAMPED:["استُخدم أقل لوت للوسيط: المخاطرة المطلوبة {0} ← الفعلية {1}","Minimum lot used: requested {0} → effective {1}"],
 w_WAITING_VOLUME:["بانتظار حجم صالح","Waiting for a valid volume"],w_WAITING_MARGIN:["بانتظار هامش كافٍ","Waiting for enough margin"],w_WAITING_SPREAD:["بانتظار انخفاض السبريد","Waiting for the spread to narrow"],w_WAITING_MARKET:["السوق مغلق — بانتظار الافتتاح","Market closed — waiting for the open"],
-w_WAITING_SEQCAP:["بانتظار — بلغت الخسائر المتتالية السقف","Paused — consecutive-loss cap reached"],w_WAITING_RISKCAP:["بانتظار — المخاطرة التالية فوق سقف الرصيد","Paused — next risk is above the balance cap"],w_WAITING_BROKER:["بانتظار الوسيط","Waiting for the broker"],w_WAITING_PRICE:["بانتظار السعر","Waiting for the price"],w_WAITING_REENTRY:["بانتظار إعادة الدخول","Waiting to re-enter"],
+w_WAITING_SEQCAP:["بانتظار — بلغت الخسائر المتتالية السقف","Paused — consecutive-loss cap reached"],w_WAITING_RISKCAP:["بانتظار — المخاطرة التالية فوق سقف الرصيد","Paused — next risk is above the balance cap"],w_WAITING_ACCLOSSCAP:["بانتظار — الخسارة التراكمية ستتجاوز السقف","Paused — accumulated loss would exceed the cap"],w_WAITING_MARGINLVL:["بانتظار — مستوى الهامش أقل من الحد الأدنى","Paused — margin level below the minimum"],w_WAITING_NEXTDAY:["اكتملت دورة اليوم — الدورة التالية غدًا","Today's cycle is complete — next cycle tomorrow"],w_WAITING_BROKER:["بانتظار الوسيط","Waiting for the broker"],w_WAITING_PRICE:["بانتظار السعر","Waiting for the price"],w_WAITING_REENTRY:["بانتظار إعادة الدخول","Waiting to re-enter"],
 e_pair:["لا يمكن وضع Buy Stop و Sell Stop معاً بهذا العرض. أقل عرض الآن = {0}","A Buy Stop and a Sell Stop cannot exist together at this width. Minimum width now = {0}"],
 pvEA:["يحسب الـ EA اللوت والمخاطرة الفعلية بعد التطبيق","The EA calculates the lot and effective risk after Apply"]});
 Object.assign(D,{vf_t:["التحقق من الاتصال","Connection check"],vf_s:["فحص سريع قبل الدخول التلقائي","Quick check before automatic sign-in"],

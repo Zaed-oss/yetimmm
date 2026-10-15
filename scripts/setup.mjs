@@ -61,7 +61,7 @@ ok("@" + me.result.username); env.BOT_TOKEN = token;
 
 // 4 ─ owner (you, recognised by Telegram itself) + internal pairing code. No password for you to invent or remember.
 log("4/11 owner + secrets");
-env.PAIR_CODE = env.PAIR_CODE || digits(8);   // internal EA<->Worker pairing: written to Yetimmm.cfg, you never see or type it
+env.PAIR_CODE = env.PAIR_CODE || randomBytes(12).toString("hex");   // v4.22: 96-bit random (was 8 digits = brute-forceable)   // internal EA<->Worker pairing: written to Yetimmm.cfg, you never see or type it
 if (!env.OWNER_TG) {
   await fetch(`https://api.telegram.org/bot${token}/deleteWebhook`, { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" }).catch(() => {});
   console.log(`  \x1b[36m→ Open https://t.me/${me.result.username} on Telegram and press START (waiting up to 2 minutes)\x1b[0m`);

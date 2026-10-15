@@ -181,8 +181,8 @@ test("PAIRING: a stranger who syncs first cannot take the account (no code -> 40
   assert.equal(real.s, 200); assert.ok(real.j.es && real.j.es.length === 64); assert.equal(real.j.paired, true);
 });
 
-test("PAIRING: no lockout - unlimited wrong codes never lock, the right code still pairs", async () => {
-  const b = boot({ PAIR_MAX_FAILS: "3" });
+test("PAIRING: with PAIR_LOCKOUT=0 there is no lockout - unlimited wrong codes never lock, the right code still pairs", async () => {
+  const b = boot({ PAIR_MAX_FAILS: "3", PAIR_LOCKOUT: "0" });   // v4.22: lockout is ON by default; this documents the explicit opt-out
   await b.sync("123456");
   let r;
   for (let i = 0; i < 25; i++) r = await b.call("/api/ea/sync", { body: { login: "123456", state: {} }, headers: { "X-EA-Secret": "a".repeat(32), "X-EA-Pair": "bad" + i } });
@@ -478,7 +478,33 @@ test("v4.8 an EA that routes notifications through the Worker never receives the
   assert.equal(r.j.cfg.tok, "");
   const t2 = boot();
   const r2 = await t2.sync("123456", { cv: 0 });
-  assert.equal(r2.j.cfg.tok, "123:ABC");
+  assert.equal(r2.j.cfg.tok, "", "v4.22: a legacy EA no longer receives the Bot Token by default");
+  const t3 = boot({ ALLOW_EA_BOT_TOKEN: "1" });
+  const r3 = await t3.sync("123456", { cv: 0 });
+  assert.equal(r3.j.cfg.tok, "123:ABC", "explicit legacy opt-in still works");
+});
+
+test("v4.22 security: a weak PAIR_CODE (123123) is refused and never reported as configured", async () => {
+  const t = boot({ PAIR_CODE: "123123" });
+  const r = await t.sync("123456", {}, { pair: "123123" });
+  assert.equal(r.s, 503); assert.equal(r.j.error, "pair_not_configured");
+});
+
+test("v4.22 security: repeated wrong pairing codes are locked out (even the right code is refused during the lock)", async () => {
+  const t = boot({ MAX_ATTEMPTS: "5" });
+  for (let i = 0; i < 5; i++) assert.equal((await t.sync("123456", {}, { pair: "wrong-code-" + i })).s, 403);
+  const r = await t.sync("123456", {}, { pair: PAIR });
+  assert.equal(r.s, 429);
+});
+
+test("v4.22 security: commands reject negative / absurd numbers", async () => {
+  const t = boot();
+  await t.sync("123456");
+  const l = await t.signIn(); const h = t.auth("123456", l.j.sess);
+  for (const bad of [{ cmd: "apply", risk: -5 }, { cmd: "apply", rr: 1e6 }, { cmd: "settings", risk: 1e12 }]) {
+    const r = await t.call("/command", { method: "POST", headers: h, body: bad });
+    assert.equal(r.s, 400);
+  }
 });
 
 test("v4.8 pairing needs a dedicated PAIR_CODE: without it the account cannot be bound (no fallback to the app password)", async () => {

@@ -4,7 +4,7 @@
 //|  MetaTrader 5 | Telegram control | State recovery | Trade log    |
 //+------------------------------------------------------------------+
 #property copyright "Yetimmm"
-#property version   "2.31"
+#property version   "2.34"
 #property description "Yetimmm | XAUUSD | Two-level Stop Buy / Stop Sell switch + risk sequence | Telegram integration"
 
 #include <Trade\Trade.mqh>
@@ -160,7 +160,8 @@ enum ENUM_YT_RISKPOL
    YT_RISK_CLAMP_MIN=1   // use the broker minimum volume and SAY SO: Requested Risk / Effective Risk are both shown and logged
   };
 
-#define YT_VER "2.31"
+#define YT_VER "2.34"
+#define YT_REAL_ORDERS_ONLY true   // v2.33: the EA NEVER opens a trade at market by its own decision. Every entry is a REAL Buy Stop / Sell Stop order on the server, created only from the levels the user sent (Telegram / Mini App). Virtual entry, Fast Catch and Market Reversal are disabled.
 #define YT_DUP_HALT_SEC 30     // v2.29: the Worker keeps reporting another live copy for this long -> this copy halts
 #define YT_VANISH_WAIT_SEC 90  // v2.29: a vanished position keeps the SAFE state (no orders, sequence untouched) and the history is re-read every 5 s for this long
 #define YT_INST_STALE_SEC 15   // v2.28: a copy that has not refreshed its heartbeat for this long is considered dead
@@ -197,7 +198,12 @@ input int    InpMaxSeqLosses   = 20;      // Max consecutive losses in one recov
 input double InpMaxLot         = 0.0;     // v2.31 Max lot allowed for ONE trade (hard safety cap for recovery sizing). 0 = broker maximum only. Above it NEW orders wait (WAITING_VOLUME) - the lot is never forced beyond it
 input bool   InpRecoveryRoundUp = true;   // v2.31 In a recovery cycle the lot is rounded UP to the broker step so the TP repays ALL accumulated losses + the Recovery Target (otherwise rounding down leaves a small debt)
 input double InpMaxRiskPctBal  = 0.0;     // Max risk of ONE trade as % of the account balance. 0 = off. If the next planned risk is above it, NEW orders wait (WAITING_RISKCAP). Report recommendation: 2-3
-input bool   InpPlanLog        = true;    // Print the exact recovery plan (risk / target / cumulative loss / balance needed) in the Experts log at start
+input bool   InpPlanLog        = true;    // Print the exact recovery plan (risk / target / cumulative loss / balance needed) in the Experts log at start AND write the full per-trade table (lot, margin, net at TP) to Yetimmm_<magic>_Plan.csv
+input double InpMaxAccLoss     = 0.0;     // v2.34 Max ACCUMULATED loss allowed in one cycle ($, main units). 0 = off. When (accumulated loss + the next planned risk) would exceed it, NEW orders wait (WAITING_ACCLOSSCAP); open trades are never touched
+input double InpMinMarginLevel = 0.0;     // v2.34 Minimum Margin Level (%) required to place NEW orders. 0 = off. Below it NEW orders wait (WAITING_MARGINLVL); only checked while the account really uses margin
+input bool   InpCostAware      = true;    // v2.34 COST-AWARE LOT: the lot also covers the round-trip commission so the NET profit at TP (not the gross one) repays the accumulated loss + the Recovery Target
+input double InpCommPerLot     = 0.0;     // v2.34 Round-trip commission per 1.00 lot ($, main units). 0 = AUTO (learned from the last closed trade; 0 until the first trade closes). Used only when Cost-Aware is ON
+input bool   InpOneCyclePerDay = false;   // v2.34 After a cycle ends with a TP (net result reached) no NEW cycle starts until the next server day (WAITING_NEXTDAY). Reset / New Cycle from the Mini App overrides it
 
 input group "=== Execution ==="
 input int    InpMaxDeviation   = 30;      // Max Slippage Check (points) - checked AFTER every fill (stop orders cannot be capped by MT5); a market reversal also sends it as a price guard
@@ -212,8 +218,8 @@ input bool   InpCombinedMargin  = true;    // Place a missing Buy Stop / Sell St
 input int    InpProtectCloseSec = 20;     // Position WITHOUT SL/TP: emergency-close after N seconds of failed protection. TRADING DECISION: 20 = "never stay unprotected" (a transient connection problem can close the trade at a loss larger than the planned risk); 0 = never force-close (alert + retry only; the position may stay unprotected)
 
 input group "=== Fast Execution (v2.30) ==="
-input bool   InpFastCatch      = true;    // v2.30 FAST CATCH: a level that the price has ALREADY crossed while no pending order of that side is on the server is entered AT MARKET on that very tick (SL = opposite level, lot sized from the real entry, risk unchanged)
-input bool   InpCatchAfterSL   = true;    // FAST CATCH also right after a Stop Loss (WAITING_REENTRY). false = only when the price was seen INSIDE the zone first
+input bool   InpFastCatch      = false;   // v2.33 DISABLED (ignored: real orders only). v2.30 FAST CATCH: a level that the price has ALREADY crossed while no pending order of that side is on the server is entered AT MARKET on that very tick (SL = opposite level, lot sized from the real entry, risk unchanged)
+input bool   InpCatchAfterSL   = false;   // (ignored, v2.33) FAST CATCH also right after a Stop Loss (WAITING_REENTRY). false = only when the price was seen INSIDE the zone first
 input double InpCatchMaxGap    = 0.0;     // FAST CATCH: skip the market entry when the price is farther than this ($) beyond the level. 0 = no limit (the lot shrinks with the distance, risk stays)
 input int    InpCatchDeviation = 300;     // FAST CATCH: max slippage (points) sent with the market order AND tolerated after the fill (a fast market needs a wide window or the broker re-quotes / rejects)
 input int    InpFastMovePts    = 80;      // A price range of at least this many points inside 1 second = FAST MARKET: no network calls (Telegram / Mini App) so every tick is processed. 0 = off
@@ -366,6 +372,7 @@ color         g_uiCol[];
 
 //--- runtime configuration (inputs are the defaults; the panel can override and the values persist in a config file)
 double        g_target=20.0;
+double        g_commLot=0.0;                // v2.34: learned round-trip commission per 1.00 lot (main units, >= 0); 0 = unknown yet
 double        g_rr=20.0;
 int           g_maxDev=30;
 int           g_warn=60;
@@ -679,6 +686,7 @@ void SaveState()
    GS("PBL",g_pendBuy);
    GS("PSL",g_pendSell);
    GS("LSLS",(double)g_lastSLSide);
+   GS("CPL",g_commLot);                                        // v2.34 learned commission per lot
    GS("USERDEL",(g_mode==YM_BUY || g_mode==YM_SELL)?1.0:0.0);   // v2.14: single-side mode comes ONLY from a user "delete order"
    GlobalVariablesFlush();
   }
@@ -713,6 +721,7 @@ void LoadState()
       g_stateRecovered=false;
      }
    if(g_state==YT_BUY_ACTIVE || g_state==YT_SELL_ACTIVE) g_activeNoPosSince=0;
+   g_commLot=MathMax(GV("CPL",0.0),0.0);                         // v2.34
   }
 
 void ResetRisk()
@@ -991,6 +1000,25 @@ double PerLotLoss(const bool buy,const double entry)
   }
 
 
+//--- v2.34 COST-AWARE SIZING: the commission of a round trip is a real cost of the cycle. The lot must make the NET profit at TP
+//--- (gross - commission) equal to (accumulated loss + target). With risk = (loss + target) / RR the exact condition is
+//---    lot * (perLot * RR - c) >= risk * RR   <=>   lot >= risk / (perLot - c / RR)
+double CommPerLotEff()
+  {
+   if(!InpCostAware) return 0.0;
+   if(InpCommPerLot>0.0) return InpCommPerLot;
+   return (g_commLot>0.0)?g_commLot:0.0;
+  }
+//--- effective loss-per-lot used ONLY to size the lot (never shown as the loss at SL). Falls back to perLot when the cost is unknown or absurd (> 50% of the loss).
+double SizingPerLot(const double perLot)
+  {
+   double c=CommPerLotEff();
+   if(c>0.0 && g_rr>1.0 && perLot-c/g_rr>perLot*0.5) return perLot-c/g_rr;
+   return perLot;
+  }
+//--- server day number + 1 (0 is reserved for "none")
+long DayKeyNow() { return (long)(TimeCurrent()/86400)+1; }
+
 //+------------------------------------------------------------------+
 //| v2.23 BROKER / RISK ENGINE                                       |
 //| BrokerSpec (live) -> RiskCompute -> (OrderCheck) -> OrderSend.   |
@@ -1080,7 +1108,8 @@ bool RiskCompute(const double risk,const bool buy,const double entry,const doubl
    double perLot=PerLotLossSL(buy,entry,sl);
    if(perLot<=0.0) { r.code="RISK_NO_SPEC"; r.text="Cannot determine the loss per lot from the broker specifications."; return false; }
    r.perLot=perLot; r.minRisk=vmin*perLot; r.maxRisk=vmax*perLot;
-   double raw=risk/perLot;
+   double perSz=SizingPerLot(perLot);                        // v2.34: commission-aware (== perLot when the cost is unknown / Cost-Aware is OFF)
+   double raw=risk/perSz;
    r.rawVol=raw;
    if(InpMaxLot>0.0 && InpMaxLot<vmax) { vmax=InpMaxLot; r.maxVol=vmax; r.maxRisk=vmax*perLot; }   // v2.31 hard safety cap
    double lot;
@@ -1098,7 +1127,7 @@ bool RiskCompute(const double risk,const bool buy,const double entry,const doubl
      {
       lot=vmin+MathFloor((raw-vmin)/step+1e-7)*step;           // rounded DOWN to the step: real risk <= requested
       //--- v2.31 recovery: the lot must be big enough that the TP repays the accumulated loss + target -> round UP (never beyond the caps below)
-      if(InpRecoveryRoundUp && g_accLoss>1e-9 && lot*perLot<risk-1e-9) lot+=step;
+      if(InpRecoveryRoundUp && g_accLoss>1e-9 && lot*perSz<risk-1e-9) lot+=step;
      }
    lot=NormalizeDouble(lot,g_lotDigits);
    if(lot>vmax+1e-9)
@@ -1186,6 +1215,35 @@ bool RecoveryGuardBlocks(string &why,string &code)
          return true;
         }
      }
+   //--- v2.34: absolute cap on the accumulated loss of ONE cycle (the loss if the NEXT trade also stops out)
+   if(InpMaxAccLoss>0.0 && g_accLoss>1e-9 && g_accLoss+g_curRisk>InpMaxAccLoss+1e-9)
+     {
+      code="WAITING_ACCLOSSCAP";
+      why="WAITING_ACCLOSSCAP: accumulated loss "+D2(g_accLoss)+" + next risk "+D2(g_curRisk)+" would exceed the cap "+D2(InpMaxAccLoss)+" "+AccCcy()+". New orders are paused - start a New Cycle or raise the cap.";
+      return true;
+     }
+   //--- v2.34: minimum Margin Level (only meaningful while margin is in use: MT5 reports 0 with no open position)
+   if(InpMinMarginLevel>0.0)
+     {
+      double ml=AccountInfoDouble(ACCOUNT_MARGIN_LEVEL);
+      if(ml>0.0 && ml<InpMinMarginLevel)
+        {
+         code="WAITING_MARGINLVL";
+         why="WAITING_MARGINLVL: Margin Level "+DoubleToString(ml,1)+"% is below the minimum "+DoubleToString(InpMinMarginLevel,1)+"%. New orders are paused.";
+         return true;
+        }
+     }
+   //--- v2.34: one cycle per day - after a completed cycle no NEW cycle (no debt, no sequence) starts until the next server day
+   if(InpOneCyclePerDay && g_accLoss<=1e-9 && g_seq==0)
+     {
+      long dk=(long)GV("CYCDAY",0.0);
+      if(dk>0 && dk==DayKeyNow())
+        {
+         code="WAITING_NEXTDAY";
+         why="WAITING_NEXTDAY: today's cycle is complete (net target reached). The next cycle starts on the next server day (Reset / New Cycle from the Mini App overrides this).";
+         return true;
+        }
+     }
    return false;
   }
 
@@ -1203,6 +1261,8 @@ void RiskScaleAdvisory()
    else ClearAlert("RISKSCALE");
   }
 
+void WritePlanTable(const string why);      // v2.34 (defined right after PrintRecoveryPlan)
+
 void PrintRecoveryPlan()
   {
    RiskScaleAdvisory();
@@ -1219,6 +1279,68 @@ void PrintRecoveryPlan()
          YLog("  loss #"+IntegerToString(n)+": risk "+D2(r)+" | TP profit if it wins "+D2(r*g_rr)+" | cumulative loss "+D2(L));
      }
    YLog("  balance needed to survive "+IntegerToString(last)+" consecutive losses: >= "+D2(L)+" "+ccy+" (before spread/commission/margin).");
+   WritePlanTable("start");
+  }
+
+//--- v2.34: the per-trade verification table of the report (section 10): trade #, risk, loss before, NET profit needed, lot, loss at SL, NET at TP,
+//--- cumulative loss, margin required / available, status. Built from the LIVE broker specification and the saved levels; written to
+//--- Yetimmm_<magic>_Plan.csv so it can be compared with an independent calculation. It never places or changes anything.
+string PlanFile() { return "Yetimmm_"+IntegerToString(g_magic)+"_Plan.csv"; }
+
+void WritePlanTable(const string why)
+  {
+   if(!InpPlanLog) return;
+   if(g_buyLevel<=0.0 || g_sellLevel<=0.0 || g_buyLevel<=g_sellLevel || g_rr<=1.0) return;   // no valid pair of levels yet: a table is never invented
+   double perLot=PerLotLoss(true,g_buyLevel);
+   if(perLot<=0.0) return;
+   double vmin=SymbolInfoDouble(g_sym,SYMBOL_VOLUME_MIN), vmax=SymbolInfoDouble(g_sym,SYMBOL_VOLUME_MAX), step=SymbolInfoDouble(g_sym,SYMBOL_VOLUME_STEP);
+   if(step<=0.0) step=(vmin>0.0)?vmin:0.01;
+   if(vmin<=0.0) vmin=step;
+   if(InpMaxLot>0.0 && InpMaxLot<vmax) vmax=InpMaxLot;
+   double cpl=CommPerLotEff();
+   double perSz=SizingPerLot(perLot);
+   double bal=AcM(AccountInfoDouble(ACCOUNT_BALANCE));
+   double freeM=AcM(AccountInfoDouble(ACCOUNT_MARGIN_FREE));
+   int last=(InpMaxSeqLosses>0)?InpMaxSeqLosses:20;
+   if(last>80) last=80;
+   int h=FileOpen(PlanFile(),FILE_WRITE|FILE_TXT|FILE_ANSI|FILE_SHARE_READ);
+   if(h==INVALID_HANDLE) { YLog("Plan table: cannot write "+PlanFile()+" (code "+IntegerToString(GetLastError())+")"); return; }
+   FileWriteString(h,"Trade;Risk;LossBefore;NeededNetProfit;Lot;LossAtSL;NetAtTP;CumLossIfSL;MarginRequired;MarginFree;BalanceNeeded;Status\r\n");
+   double L=0.0;
+   int survive=-1;
+   for(int n=1;n<=last;n++)
+     {
+      double risk=(n==1)?g_initRisk:NextRiskFor(L);
+      double need=L+g_target;
+      double raw=risk/perSz;
+      double lot=0.0;
+      string st="OK";
+      if(raw<vmin-1e-9)
+        {
+         if(InpRiskPolicy==YT_RISK_CLAMP_MIN) { lot=vmin; st="CLAMPED_TO_MIN"; }
+         else st="BELOW_MIN_VOLUME";
+        }
+      else
+        {
+         lot=vmin+MathFloor((raw-vmin)/step+1e-7)*step;
+         if(InpRecoveryRoundUp && L>1e-9 && lot*perSz<risk-1e-9) lot+=step;
+        }
+      lot=NormalizeDouble(lot,g_lotDigits);
+      if(lot>vmax+1e-9) { st="ABOVE_MAX_VOLUME"; }
+      double lossSL=(lot>0.0)?lot*(perLot+cpl):risk;
+      double netTP =(lot>0.0)?lot*(perLot*g_rr-cpl):0.0;
+      double marg=0.0;
+      if(lot>0.0 && OrderCalcMargin(ORDER_TYPE_BUY,g_sym,lot,g_buyLevel,marg)) marg=AcM(marg); else marg=0.0;
+      if(st=="OK" && lot>0.0 && netTP<need*0.98-1e-9) st="NET_SHORTFALL";
+      bool balLow=(bal<L+marg-1e-9);
+      if(balLow && survive<0) survive=n-1;
+      if(st=="OK" && balLow) st="BALANCE_LOW";
+      FileWriteString(h,IntegerToString(n)+";"+D2(risk)+";"+D2(L)+";"+D2(need)+";"+LotS(lot)+";"+D2(lossSL)+";"+D2(netTP)+";"+D2(L+lossSL)+";"+D2(marg)+";"+D2(freeM)+";"+D2(L+marg)+";"+st+"\r\n");
+      L+=lossSL;
+     }
+   FileClose(h);
+   YLog("Plan table ("+why+") written to MQL5/Files: "+PlanFile()+" | "+IntegerToString(last)+" rows | commission/lot used "+D2(cpl)+" | loss/lot "+D2(perLot)+" | "+
+        (survive<0?"the current balance "+D2(bal)+" covers all "+IntegerToString(last)+" rows":"the current balance "+D2(bal)+" covers only "+IntegerToString(survive)+" consecutive losses (before spread)"));
   }
 
 //--- minimum width of a Buy Stop / Sell Stop PAIR at the live market: both must sit outside their Stops Level
@@ -1339,7 +1461,7 @@ string ValidateLevels(const double buy,const double sell)
    if(tm==SYMBOL_TRADE_MODE_DISABLED || tm==SYMBOL_TRADE_MODE_CLOSEONLY) return "Trading is disabled for this symbol.";
    double stopsLvl=(double)SymbolInfoInteger(g_sym,SYMBOL_TRADE_STOPS_LEVEL)*g_point;
    if(buy-sell<stopsLvl-1e-9) return "Distance between the levels (= Stop Loss) is below the broker minimum stops level.";
-   if(InpEntryMode==ENTRY_PENDING)
+   if(YT_REAL_ORDERS_ONLY || InpEntryMode==ENTRY_PENDING)
      {
       double need=PairMinWidth();
       if(buy-sell<need-1e-9)
@@ -3198,6 +3320,8 @@ bool ProcessClosedPosition(const ulong pid)
    if(IsLoggedDeal(dealOut)) { ClearPosGV(pid); return true; }
 
    double net=gross+comm+swap;
+   //--- v2.34: learn the REAL round-trip commission per lot (in + out deals) so the next lot is cost-aware
+   if(comm<-1e-9 && inVol>0.0) { g_commLot=-comm/inVol; GS("CPL",g_commLot); }
    bool buy=(ptype==(long)POSITION_TYPE_BUY);
    long tno=(long)PGV(pid,"N",0);
    double reqRisk=PGV(pid,"R",g_curRisk);
@@ -3285,6 +3409,7 @@ bool ProcessClosedPosition(const ulong pid)
       YLog("Closing deal "+UL(dealOut)+" was already applied before a restart - only its log line is written (loss NOT counted twice).");
      }
    string nextInfo="";
+   string cycTxt="";                                            // v2.34: cycle summary (TP that ends a cycle)
    double nextLot=0,nextEst=0; string lerr="";
    if(!bookkeeping)
      {
@@ -3346,7 +3471,18 @@ bool ProcessClosedPosition(const ulong pid)
             g_curRisk=NextRiskFor(g_accLoss);
             RaiseAlert("TPPART"+IntegerToString((int)g_tradeNo),"TP closed with net "+D2(net)+" "+AccCcy()+" - the accumulated loss is not fully repaid yet (remaining "+D2(rem)+"). Risk sequence continues.",false,true);
            }
-         else ResetRisk();
+         else
+           {
+            //--- v2.34 CYCLE RESULT = net of the WHOLE cycle (this trade's net minus the losses it repaid), never the last trade alone
+            double cycNet=net-g_accLoss;
+            bool met=(cycNet>=g_target*0.98-1e-9);
+            cycTxt="CYCLE COMPLETE | SL trades "+IntegerToString(g_seq)+" | losses repaid "+D2(g_accLoss)+" | last trade net "+D2(net)+" | CYCLE NET "+D2(cycNet)+" vs target "+D2(g_target)+" | "+(met?"TARGET MET":"BELOW TARGET by "+D2(g_target-cycNet)+" (commission / lot rounding / slippage)");
+            YLog(cycTxt);
+            LogOrder("CYCLE_COMPLETE",-1,0.0,inVol,0,0,cycTxt);
+            if(!met) RaiseAlert("CYCSHORT"+IntegerToString((int)g_tradeNo),cycTxt,false,true);
+            ResetRisk();
+            GS("CYCDAY",(double)DayKeyNow());                    // v2.34: used by InpOneCyclePerDay
+           }
          g_lastSLSide=0;
          g_mode=YM_NONE;
          if(g_fresh) { PromotePending(); g_state=YT_ARMED; g_mode=YM_BOTH; g_fresh=false; }
@@ -3427,7 +3563,7 @@ bool ProcessClosedPosition(const ulong pid)
      {
       YLog("Take Profit | Risk Reset");
       TgQueue("🟢 TAKE PROFIT\nTrade #: "+TNo(tno)+"\nType: "+(buy?"BUY":"SELL")+"\nEntry: "+PX(entryPrice)+"\nExit: "+PX(exitPrice)+"\nProfit: "+Money(net)+
-              "\nRisk Sequence Reset ✅\nAccumulated Loss: $0\nNext Risk: $"+D2(g_initRisk)+"\nStatus:\n"+(g_state==YT_ARMED?"ARMED (new levels)":"WAITING FOR LEVELS"));
+              "\nRisk Sequence Reset ✅\nAccumulated Loss: $0\nNext Risk: $"+D2(g_initRisk)+(cycTxt!=""?"\n"+cycTxt:"")+"\nStatus:\n"+(g_state==YT_ARMED?"ARMED (new levels)":"WAITING FOR LEVELS"));
      }
    else if(isDev)
      {
@@ -3633,6 +3769,38 @@ bool ClosurePendingBlocks()
    return (now-g_pendClSince)<20000;
   }
 
+//--- v2.34: every reason why a RE-ENTRY order is NOT re-placed is written to the Orders log (throttled), so a missing re-arm can be explained
+void RearmBlocked(const bool buy,const double level,const string why)
+  {
+   if(g_state!=YT_WAITING_REENTRY) return;
+   if(!AlertThrottle("RBLK"+IntegerToString(SideIdx(buy))+why,30)) return;
+   YLog("Re-entry "+SideName(buy)+" "+PX(level)+" NOT placed: "+why);
+   LogOrder("REARM_BLOCKED",buy?(long)ORDER_TYPE_BUY_STOP:(long)ORDER_TYPE_SELL_STOP,level,0.0,0,0,"RE-ENTRY blocked: "+why);
+  }
+
+//--- v2.34 PLAN CHECK: BEFORE the order is sent, verify (and log) that the lot really gives, at TP, a NET profit = accumulated loss + target.
+//--- It never blocks (rounding / caps can legitimately leave a gap; the existing net-only reset then keeps the remaining debt): it makes the gap visible.
+void PlanCheck(const bool buy,const double level,const double lot)
+  {
+   double perLot=g_rk.perLot;
+   if(perLot<=0.0 || lot<=0.0) return;
+   double cpl=CommPerLotEff();
+   double expLoss=lot*(perLot+cpl);                 // price loss at SL + round-trip commission
+   double expTP  =lot*(perLot*g_rr-cpl);            // expected NET at TP
+   double need   =g_accLoss+g_target;               // net the cycle needs from this trade
+   double gap    =need-expTP;
+   bool   short_ =(gap>need*0.02+1e-9);
+   static string lastSig="";
+   string sig=(buy?"B":"S")+PX(level)+"|"+LotS(lot)+"|"+D2(g_accLoss)+"|"+D2(cpl);
+   if(sig==lastSig) return;                         // one line per distinct plan, not one per retry
+   lastSig=sig;
+   string t="PLAN_CHECK lot "+LotS(lot)+" | loss at SL "+D2(expLoss)+" | NET at TP "+D2(expTP)+" | needed (loss "+D2(g_accLoss)+" + target "+D2(g_target)+") "+D2(need)+
+            " | commission/lot "+D2(cpl)+" | "+(short_?"SHORTFALL "+D2(gap)+" (lot rounding / caps / commission)":"OK");
+   LogOrder("PLAN_CHECK",buy?(long)ORDER_TYPE_BUY_STOP:(long)ORDER_TYPE_SELL_STOP,level,lot,0,0,t);
+   YLog(t);
+   if(short_) RaiseAlert("PLANGAP",t,false,true); else ClearAlert("PLANGAP");
+  }
+
 bool TryPlace(const bool buy,const double level)
   {
    int s=SideIdx(buy);
@@ -3642,10 +3810,15 @@ bool TryPlace(const bool buy,const double level)
    //--- (two Buy Stops at one level = two positions at the same moment = one of them is closed as "extra" at market)
    {
     ulong gp[];
-    if(OwnPositions(gp)>0) return false;
+    if(OwnPositions(gp)>0)
+      {
+       RearmBlocked(buy,level,"a position is still open");
+       return false;
+      }
     if(SideOrderExists(buy)) return false;
     if(ClosurePendingBlocks())
       {
+       RearmBlocked(buy,level,"the closing deal of the previous trade is not booked yet");
        SetSync(buy,YS_WAITING,"A closed position is still being booked - no new order until it is processed");
        g_nextPlaceMs=GetTickCount64()+500;
        return false;
@@ -3711,6 +3884,7 @@ bool TryPlace(const bool buy,const double level)
       return false;
      }
    ClearAlert("RPGUARDWAITING_SEQCAP"); ClearAlert("RPGUARDWAITING_RISKCAP");
+   ClearAlert("RPGUARDWAITING_ACCLOSSCAP"); ClearAlert("RPGUARDWAITING_MARGINLVL"); ClearAlert("RPGUARDWAITING_NEXTDAY");
    if(!CalcLot(g_curRisk,buy,level,lot,est,err)) { HandleLotError(err); SetSync(buy,YS_WAITING,err); return false; }
    g_blockReason="";
    g_wcode="";
@@ -3719,6 +3893,7 @@ bool TryPlace(const bool buy,const double level)
    if(g_rk.clamped) YLog("CLAMP_TO_MIN: "+g_rk.text);
 
    double slp=SLPrice(buy,level), tpp=TPPrice(buy,level);
+   PlanCheck(buy,level,lot);                         // v2.34: financial verification before the order is sent
    SetSync(buy,YS_CREATING,"Placing "+PX(level));
    UpdatePanel();                                    // the panel shows PLACING while the server works
    g_trade.SetDeviationInPoints(g_maxDev);
@@ -3738,6 +3913,7 @@ bool TryPlace(const bool buy,const double level)
    uint rc=g_trade.ResultRetcode();
    bool ok=(r && (rc==TRADE_RETCODE_DONE || rc==TRADE_RETCODE_PLACED || rc==TRADE_RETCODE_DONE_PARTIAL));
    long otype=buy?(long)ORDER_TYPE_BUY_STOP:(long)ORDER_TYPE_SELL_STOP;
+   bool reentryTag=(g_state==YT_WAITING_REENTRY);   // v2.34: the Orders log says whether this send was a RE-ENTRY after an SL
    if(ok)
      {
       ulong ticket=g_trade.ResultOrder();
@@ -3765,7 +3941,7 @@ bool TryPlace(const bool buy,const double level)
       ulong latMs=(g_trigMs[s]>0)?(GetTickCount64()-g_trigMs[s]):0;
       g_trigMs[s]=0;
       BrWaitActivated(buy,level,ticket,latMs);           // v2.17: the waiting command in the app log becomes "activated"
-      LogOrder("PLACED",otype,level,lot,ticket,rc,"Risk $"+D2(g_curRisk)+" SL "+PX(slp)+" TP "+PX(tpp));
+      LogOrder("PLACED",otype,level,lot,ticket,rc,(reentryTag?"RE-ENTRY | ":"")+"Risk $"+D2(g_curRisk)+" SL "+PX(slp)+" TP "+PX(tpp));
       SetSync(buy,YS_PLACED,"Ticket #"+UL(ticket));
       PanelMsg(SideName(buy)+" PLACED #"+UL(ticket)+" @ "+PX(level),clrLime);
       bool reentry=(g_state==YT_WAITING_REENTRY);
@@ -3793,7 +3969,7 @@ bool TryPlace(const bool buy,const double level)
          YLog(SideName(buy)+" "+PX(level)+": market moved while sending (retcode "+IntegerToString((int)rc)+") - safety buffer "+PX(g_waitBuf[s])+", waiting (attempt "+IntegerToString(g_raceCnt[s])+")");
       return false;
      }
-   LogOrder("REJECTED",otype,level,lot,0,rc,cm);
+   LogOrder("REJECTED",otype,level,lot,0,rc,(reentryTag?"RE-ENTRY | ":"")+cm);
    SetSync(buy,YS_FAILED,"NOT PLACED: "+cm+" [retcode "+IntegerToString((int)rc)+"]");
    PanelMsg(SideName(buy)+" NOT PLACED: "+cm,clrTomato);
    YLog("Execution Rejected: retcode "+IntegerToString((int)rc)+" "+cm);
@@ -3913,8 +4089,9 @@ void RevEnterError(const string why)
    g_dirty=true;
   }
 
-bool TryMarketReverse(const int force=0,const bool catchMode=false)   // force: 0 = reversal after an SL, 1 = virtual-entry BUY, 2 = virtual-entry SELL; catchMode (v2.30) = FAST CATCH of a crossed level
+bool TryMarketReverse(const int force=0,const bool catchMode=false)   // v2.33: disabled - the EA never sends a market entry by itself. force: 0 = reversal after an SL, 1 = virtual-entry BUY, 2 = virtual-entry SELL; catchMode (v2.30) = FAST CATCH of a crossed level
   {
+   if(YT_REAL_ORDERS_ONLY) return false;                               // v2.33: real pending orders only
    if(force==0 && g_lastSLSide!=1 && g_lastSLSide!=2) return false;
    if(!InstOkTrade("open a market reversal")) return false;                  // v2.29: lock re-verified before every send
    {
@@ -4047,7 +4224,7 @@ bool VirtualInside()
 
 bool VirtualWake()
   {
-   if(InpEntryMode!=ENTRY_VIRTUAL) return false;
+   if(YT_REAL_ORDERS_ONLY || InpEntryMode!=ENTRY_VIRTUAL) return false;
    if(g_state!=YT_ARMED && g_state!=YT_WAITING_REENTRY) return false;
    if(g_mode!=YM_BOTH || g_buyLevel<=0.0 || g_sellLevel<=0.0 || g_buyLevel<=g_sellLevel) return false;
    MqlTick tk;
@@ -4058,6 +4235,7 @@ bool VirtualWake()
 
 void VirtualEntryPass()
   {
+   if(YT_REAL_ORDERS_ONLY) { g_vArmed=false; return; }
    g_zoneGate=false; g_trig[0]=0.0; g_trig[1]=0.0;
    //--- no pending order is wanted in this mode (leftovers of PENDING mode are removed)
    ulong od[];
@@ -4102,7 +4280,7 @@ void SyncAll();   // defined below
 
 bool CatchTick(const MqlTick &tk,const ulong now)
   {
-   if(!InpFastCatch || InpEntryMode!=ENTRY_PENDING) return false;
+   if(YT_REAL_ORDERS_ONLY || !InpFastCatch || InpEntryMode!=ENTRY_PENDING) { g_catchArmed=false; return false; }
    if(g_state!=YT_ARMED && g_state!=YT_WAITING_REENTRY) { g_catchArmed=false; return false; }
    if(g_buyLevel<=0.0 || g_sellLevel<=0.0 || g_buyLevel<=g_sellLevel) return false;
    if(g_mode!=YM_BOTH && g_mode!=YM_BUY && g_mode!=YM_SELL) return false;
@@ -4143,7 +4321,7 @@ bool CatchTick(const MqlTick &tk,const ulong now)
 
 void CatchTimer()
   {
-   if(!InpFastCatch) return;
+   if(YT_REAL_ORDERS_ONLY || !InpFastCatch) return;
    MqlTick tk;
    if(SymbolInfoTick(g_sym,tk) && tk.ask>0.0 && tk.bid>0.0) CatchTick(tk,GetTickCount64());
   }
@@ -4343,8 +4521,8 @@ void Reconcile()
    if((needBuy && g_buyLevel<=0.0) || (needSell && g_sellLevel<=0.0)) return;
 
    //--- v2.00: optional market reversal when the stop-out already crossed the opposite level
-   if(g_state==YT_WAITING_REENTRY && (InpBreachPolicy==BREACH_MARKET || InpEntryMode==ENTRY_VIRTUAL) && TryMarketReverse()) return;
-   if(InpEntryMode==ENTRY_VIRTUAL && needBuy && needSell && g_buyLevel>g_sellLevel) { VirtualEntryPass(); return; }
+   if(!YT_REAL_ORDERS_ONLY && g_state==YT_WAITING_REENTRY && (InpBreachPolicy==BREACH_MARKET || InpEntryMode==ENTRY_VIRTUAL) && TryMarketReverse()) return;
+   if(!YT_REAL_ORDERS_ONLY && InpEntryMode==ENTRY_VIRTUAL && needBuy && needSell && g_buyLevel>g_sellLevel) { VirtualEntryPass(); return; }
 
    //--- 0) manual changes in MT5 are DETECTED first (moved / deleted / SL-TP edited), then handled by the explicit policy
    bool held[2]={false,false};
@@ -4623,6 +4801,7 @@ bool ApplyLevels(const double buy,const double sell,const double risk,const stri
    if(g_accLoss<=1e-9) g_curRisk=g_initRisk;
    SaveState();
    g_dirty=true;
+   WritePlanTable("levels applied");                              // v2.34
    SyncAll();
    return true;
   }
@@ -6195,7 +6374,7 @@ string BrStateJson()
    s+=",\"seq\":"+IntegerToString(g_seq)+",\"no\":"+IntegerToString(g_tradeNo);
    s+=",\"target\":"+D2(g_target)+",\"rr\":"+DoubleToString(g_rr,2);
    s+=",\"maxDev\":"+IntegerToString(g_maxDev)+",\"warn\":"+IntegerToString(g_warn);
-   s+=",\"breach\":\""+(InpBreachPolicy==BREACH_MARKET?"MARKET":"WAIT")+"\",\"entry\":\""+(InpEntryMode==ENTRY_PENDING?"PENDING":"VIRTUAL")+"\"";
+   s+=",\"breach\":\""+((!YT_REAL_ORDERS_ONLY && InpBreachPolicy==BREACH_MARKET)?"MARKET":"WAIT")+"\",\"entry\":\""+((YT_REAL_ORDERS_ONLY || InpEntryMode==ENTRY_PENDING)?"PENDING":"VIRTUAL")+"\"";
    s+=",\"wcode\":\""+(frz?"":g_wcode)+"\",\"bs\":"+BsJson()+",\"rk\":"+RkJson();
    s+=",\"spread\":"+IntegerToString((int)SymbolInfoInteger(g_sym,SYMBOL_SPREAD));
    if(g_fresh && g_pendBuy>0.0 && g_pendSell>0.0)
@@ -6320,6 +6499,7 @@ string BrExec(const string cmd,const string seg)
      {
       if(OwnPositions(tk)>0) return "❌ Cannot reset the risk sequence while a position is open.";
       ResetRiskLogged("Mini App RESET");
+      GS("CYCDAY",0.0);                                          // v2.34: an explicit reset / new cycle overrides the one-cycle-per-day lock
       g_nextPlaceMs=0;
       ResetSyncBackoff();
       SaveState();
@@ -6599,6 +6779,23 @@ void LoadAutoConfig()
    YLog("Mini App bridge: configuration loaded automatically (Yetimmm.cfg).");
   }
 
+//--- v2.33: REAL ORDERS ONLY. Everything "virtual" (zone trigger armed in memory, fast-catch arming, remembered market-entry
+//--- expectations) is wiped at start. Real pending orders and open positions are never touched here. The bot then waits for the
+//--- user's real commands (/set, /start from Telegram or the Mini App).
+void PurgeVirtualState()
+  {
+   g_vArmed=false; g_catchArmed=false;
+   g_nextRevMs=0; g_revFails=0; g_revHard=0;
+   ulong pp[];
+   if(OwnPositions(pp)==0)
+     {
+      GS("RVSL",0.0); GS("RVTP",0.0); GS("RVEXP",0.0); GS("RVDEV",0.0);   // no market-entry expectation may survive a restart
+      GS("REVERR",0.0);
+     }
+   if(InpEntryMode==ENTRY_VIRTUAL || InpBreachPolicy==BREACH_MARKET || InpFastCatch)
+      YLog("REAL ORDERS ONLY (v2.33): Virtual entry / Market Reversal / Fast Catch are DISABLED - those inputs are ignored. Entries are real Buy Stop / Sell Stop orders created only from your levels.");
+  }
+
 //--- v2.27: levels left by the old panel fields / EA inputs / defaults (never confirmed by the Mini App) are removed ONCE.
 //--- Open positions are never touched. Levels set from the Mini App (LVSRC=1) survive restarts (Recovery).
 void PurgeLegacyLevels()
@@ -6766,7 +6963,7 @@ void SeqAuditRun()
 
 int OnInit()
   {
-   Print("[Yetimmm] v"+YT_VER+" loaded - Broker/Risk engine | entry "+(InpEntryMode==ENTRY_PENDING?"PENDING":"VIRTUAL")+" | risk policy "+(InpRiskPolicy==YT_RISK_CLAMP_MIN?"CLAMP_TO_MIN":"STRICT"));
+   Print("[Yetimmm] v"+YT_VER+" loaded - Broker/Risk engine | entry "+((YT_REAL_ORDERS_ONLY || InpEntryMode==ENTRY_PENDING)?"PENDING (real orders only)":"VIRTUAL")+" | risk policy "+(InpRiskPolicy==YT_RISK_CLAMP_MIN?"CLAMP_TO_MIN":"STRICT"));
    g_sym=_Symbol;
    g_magic=InpMagic;
    g_instId=StringFormat("%I64d-%I64d-%d",(long)TimeLocal(),(long)ChartID(),(int)(GetTickCount64()%100000));
@@ -6839,7 +7036,7 @@ int OnInit()
       if(MQLInfoInteger(MQL_TESTER)) YLog("Telegram disabled in the Strategy Tester.");
       else if(StringLen(g_tgTok)==0) YLog("Telegram: waiting for the bot token from the Worker (automatic). Control and notifications go ONLY to the chat IDs registered through the Worker.");
      }
-   YLog("After-SL policy: "+(InpBreachPolicy==BREACH_MARKET?"MARKET (advanced / opt-in - reverses at market when the level was already crossed)":"WAIT (literal philosophy - pending Stop at the SL level)")+
+   YLog("After-SL policy: "+((!YT_REAL_ORDERS_ONLY && InpBreachPolicy==BREACH_MARKET)?"MARKET (advanced / opt-in - reverses at market when the level was already crossed)":"WAIT (literal philosophy - pending Stop at the SL level)")+
         " | Protection emergency-close: "+(InpProtectCloseSec>0?IntegerToString(InpProtectCloseSec)+" s":"OFF (alert + retry only)"));
    if(InpBrEnable && !MQLInfoInteger(MQL_TESTER))
      {
@@ -6861,6 +7058,7 @@ int OnInit()
    LoadAutoConfig();
    RecoverHistory();
    PurgeLegacyLevels();
+   PurgeVirtualState();
    if(!g_stateRecovered) { g_initRisk=InpInitialRisk; g_curRisk=InpInitialRisk; }
    SaveState();
    ChartSetInteger(0,CHART_SHOW_TRADE_LEVELS,true);   // real pending-order / SL / TP levels are drawn by MT5 itself
@@ -6869,7 +7067,7 @@ int OnInit()
    EventSetMillisecondTimer(200);   // v2.13: fast path every 200 ms (Telegram), slow path once per second
    SyncAll();
    UpdatePanel();
-   TgQueue("✅ Yetimmm Started\nStatus: "+RunStatus()+"\nState: "+StateText()+"\nBuy Stop: "+PX(g_buyLevel)+"\nSell Stop: "+PX(g_sellLevel)+"\nRisk: $"+D2(g_curRisk)+
+   TgQueue("✅ Yetimmm Started\n🔒 Real orders only - waiting for your commands\nStatus: "+RunStatus()+"\nState: "+StateText()+"\nBuy Stop: "+PX(g_buyLevel)+"\nSell Stop: "+PX(g_sellLevel)+"\nRisk: $"+D2(g_curRisk)+
            (g_stateRecovered?"\n♻️ State Recovered | Last Trade #"+TNo(g_tradeNo):""),0,MenuMarkup());
    if(g_stateRecovered && g_accLoss>1e-9 && g_state==YT_IDLE)
       RaiseAlert("SEQIDLE","⚠️ The bot is IDLE in the middle of a risk sequence (Seq "+IntegerToString(g_seq)+", Acc.Loss "+D2(g_accLoss)+", next risk "+D2(g_curRisk)+"). Press START to re-arm the saved levels and continue the sequence, or use Reset / New Cycle to begin again.",false,true);

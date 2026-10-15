@@ -1,8 +1,8 @@
-# Yetimmm v4.17.0
+# Yetimmm v4.21.0
 
 ## v4.12 — ربط الإكسبرت بالـ Worker (خطأ 4014 و HTTP 503)
 - **4014:** يلزم مرة واحدة تفعيل *Allow WebRequest for listed URL* وإضافة رابط الـ Worker و`https://api.telegram.org` (MT5 لا يسمح للإكسبرت بإضافتها بنفسه). الأسهل: أغلق MT5 ثم شغّل `tools/allow-urls.bat` (يقرأ الرابط من `InpBrUrl` ويعدّل `common.ini` لكل النسخ مع نسخة احتياطية). أو يدوياً: Tools ▸ Options ▸ Expert Advisors.
-- **503 `pair_not_configured`:** الـ Worker بلا `PAIR_CODE`. القيمة الافتراضية صارت `123123` في `worker/wrangler.toml [vars]` وفي `InpBrPairCode`؛ انشر بـ `npm run deploy`. غيّر القيمتين معاً عند اختيار رمز أقوى.
+- **503 `pair_not_configured`:** الـ Worker بلا `PAIR_CODE`. يجب ضبط `PAIR_CODE` بقيمة قوية (8 أحرف على الأقل، وليست `123123` ولا أي قيمة شائعة) وإلا يرفضها الـ Worker (`pair_not_configured`). الأسهل: `npm run setup` فهو يولّد رمزاً عشوائياً ويكتبه في `Yetimmm.cfg` ويضعه سراً في Cloudflare. انشر بـ `npm run deploy`.
 
 نظام تداول XAUUSD على MT5 يتكوّن من ثلاثة أجزاء تعمل معاً:
 
@@ -23,7 +23,7 @@ yetimmm/
 │   ├── wrangler.toml
 │   └── .dev.vars.example
 ├── ea/Yetimmm.mq5
-├── tests/                اختبارات: 46 اختباراً للـ Worker + 13 لمحرك المخاطرة + 15 لخطة التعويض (مرجع حسابي لما يطبّقه الـ EA)
+├── tests/                اختبارات: 49 اختباراً للـ Worker + 13 لمحرك المخاطرة + 15 لخطة التعويض (مرجع حسابي لما يطبّقه الـ EA)
 ├── scripts/check.mjs     فحص سريع للحزمة كلها
 ├── CHANGELOG.md
 └── package.json

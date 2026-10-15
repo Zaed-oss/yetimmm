@@ -65,5 +65,5 @@ try {
   const j = await (await fetch(url + "/")).json();
   log("GET / -> " + JSON.stringify({ ok: j.ok, v: j.v, ea_protocol: j.ea_protocol, pairConfigured: j.pairConfigured }));
   if (!j.pairConfigured) die("deployed, but pairConfigured is false: the Worker still has no PAIR_CODE");
-  log("OK: Worker " + j.v + " is live with PAIR_CODE configured. EA input InpBrPairCode must equal it (default 123123).");
+  log("OK: Worker " + j.v + " is live with PAIR_CODE configured. EA input InpBrPairCode must equal it (use a strong random value; weak codes such as 123123 are refused by the Worker).");
 } catch (e) { die("deployed, but " + url + "/ did not answer: " + e.message + " (wrong InpBrUrl, or workers.dev subdomain differs)"); }

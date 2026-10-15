@@ -1,13 +1,38 @@
-# Changelog
+## v4.21.0 security audit patch (worker + app, no trading-logic change)
+**Critical / High**
+1. **Bot Token leak to the EA (worker.js sync):** any EA that omitted `evp` received `BOT_TOKEN` in `cfg.tok`. With a guessable `PAIR_CODE` a stranger could pair a rogue EA on a new account number and read the token. The token is now NEVER sent unless `ALLOW_EA_BOT_TOKEN=1` (legacy opt-in).
+2. **Pairing brute force:** the v4.15.1 "unlimited wrong codes" removal allowed unlimited guessing of `PAIR_CODE`, which can bind or RE-bind any account. Restored: per-IP gate (`pgate-ip`) + per-account lock; `PAIR_LOCKOUT=0` turns it off explicitly.
+3. **Weak pairing code:** `PAIR_CODE` shorter than 8 chars or common (`123123`, `123456`, ...) is refused (`pair_not_configured`, `/` reports `pairWeak:true`). `npm run setup` now generates 96-bit random codes (was 8 digits).
+4. **Stored XSS in the Mini App:** unmapped trade `reason` (rsn) and the currency code (cs) were inserted into `innerHTML` unescaped; both are now escaped in the app and stripped of markup in the Worker (`cleanTxt`, `publicOf`, archive).
+**Medium**
+5. **Account-directory poisoning:** `/api/ea/sync` registered ANY login in the owner auto-login directory BEFORE authentication; now only after a successful authenticated sync.
+6. **Unauthenticated storage writes:** `auth()` wrote to storage for any `X-Login` before checking the session; now only for a valid session.
+7. **Admin key brute force:** `/admin/diag` now has an IP gate and a constant-time comparison.
+8. **Command validation:** negative / absurd `risk`, `rr`, `target`, `price`, `ticket` are rejected (400) before reaching the EA.
+Tests: 125 pass (3 new + token test updated + lockout test now documents `PAIR_LOCKOUT=0`).
 
-## v4.17.0 (EA 2.31) — تعويض الخسائر بزيادة اللوت مع ثبات SL/TP
-**المشكلة:** عند الدخول بالسوق بعد SL أو عبر Fast Catch كان SL هو «المستوى المقابل» فيبتعد عن سعر الدخول الحقيقي عند أي فجوة، فيقل اللوت ويبعد الهدف (عكس المطلوب).
+## v4.21.0 (EA 2.34) — مطابقة الحزمة لتقرير Fix.pdf (نظام التعويض بصافي ربح 20$)
+**المنهج:** فُحصت الحزمة بنداً بنداً مقابل التقرير (الجدول الكامل في `docs/SPEC-COMPLIANCE.md`). أغلب البنود كانت مطبّقة؛ هذه النسخة تسدّ **النواقص الفعلية فقط** ولا تمسّ منطق الدخول/الخروج ولا الحماية.
+**النواقص التي أُغلقت:**
+1. **التكاليف داخل حساب اللوت (البند 5/6):** كان اللوت يُحسب من خسارة السعر فقط، فتنقص العمولة صافي ربح TP عن الهدف. الآن `SizingPerLot()`: `lot ≥ risk / (perLot − c/RR)` فيكون **صافي** ربح TP = الخسائر المتراكمة + الهدف. العمولة (`c`) تُتعلَّم من صفقات الإغلاق الفعلية (`g_commLot`، محفوظة) أو تُدخل يدوياً `InpCommPerLot`؛ `InpCostAware=true`. مع عمولة صفر النتيجة مطابقة للمعادلة القديمة تماماً.
+2. **التحقق المالي قبل الإرسال (البند 7):** `PlanCheck()` يسجّل قبل كل أمر: اللوت، الخسارة عند SL، **الصافي المتوقع عند TP**، المطلوب، والفجوة (حدث `PLAN_CHECK` في سجل الأوامر + تنبيه عند نقص > 2%). لا يحجب شيئاً.
+3. **نتيجة الدورة كاملة (البند 6):** عند TP يُحسب `CYCLE NET = صافي الصفقة − الخسائر المسدّدة` ويُسجَّل (`CYCLE_COMPLETE`) ويُرسل لتلجرام مع تنبيه إن نقص عن الهدف.
+4. **جدول التحقق لكل صفقة (البند 10):** `Yetimmm_<magic>_Plan.csv` (يُكتب عند التشغيل وعند تطبيق المستويات): رقم الصفقة، المخاطرة، الخسارة قبلها، الربح الصافي المطلوب، اللوت، الخسارة عند SL، الصافي عند TP، الخسارة التراكمية، الهامش المطلوب/المتاح، الرصيد اللازم، الحالة. ويطبع كم خسارة متتالية يتحمّلها الرصيد الحالي.
+5. **حدود الحماية الناقصة (البند 12):** `InpMaxAccLoss` (سقف الخسارة التراكمية $) → `WAITING_ACCLOSSCAP`؛ `InpMinMarginLevel` (حدّ أدنى لمستوى الهامش %) → `WAITING_MARGINLVL`. كلاهما **0 = معطّل** افتراضياً. (`InpMaxLot` و`InpMaxSeqLosses` كانا موجودين.)
+6. **دورة واحدة في اليوم (البند 6):** `InpOneCyclePerDay` (افتراضي false) → بعد دورة ناجحة `WAITING_NEXTDAY` حتى اليوم التالي بتوقيت السيرفر؛ زر Reset / New Cycle في الـ Mini App يتجاوزه. لا يوقف تسلسلاً جارياً.
+7. **تفسير عدم إعادة التفعيل (البند 3):** أي إرسال/رفض أثناء `WAITING_REENTRY` يُوسَم `RE-ENTRY |` في سجل الأوامر مع رمز الرفض ورسالته؛ وسبب عدم إعادة الوضع (صفقة ما زالت مفتوحة / إغلاق السابقة لم يُسجَّل) يُكتب كحدث `REARM_BLOCKED` (مرة كل 30 ث).
+- Mini App: نصوص الحالات الثلاث الجديدة (عربي/إنجليزي). اختبارات جديدة `tests/spec-compliance.test.mjs` (13) وفحوص في `npm run check`.
+**ملاحظة صريحة:** وضع STRICT يعني «لا تتجاوز مخاطرة السعر المطلوبة»؛ تعويض العمولة يزيد اللوت بنسبة `c/(RR·perLot)` فقط (≈0.35% في مثال XAUUSD بعمولة 7$/لوت ومسافة 1$)، وهو المقصود. معاينة اللوت داخل index.html تقدير بلا عمولة؛ المرجع الوحيد هو الـ EA. **غير مُترجم ولا مُختبر على MT5: F7 ثم Demo إلزاميان.**
+
+## v4.19.0 (EA 2.33) — أوامر حقيقية فقط: إلغاء الأوامر «الافتراضية» وانتظار أوامر المستخدم
+**المشكلة:** كان الـ EA يفتح صفقات بالسوق من تلقاء نفسه بلا أمر معلّق حقيقي على السيرفر ولم يطلبها المستخدم: **Fast Catch** (مفعّل افتراضياً في v4.16)، و**Market Reversal** بعد SL، ووضع **VIRTUAL**. كانت تظهر في تلجرام كـ «MARKET REVERSAL».
 **الحل:**
-- مسافة SL = عرض المنطقة (Upper-Lower) ومسافة TP = العرض × R/R، تُقاس دائماً من سعر التنفيذ الحقيقي. لا يتوسع الهدف ولا يتقلص اللوت بسبب الفجوة.
-- لوت التعويض: المخاطرة = (إجمالي الخسائر + الهدف) / R/R (بقيمة النقطة الفعلية لدى الوسيط عبر OrderCalcProfit)، ويُقرَّب اللوت **للأعلى** إلى خطوة الوسيط أثناء دورة التعويض (`InpRecoveryRoundUp`) ليغطي الربح عند TP كل الخسائر + 20$.
-- حدود الأمان: `InpMaxLot` (سقف اللوت)، `InpMaxSeqLosses` أصبح 20 افتراضياً، و`InpMaxRiskPctBal` كما هو (0 = معطل؛ يُنصح 2-3). عند تجاوز أي حد ينتظر البوت (WAITING_*) ولا يرفع اللوت.
-- إعادة المحاولة خلال 80 ms بعد requote/تغير السعر لكل دخول سوقي (كان Fast Catch فقط).
-**غير مُترجم ولا مُختبر على MT5: F7 ثم Demo إلزاميان.**
+- ثابت `YT_REAL_ORDERS_ONLY = true`: لا يرسل الـ EA أي أمر سوق بقراره. `TryMarketReverse` و`CatchTick` و`CatchTimer` و`VirtualWake` و`VirtualEntryPass` معطّلة بالكامل، ومدخلات `InpFastCatch` / `InpCatchAfterSL` افتراضيها false، و`InpEntryMode=VIRTUAL` و`InpBreachPolicy=MARKET` تُتجاهل (تُسجَّل في Experts).
+- الدخول فقط عبر **Buy Stop / Sell Stop حقيقيين** على السيرفر، ومن المستويات التي أرسلها المستخدم (`/set` أو Mini App) ثم `/start`.
+- عند التشغيل `PurgeVirtualState()` يمسح كل حالة افتراضية في الذاكرة (تفعيل المنطقة/الالتقاط، توقعات أمر سوق قديم، `REVERR`) دون لمس الأوامر المعلّقة الحقيقية أو الصفقات المفتوحة. بعد SL يعود الزوج المعلّق عبر المسار العادي (WAITING_REENTRY) بلا دخول سوقي.
+- رسالة بدء تلجرام: «Real orders only - waiting for your commands». الحالة المُرسلة للـ Mini App: `entry=PENDING`, `breach=WAIT` دائماً.
+- اختبار جديد `tests/real-orders-only.test.mjs` وفحص في `npm run check`.
+**لم يتغيّر:** معادلة اللوت والتعويض، SL/TP، الحالة المحفوظة (Recovery)، الـ Worker (رقم الإصدار فقط). **غير مُترجم ولا مُختبر على MT5: F7 ثم Demo إلزاميان.**
 
 ## v4.16.0 (EA 2.30) — تنفيذ فوري في الحركة السريعة (Fast Catch + صمت الشبكة)
 **المشكلة:** عند حركة سعرية سريعة يعبر السعر المستوى والبوت «يصفن» ولا ينفّذ. السببان في الكود:
@@ -25,6 +50,16 @@
 ## v4.15.1 — Worker فقط (EA 2.29 بلا تغيير)
 - **إلغاء قفل الربط:** لا قفل بعد محاولات رمز الربط الخاطئة (كان 10 محاولات ثم 5 دقائق). محاولات غير محدودة. (قفل كلمة سر الدخول للتطبيق لم يتغير.)
 
+# Changelog
+
+## v4.17.0 (EA 2.31) — تعويض الخسائر بزيادة اللوت مع ثبات SL/TP
+**المشكلة:** عند الدخول بالسوق بعد SL أو عبر Fast Catch كان SL هو «المستوى المقابل» فيبتعد عن سعر الدخول الحقيقي عند أي فجوة، فيقل اللوت ويبعد الهدف (عكس المطلوب).
+**الحل:**
+- مسافة SL = عرض المنطقة (Upper-Lower) ومسافة TP = العرض × R/R، تُقاس دائماً من سعر التنفيذ الحقيقي. لا يتوسع الهدف ولا يتقلص اللوت بسبب الفجوة.
+- لوت التعويض: المخاطرة = (إجمالي الخسائر + الهدف) / R/R (بقيمة النقطة الفعلية لدى الوسيط عبر OrderCalcProfit)، ويُقرَّب اللوت **للأعلى** إلى خطوة الوسيط أثناء دورة التعويض (`InpRecoveryRoundUp`) ليغطي الربح عند TP كل الخسائر + 20$.
+- حدود الأمان: `InpMaxLot` (سقف اللوت)، `InpMaxSeqLosses` أصبح 20 افتراضياً، و`InpMaxRiskPctBal` كما هو (0 = معطل؛ يُنصح 2-3). عند تجاوز أي حد ينتظر البوت (WAITING_*) ولا يرفع اللوت.
+- إعادة المحاولة خلال 80 ms بعد requote/تغير السعر لكل دخول سوقي (كان Fast Catch فقط).
+**غير مُترجم ولا مُختبر على MT5: F7 ثم Demo إلزاميان.**
 
 ## v4.15.0 (EA 2.29) — تقوية الحماية: قفل يُعاد فحصه، كشف نسخة ثانية، ترتيب الإغلاقات، حفظ ذري، تأكيد من خطوتين
 **لم يتغيّر:** فلسفة الدخول (Buy Stop/Sell Stop، SL/TP، BREACH_WAIT، Zone Gate، التوقف بعد TP، معادلة اللوت). **غير مُترجم ولا مُختبر على MT5 بعد: F7 ثم Demo إلزاميان.**

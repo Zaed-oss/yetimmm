@@ -1,4 +1,4 @@
-// Yetimmm bridge v4.17.0 — ONE bot, ONE link, login by MT5 account number + ONE app password.
+// Yetimmm bridge v4.21.0 — ONE bot, ONE link, login by MT5 account number + ONE app password.
 //   EA  -> POST /api/ea/sync  (headers X-EA-Secret [+ X-EA-Pair while pairing])  body {login, srv, fresh, reset, cv, state, ack}
 //   App -> POST /login        body {login, pw, init}                -> {ok, sess}
 //   App -> POST /verify       headers X-Login + X-Session, body {init} -> {ok, hard, checks:{session,account,telegram,bot}}
@@ -17,7 +17,7 @@
 //    • SESSION_EPOCH bumped -> everybody is signed out instantly (panic button)
 // ═════════════════════════════════════════════════════════════════════════
 import { Notify } from "./news.js";
-export const VERSION = "4.17.0", EA_PROTOCOL = "2.31";   // v4.8: the ONE place the release number lives (package.json / README / CHANGELOG / EA must match: npm run check enforces it)
+export const VERSION = "4.21.0", EA_PROTOCOL = "2.34";   // v4.8: the ONE place the release number lives (package.json / README / CHANGELOG / EA must match: npm run check enforces it)
 export { Notify };
 
 const CONFIG = {
@@ -34,6 +34,9 @@ const CONFIG = {
   NEWS_SCOPE: "server",      // v4.6: "server" = one calendar/notification shard per broker server (multi-broker safe) | "global" = legacy single shard
 };
 
+// v4.22 SECURITY: a pairing code can re-bind ANY account number, so it must not be guessable.
+const WEAK_PAIR = new Set(["123123", "123456", "1234567", "12345678", "123456789", "000000", "00000000", "111111", "password", "pairing", "pair", "admin", "yetimmm", "changeme"]);
+const pairWeak = (k) => { k = String(k || ""); return k.length < 8 || WEAK_PAIR.has(k.toLowerCase()) || /^(.)\1+$/.test(k); };
 const num = (v, d) => { const n = Number(v); return Number.isFinite(n) && n > 0 ? n : d; };
 function cfg(env) {
   return {
@@ -50,6 +53,8 @@ function cfg(env) {
     origins: String(env.ALLOWED_ORIGIN || CONFIG.ALLOWED_ORIGIN || "").split(",").map((x) => x.trim().replace(/\/+$/, "")).filter(Boolean),   // comma separated; "*" = open (testing only)
     // v4.8: PAIR_CODE is MANDATORY and separate from APP_PASSWORD (a leaked app password must not pair a rogue EA). ALLOW_PAIR_FALLBACK="1" restores the old fallback (not recommended).
   pairKey: String(env.PAIR_CODE || (String(env.ALLOW_PAIR_FALLBACK || "") === "1" ? (env.APP_PASSWORD || CONFIG.PASSWORD) : "")),
+    pairLock: String(env.PAIR_LOCKOUT === undefined ? "1" : env.PAIR_LOCKOUT) !== "0",   // v4.22: wrong pairing codes are throttled by default; PAIR_LOCKOUT="0" restores the v4.15.1 "unlimited attempts" behaviour (not recommended)
+    eaToken: String(env.ALLOW_EA_BOT_TOKEN || "") === "1",   // v4.22 SECURITY: the Bot Token is NEVER sent to an EA unless this legacy opt-in is set (a rogue/paired EA could otherwise read it)
     touchMs: num(env.SESSION_TOUCH_SEC, CONFIG.SESSION_TOUCH_SEC) * 1000,
     newsScope: String(env.NEWS_SCOPE || CONFIG.NEWS_SCOPE).toLowerCase() === "global" ? "global" : "server",
   };
@@ -125,9 +130,12 @@ function classify(raw) {
   if (TECH_RE.test(t)) return { text: "", cat: "tech" };
   return { text: t, cat: /offline|not connected|no connection|autotrading|market (is )?closed|trade server/i.test(t) ? "ops" : "user" };
 }
+const cleanTxt = (x, n) => String(x == null ? "" : x).replace(/[<>"'`&\\]/g, "").slice(0, n);   // v4.22: text shown in the app can never carry markup
 const rid = (id) => "r-" + String(id == null ? "" : id).replace(/[^\w-]/g, "").slice(0, 8);
 function publicOf(st) {
   const o = { ...st };
+  for (const k of ["bs", "acct"]) if (o[k] && typeof o[k] === "object") { o[k] = { ...o[k] }; for (const f of ["ccy", "cur", "sym", "name", "srv", "broker"]) if (typeof o[k][f] === "string") o[k][f] = cleanTxt(o[k][f], 40); }
+  if (typeof o.sym === "string") o.sym = cleanTxt(o.sym, 20);
   delete o.cmds;                                   // EA command log (Apply / Waiting / Superseded / failed ...) = internal, never a trade
   const m = classify(o.msg); o.msg = m.text; if (m.cat === "tech") o.msgCat = "tech";
   if (o.lastCmd && typeof o.lastCmd === "object") { const c = classify(o.lastCmd.text); o.lastCmd = { id: o.lastCmd.id, ok: !!o.lastCmd.ok, text: c.text, cat: c.cat, rid: c.cat === "tech" ? rid(o.lastCmd.id) : undefined }; }
@@ -187,6 +195,11 @@ async function tgWebhook(req, env) {
   return new Response("ok");
 }
 
+// v4.22: tiny wrapper over the existing per-key brute-force gate (Hub /gate). Used for EA pairing attempts and the admin key.
+const gateOf = (env, name) => {
+  const st = env.HUB.get(env.HUB.idFromName(name)), call = async (op) => (await st.fetch("https://hub/gate", { method: "POST", body: JSON.stringify(op) })).json();
+  return { check: () => call({}), fail: () => call({ fail: true }), reset: () => call({ reset: true }) };
+};
 export default {
   async fetch(req, env) {
     const url = new URL(req.url);
@@ -195,7 +208,7 @@ export default {
     if (req.method === "OPTIONS") return new Response(null, { status: 204, headers: ch });
     const done = (res) => { const h = new Headers(res.headers); for (const [k, v] of Object.entries(ch)) h.set(k, v); return new Response(res.body, { status: res.status, headers: h }); };
     const P = url.pathname;
-    if (P === "/") return done(json({ ok: true, service: "yetimmm-bridge", v: VERSION, release: VERSION, ea_protocol: EA_PROTOCOL, pairConfigured: !!c.pairKey, corsOpen: c.origins.includes("*"), corsConfigured: c.origins.length > 0 }));
+    if (P === "/") return done(json({ ok: true, service: "yetimmm-bridge", v: VERSION, release: VERSION, ea_protocol: EA_PROTOCOL, pairConfigured: !!c.pairKey && !pairWeak(c.pairKey), pairWeak: !!c.pairKey && pairWeak(c.pairKey), corsOpen: c.origins.includes("*"), corsConfigured: c.origins.length > 0 }));
     if (P === "/tg/webhook" && req.method === "POST") return tgWebhook(req, env);   // Telegram -> bot chat (no CORS / no account)
     try {
       let login = "", body = "";
@@ -221,11 +234,20 @@ export default {
       if (!/^\d{3,12}$/.test(login)) return done(json({ ok: false, error: "login" }, P === "/login" ? 400 : 401));
       const hub = env.HUB.get(env.HUB.idFromName("acc-" + login));
       const call = (path, extra) => hub.fetch("https://hub" + path, { method: "POST", body: JSON.stringify(extra) });
-      if (P === "/api/ea/sync" && !seenLogins(env.HUB).has(login)) {         // account directory (owner auto-login). Once per isolate; failures never block the sync
-        seenLogins(env.HUB).add(login);
-        try { await env.HUB.get(env.HUB.idFromName("dir")).fetch("https://hub/dir", { method: "POST", body: JSON.stringify({ op: "add", login }) }); } catch (e) { seenLogins(env.HUB).delete(login); }
+      if (P === "/api/ea/sync") {
+        const pairHdr = (req.headers.get("X-EA-Pair") || "").trim(), ip = req.headers.get("CF-Connecting-IP") || "x";
+        const pg = pairHdr && c.pairLock ? gateOf(env, "pgate-ip" + ip) : null;        // v4.22: wrong pairing codes are throttled per IP (the old "unlimited attempts" allowed brute force of PAIR_CODE)
+        if (pg) { const g0 = await pg.check(); if (!g0.ok) return done(json({ ok: false, error: "locked", retry: g0.retry }, 429)); }
+        const res = await call("/sync", { secret: (req.headers.get("X-EA-Secret") || "").trim(), pair: pairHdr.slice(0, 256), body, tok: env.BOT_TOKEN || "", login });
+        let j = {}; try { j = await res.clone().json(); } catch (e) {}
+        if (pg) { if (res.status === 403 && j.error === "pair_bad") await pg.fail(); else if (j.ok) await pg.reset(); }
+        // account directory (owner auto-login): registered ONLY after the EA proved its secret/pairing code, so a stranger can no longer poison the list
+        if (res.status === 200 && j.ok && !j.dupInst && !seenLogins(env.HUB).has(login)) {
+          seenLogins(env.HUB).add(login);
+          try { await env.HUB.get(env.HUB.idFromName("dir")).fetch("https://hub/dir", { method: "POST", body: JSON.stringify({ op: "add", login }) }); } catch (e) { seenLogins(env.HUB).delete(login); }
+        }
+        return done(res);
       }
-      if (P === "/api/ea/sync") return done(await call("/sync", { secret: (req.headers.get("X-EA-Secret") || "").trim(), pair: (req.headers.get("X-EA-Pair") || "").trim().slice(0, 256), body, tok: env.BOT_TOKEN || "", login }));
       if (P === "/login") {
         const b = JSON.parse(body);
         const tg = await tgUser(String(b.init || ""), env.BOT_TOKEN || "");
@@ -249,7 +271,11 @@ export default {
         return done(res);
       }
       if (P === "/admin/diag") {            // internal diagnostics: admin key only (secret ADMIN_KEY); unset = endpoint does not exist
-        if (!env.ADMIN_KEY || !safeEq(String(req.headers.get("X-Admin-Key") || ""), String(env.ADMIN_KEY))) return done(json({ error: "not found" }, 404));
+        if (!env.ADMIN_KEY) return done(json({ error: "not found" }, 404));
+        const ag = gateOf(env, "agate-ip" + (req.headers.get("CF-Connecting-IP") || "x")), a0 = await ag.check();     // v4.22: the admin key cannot be brute-forced
+        if (!a0.ok) return done(json({ ok: false, error: "locked", retry: a0.retry }, 429));
+        if (!(await pwEq(c, String(req.headers.get("X-Admin-Key") || ""), String(env.ADMIN_KEY)))) { await ag.fail(); return done(json({ error: "not found" }, 404)); }
+        await ag.reset();
         return done(await call("/diag", {}));
       }
       const sess = (req.headers.get("X-Session") || "").trim();
@@ -280,6 +306,7 @@ export default {
   },
 };
 
+const CMD_MAX = { buy: 1e7, sell: 1e7, price: 1e7, risk: 1e7, target: 1e9, rr: 100, ticket: 9007199254740991 };
 export class Hub {
   constructor(ctx, env) { this.ctx = ctx; this.env = env || {}; this.c = cfg(env || {}); this.st = null; this.ts = 0; this.oa = null; this.miss = {}; this.hxSig = ""; this.wkc = null; this.dseen = new Set(); }
   age() { return this.ts ? (Date.now() - this.ts) / 1000 : null; }
@@ -335,9 +362,9 @@ export class Hub {
   // ---- user identity + order alerts (account-bound, stored here next to the EA state; delivery goes through the shared Notify engine) ----
   uidOf(s, a) { return s && s.tg ? String(s.tg) : "a" + (a.login || ""); }
   async auth(m) {
-    const a = await this.S(); if (m.login && a.login !== m.login) { a.login = String(m.login); await this.ctx.storage.put("acc", a); }
+    const a = await this.S();
     const r = await this.chk(a, m.sess);
-    if (r.s) await this.touch(a, r.s);
+    if (r.s) { if (m.login && a.login !== String(m.login)) { a.login = String(m.login); await this.ctx.storage.put("acc", a); } await this.touch(a, r.s); }   // v4.22: never write storage for an unauthenticated caller
     return json(r.s ? { ok: true, uid: this.uidOf(r.s, a), srv: a.srv || "" } : { ok: false, why: r.why });
   }
   async loadOa() { if (!this.oa) { this.oa = {}; for (const [k, v] of await this.ctx.storage.list({ prefix: "oa:" })) this.oa[k] = v; } return this.oa; }
@@ -415,13 +442,16 @@ export class Hub {
     // and are upgraded the first time the EA presents the code. A stranger who syncs first can no longer take the account: without the code he is refused (403).
     let ok = matched, issued = "", paired = false, dirty = false;
     const pair = String(m.pair || "");
-    if (pair && !matched && !this.c.pairKey) return json({ ok: false, error: "pair_not_configured" }, 503);   // v4.8: no PAIR_CODE secret = pairing refused (never falls back to the app password)
+    if (pair && !matched && (!this.c.pairKey || pairWeak(this.c.pairKey))) return json({ ok: false, error: "pair_not_configured", weak: !!this.c.pairKey }, 503);   // v4.22: a weak PAIR_CODE (e.g. 123123) is refused like a missing one   // v4.8: no PAIR_CODE secret = pairing refused (never falls back to the app password)
     if (pair) {
-      // v4.15.1: pairing lockout REMOVED by owner request - wrong codes are never locked out, unlimited attempts.
+      // v4.22 SECURITY: per-account lock restored (the per-IP gate in the entry point covers rotating account numbers). Wrong codes count; a lock refuses even a correct code until it expires.
+      a.pf = a.pf || { n: 0, until: 0 };
+      if (this.c.pairLock && !matched && a.pf.until && now0 < a.pf.until) return json({ ok: false, error: "locked", retry: Math.ceil((a.pf.until - now0) / 1000) }, 429);
       if (this.c.pairKey && (await pwEq(this.c, pair, this.c.pairKey))) {
         a.pf = { n: 0, until: 0 }; paired = true; ok = true; dirty = true;
         if (!matched || !a.eaIssued) { issued = rnd(32); a.eaSecretH = await sha("yt-ea|" + issued); delete a.eaSecret; a.eaIssued = true; a.pairedAt = now0; }
       } else if (!matched) {
+        if (this.c.pairLock) { a.pf.n = (a.pf.n || 0) + 1; if (a.pf.n >= Math.max(this.c.max, 5)) a.pf = { n: 0, until: now0 + this.c.lockMs }; await this.ctx.storage.put("acc", a); }
         return json({ ok: false, error: "pair_bad" }, 403);
       }
     }
@@ -462,7 +492,7 @@ export class Hub {
     if (issued) out.es = issued;
     if (paired) out.paired = true;
     if (calNeed) out.calNeed = true;
-    if (String(a.cfgv) !== String(body.cv !== undefined ? body.cv : 0)) out.cfg = { v: String(a.cfgv), tok: (body.state && body.state.evp) ? "" : (m.tok || ""), auth: a.tg.join(",") };   // v4.8: an EA that routes notifications through the Worker never receives the Bot Token
+    if (String(a.cfgv) !== String(body.cv !== undefined ? body.cv : 0)) out.cfg = { v: String(a.cfgv), tok: (this.c.eaToken && !(body.state && body.state.evp)) ? (m.tok || "") : "", auth: a.tg.join(",") };   // v4.8: an EA that routes notifications through the Worker never receives the Bot Token
     return json(out);
   }
 
@@ -549,7 +579,7 @@ export class Hub {
       let add = 0;
       for (const x of by[k]) {
         const id = String(x.no) + "-" + Number(x.ts); if (ids.has(id)) continue; ids.add(id);   // unique trade id: a trade can never be listed twice
-        cur.push({ id, no: Number(x.no) || 0, side: String(x.side || "").slice(0, 8), entry: Number(x.entry) || 0, exit: Number(x.exit) || 0, lot: Number(x.lot) || 0, pnl: Number(x.pnl) || 0, reason: String(x.reason || "").slice(0, 40), t: String(x.t || "").slice(0, 12), ts: Number(x.ts) });
+        cur.push({ id, no: Number(x.no) || 0, side: cleanTxt(x.side, 8), entry: Number(x.entry) || 0, exit: Number(x.exit) || 0, lot: Number(x.lot) || 0, pnl: Number(x.pnl) || 0, reason: cleanTxt(x.reason, 40), t: cleanTxt(x.t, 12), ts: Number(x.ts) });
         add++;
       }
       if (add) { await this.ctx.storage.put("hx:" + k, cur); this.wkc = { key: Number(k), list: cur }; }   // NEVER trimmed or deleted: the week view is a filter, not a purge
@@ -605,8 +635,9 @@ export class Hub {
     const c = { id: crypto.randomUUID().replace(/-/g, "").slice(0, 16), cmd: String(b.cmd) };   // id first: the EA parser relies on it
     for (const k of ["buy", "sell", "risk", "target", "rr", "ticket", "price"]) {
       if (b[k] === undefined || b[k] === null || b[k] === "") continue;
-      const n = Number(b[k]);
-      if (!Number.isFinite(n)) return json({ error: "bad number: " + k }, 400);
+      const n = Number(b[k]), mx = CMD_MAX[k];
+      if (!Number.isFinite(n) || n < 0 || n > mx) return json({ error: "bad number: " + k }, 400);   // v4.22: no negative / absurd values reach the EA
+      if (k === "ticket" && !Number.isInteger(n)) return json({ error: "bad number: ticket" }, 400);
       c[k] = n;
     }
     if (b.side !== undefined && b.side !== null && b.side !== "") {

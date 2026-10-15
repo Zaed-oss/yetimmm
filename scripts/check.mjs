@@ -121,7 +121,17 @@ const animJs = read("anim/yt-anim.js"), animCss = read("anim/yt-anim.css");
 for (const k of ['class="bulb"', 'class="eyes"', 'class="m m-s"', 'class="rg"', 'class="lb1"', 'class="lln"']) animJs.includes(k) ? ok("anim keeps hook " + k) : fail("anim lost hook " + k);
 /prefers-reduced-motion/.test(animCss) ? ok("anim honours prefers-reduced-motion") : fail("anim ignores prefers-reduced-motion");
 
+// 10) v4.19 real-orders-only lint: no market entry by the EA's own decision
+/#define\s+YT_REAL_ORDERS_ONLY\s+true/.test(eaSrc) && /if\(YT_REAL_ORDERS_ONLY\) return false;/.test(eaSrc) && /input\s+bool\s+InpFastCatch\s*=\s*false/.test(eaSrc) ? ok("EA opens NO market trade by itself (real Buy Stop / Sell Stop only)") : fail("EA real-orders-only guard missing (YT_REAL_ORDERS_ONLY / FastCatch default)");
+
+// 11) v4.21 Fix.pdf compliance lints: cost-aware sizing, plan check before send, cycle result, per-trade table, new guards
+for (const need of ["double SizingPerLot(", "double CommPerLotEff()", "void PlanCheck(", "void WritePlanTable(", "void RearmBlocked(", "WAITING_ACCLOSSCAP", "WAITING_MARGINLVL", "WAITING_NEXTDAY", 'LogOrder("CYCLE_COMPLETE"', 'LogOrder("PLAN_CHECK"'])
+  eaSrc.includes(need) ? ok("EA v2.34 has " + need) : fail("EA v2.34 is missing " + need);
+eaSrc.indexOf("PlanCheck(buy,level,lot);") > 0 && eaSrc.indexOf("PlanCheck(buy,level,lot);") < eaSrc.indexOf("g_trade.BuyStop(lot,level") ? ok("EA verifies the financial plan BEFORE sending the order") : fail("PlanCheck does not precede the order send");
+for (const w of ["WAITING_ACCLOSSCAP", "WAITING_MARGINLVL", "WAITING_NEXTDAY"]) html.includes("w_" + w) ? ok("Mini App has a text for " + w) : fail("Mini App has no text for " + w);
+
 console.log(bad ? "\n" + bad + " problem(s)" : "\nAll checks passed");
+
 console.log("\nNOTE: these checks verify STRUCTURE and known audit regressions only. They do NOT prove that the EA compiles (press F7 in MetaEditor)\nnor that the trading strategy is correct (run the Strategy Tester / a demo account). `npm test` covers the Worker, not the EA.");
 process.exit(bad ? 1 : 0);
 
