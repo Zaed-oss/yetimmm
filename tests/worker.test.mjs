@@ -66,12 +66,22 @@ test("full flow: sync -> login -> state -> command -> verify -> logout", async (
   assert.equal((await call("/state", { method: "GET", headers: h })).s, 401);
 });
 
-test("v4.18 wrong password: unlimited attempts, never locked, the right password always works afterwards", async () => {
+test("wrong password: remaining attempts are reported, 8th failure locks for 120 s", async () => {
   const { sync, signIn } = boot();
   await sync("123456");
   let r;
-  for (let i = 1; i <= 40; i++) { r = await signIn("123456", "bad" + i); assert.equal(r.s, 401); assert.equal(r.j.error, "bad_pw"); assert.equal(r.j.left, undefined); assert.equal(r.j.retry, undefined); }
-  const ok = await signIn(); assert.equal(ok.s, 200); assert.ok(ok.j.sess);     // 40 failures later the correct password is accepted at once (no lock of any kind)
+  for (let i = 1; i <= 8; i++) r = await signIn("123456", "bad" + i);
+  assert.equal(r.s, 429); assert.equal(r.j.error, "locked"); assert.ok(r.j.retry > 100 && r.j.retry <= 120);
+  const again = await signIn(); assert.equal(again.s, 429);          // even the right password waits for the lock to end
+});
+
+test("a correct login resets the failed-attempt counter", async () => {
+  const { sync, signIn } = boot();
+  await sync("123456");
+  for (let i = 0; i < 5; i++) await signIn("123456", "nope");
+  assert.equal((await signIn()).s, 200);
+  let r; for (let i = 0; i < 7; i++) r = await signIn("123456", "nope");
+  assert.equal(r.s, 401);                                              // 7 new failures: still not locked
 });
 
 test("changing the password kills old sessions (bound to a password fingerprint)", async () => {
@@ -128,7 +138,7 @@ test("oversized bodies are rejected", async () => {
 test("CORS: restricted origin is honoured", async () => {
   const b = boot({ ALLOWED_ORIGIN: "https://me.github.io" });
   const r = await b.call("/", { method: "GET", headers: { Origin: "https://evil.example" } });
-  assert.equal(r.h.get("Access-Control-Allow-Origin"), null);          // v4.18: a foreign origin gets NO Access-Control-* header (it used to receive the first allowed origin)
+  assert.equal(r.h.get("Access-Control-Allow-Origin"), "https://me.github.io");
   const ok = await b.call("/", { method: "GET", headers: { Origin: "https://me.github.io" } });
   assert.equal(ok.h.get("Access-Control-Allow-Origin"), "https://me.github.io");
 });
@@ -164,7 +174,7 @@ test("MT5 calendar feed: EA pushes rows, calendar serves them with Actual", asyn
 test("PAIRING: a stranger who syncs first cannot take the account (no code -> 403, wrong code -> 403)", async () => {
   const b = boot();
   const r1 = await b.call("/api/ea/sync", { body: { login: "123456", state: {} }, headers: { "X-EA-Secret": "f".repeat(32) } });
-  assert.equal(r1.s, 401); assert.equal(r1.j.error, "secret");        // v4.18: unknown / unbound account answers like a wrong secret (no account enumeration)
+  assert.equal(r1.s, 403); assert.equal(r1.j.error, "pair_required");
   const r2 = await b.call("/api/ea/sync", { body: { login: "123456", state: {} }, headers: { "X-EA-Secret": "f".repeat(32), "X-EA-Pair": "guess" } });
   assert.equal(r2.s, 403); assert.equal(r2.j.error, "pair_bad");
   const real = await b.sync("123456");                              // the genuine EA still gets in afterwards
@@ -221,9 +231,8 @@ test("SLIDING SESSION: authenticated activity (state / command / news) extends t
   await b.sync("123456");
   const sess = (await b.signIn()).j.sess, h = b.auth("123456", sess), hub = b.hubOf("123456");
   hub.c.sessMs = 30 * 86400000; hub.c.touchMs = 0;                  // touch on every request for the test
-  const sk = () => [...hub.__st.m.keys()].find((k) => k.startsWith("ses:"));          // v4.18: one record per session
-  const age = (d) => { hub.__st.m.get(sk()).t = Date.now() - d * 86400000; };
-  const t0 = () => hub.__st.m.get(sk()).t;
+  const age = (d) => { const acc = hub.__st.m.get("acc"); acc.sessions[acc.sessions.length - 1].t = Date.now() - d * 86400000; };
+  const t0 = () => hub.__st.m.get("acc").sessions.slice(-1)[0].t;
   age(29);                                                          // 29 days old: about to expire
   assert.equal((await b.call("/state", { method: "GET", headers: h })).s, 200);
   assert.ok(Date.now() - t0() < 5000, "/state must slide the session");
@@ -236,7 +245,7 @@ test("SLIDING SESSION: writes are throttled (touch window) so /state polling nev
   const b = boot();
   await b.sync("123456");
   const h = b.auth("123456", (await b.signIn()).j.sess), hub = b.hubOf("123456");
-  let puts = 0; const orig = hub.ctx.storage.put.bind(hub.ctx.storage); hub.ctx.storage.put = async (...a) => { puts++; return orig(...a); };
+  let puts = 0; const orig = hub.ctx.storage.put.bind(hub.ctx.storage); hub.ctx.storage.put = async (...a) => { if (a[0] === "acc") puts++; return orig(...a); };
   for (let i = 0; i < 20; i++) await b.call("/state", { method: "GET", headers: h });
   assert.equal(puts, 0);
 });
@@ -267,11 +276,10 @@ test("CORS: several origins (comma separated) and a trailing slash are accepted"
   const c = await b.call("/", { method: "GET", headers: { Origin: "https://b.github.io" } });
   assert.equal(c.h.get("Access-Control-Allow-Origin"), "https://b.github.io");
   // v4.6.1: fail-closed by default; "*" is an explicit, testing-only opt-in
-  const adm = { "X-Admin-Key": "adm-key" };
-  const none = await boot({ ADMIN_KEY: "adm-key" }).call("/", { method: "GET", headers: { Origin: "https://evil.example", ...adm } });
+  const none = await boot().call("/", { method: "GET", headers: { Origin: "https://evil.example" } });
   assert.equal(none.j.corsOpen, false); assert.equal(none.j.corsConfigured, false);
-  assert.equal(none.h.get("Access-Control-Allow-Origin"), null);
-  const open = await boot({ ALLOWED_ORIGIN: "*", ADMIN_KEY: "adm-key" }).call("/", { method: "GET", headers: adm }); assert.equal(open.j.corsOpen, true);
+  assert.equal(none.h.get("Access-Control-Allow-Origin"), "null");
+  const open = await boot({ ALLOWED_ORIGIN: "*" }).call("/", { method: "GET" }); assert.equal(open.j.corsOpen, true);
 });
 
 // ───────── order-activation alerts over the REAL cycle (gold 4138 / 4137) ─────────
@@ -291,7 +299,7 @@ test("ALERT CYCLE: Buy fills (position id = order ticket) -> ONE 'activated'; th
   const r = await cycleRig();
   assert.equal((await r.arm("t111")).j.ok, true); assert.equal((await r.arm("t112")).j.ok, true);
   await r.push({ pos: { side: "BUY", entry: 4138.12, sl: 4137, tp: 4158, lot: 0.1, no: 1, pid: 111, profit: 0 }, orders: [] });   // slipped fill + opposite deleted
-  const n = (await r.notifs()).filter((x) => /Order Activated/.test(x.title));
+  const n = (await r.notifs()).filter((x) => /Activated|تفعيل/.test(x.title));
   assert.equal(n.length, 1); assert.match(n[0].body, /BUY/);
   const st = await r.b.call("/state", { method: "GET", headers: r.h });
   const keys = Object.fromEntries(st.j.oalerts.map((o) => [o.key, o.status]));
@@ -302,18 +310,18 @@ test("ALERT CYCLE: a MANUAL trade near the level (old 0.1% tolerance = 4.1 USD) 
   const r = await cycleRig();
   await r.arm("t111");
   await r.push({ pos: { side: "BUY", entry: 4134.0, sl: 4130, tp: 4180, lot: 1, no: 9, pid: 9999, profit: 0 }, orders: [ord(112, "SELL STOP", 4137)] });   // order 111 removed; someone opened a BUY 4 USD lower
-  assert.equal((await r.notifs()).filter((x) => /Order Activated/.test(x.title)).length, 0);
+  assert.equal((await r.notifs()).filter((x) => /Activated|تفعيل/.test(x.title)).length, 0);
 });
 
 test("ALERT CYCLE: without a position id (older EA) the match is symbol-tight: 3 ticks / Max Deviation, not 0.1%", async () => {
   const r = await cycleRig();
   await r.arm("t111");
   await r.push({ pos: { side: "BUY", entry: 4134.0, sl: 4130, tp: 4180, lot: 1, no: 9, profit: 0 }, orders: [] });           // 4 USD away -> not this order
-  assert.equal((await r.notifs()).filter((x) => /Order Activated/.test(x.title)).length, 0);
+  assert.equal((await r.notifs()).filter((x) => /Activated|تفعيل/.test(x.title)).length, 0);
   const r2 = await cycleRig();
   await r2.arm("t111");
   await r2.push({ pos: { side: "BUY", entry: 4138.25, sl: 4137, tp: 4158, lot: 0.1, no: 1, profit: 0 }, orders: [] });       // 0.25 slippage <= 30 pts * 0.01
-  assert.equal((await r2.notifs()).filter((x) => /Order Activated/.test(x.title)).length, 1);
+  assert.equal((await r2.notifs()).filter((x) => /Activated|تفعيل/.test(x.title)).length, 1);
 });
 
 test("ALERT CYCLE: full loop Buy -> SL -> re-armed Sell Stop -> Sell fills -> TP: one alert per armed order, none duplicated across syncs", async () => {
@@ -324,7 +332,7 @@ test("ALERT CYCLE: full loop Buy -> SL -> re-armed Sell Stop -> Sell fills -> TP
   assert.equal((await r.arm("t113")).j.ok, true);
   await r.push({ pos: { side: "SELL", entry: 4136.9, sl: 4138, tp: 4115, lot: 0.1, no: 2, pid: 113, profit: 0 }, orders: [], hist: [{ no: 1, side: "BUY", entry: 4138, exit: 4137, profit: -1 }] });
   await r.push({ pos: { side: "SELL", entry: 4136.9, sl: 4138, tp: 4115, lot: 0.1, no: 2, pid: 113, profit: 0.5 }, orders: [] }, 5);          // many more syncs: still one message
-  const n = (await r.notifs()).filter((x) => /Order Activated/.test(x.title));
+  const n = (await r.notifs()).filter((x) => /Activated|تفعيل/.test(x.title));
   assert.equal(n.length, 2); assert.ok(/BUY/.test(n[1].body) !== /BUY/.test(n[0].body));
 });
 
@@ -491,23 +499,20 @@ test("v4.8 commands reach the EA with their age so the EA can expire stale ones"
   assert.ok(Number.isFinite(q.j.commands[0].age) && q.j.commands[0].age >= 0);
 });
 
-test("v4.18 root endpoint: public = up + version only; release / protocol / pairing / CORS facts need the admin key", async () => {
-  const t = boot({ ADMIN_KEY: "adm-key" });
-  const pub = await t.call("/", { method: "GET" });
-  assert.deepEqual(Object.keys(pub.j).sort(), ["ok", "service", "v"]); assert.equal(pub.j.v, W.VERSION);
-  const bad = await t.call("/", { method: "GET", headers: { "X-Admin-Key": "nope" } }); assert.equal(bad.j.pairConfigured, undefined);
-  const r = await t.call("/", { method: "GET", headers: { "X-Admin-Key": "adm-key" } });
-  assert.equal(r.j.release, W.VERSION); assert.equal(r.j.ea_protocol, W.EA_PROTOCOL); assert.equal(r.j.pairConfigured, true);
+test("v4.8 root endpoint reports ONE release + EA protocol and whether pairing is configured", async () => {
+  const t = boot();
+  const r = await t.call("/", { method: "GET" });
+  assert.equal(r.j.release, W.VERSION); assert.equal(r.j.v, W.VERSION); assert.equal(r.j.ea_protocol, W.EA_PROTOCOL); assert.equal(r.j.pairConfigured, true);
 });
 
-test("v4.18 no lock per Telegram user / IP either: many failures from one address never block that address or anybody else", async () => {
+test("v4.8 login brute-force lock is per Telegram user / IP (one stranger cannot lock the owner out)", async () => {
   const t = boot();
   await t.sync("123456");
-  for (let i = 0; i < 30; i++) await t.call("/login", { body: { login: "123456", pw: "wrong" }, headers: { "CF-Connecting-IP": "9.9.9.9" } });
-  const same = await t.call("/login", { body: { login: "123456", pw: "S3cret-pass" }, headers: { "CF-Connecting-IP": "9.9.9.9" } });
-  assert.equal(same.s, 200);
-  const other = await t.call("/login", { body: { login: "123456", pw: "S3cret-pass" }, headers: { "CF-Connecting-IP": "1.2.3.4" } });
-  assert.equal(other.s, 200);
+  for (let i = 0; i < 9; i++) await t.call("/login", { body: { login: "123456", pw: "wrong" }, headers: { "CF-Connecting-IP": "9.9.9.9" } });
+  const locked = await t.call("/login", { body: { login: "123456", pw: "S3cret-pass" }, headers: { "CF-Connecting-IP": "9.9.9.9" } });
+  assert.equal(locked.s, 429);
+  const owner = await t.call("/login", { body: { login: "123456", pw: "S3cret-pass" }, headers: { "CF-Connecting-IP": "1.2.3.4" } });
+  assert.equal(owner.s, 200);
 });
 
 test("v4.8 the public state forwards the BrokerSpec / RiskResult / waiting code untouched and keeps real numeric precision", async () => {

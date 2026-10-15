@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import vm from "node:vm";
 
-const html = fs.readFileSync(new URL("../index.html", import.meta.url), "utf8") + "\n" + fs.readFileSync(new URL("../app.js", import.meta.url), "utf8");
+const html = fs.readFileSync(new URL("../index.html", import.meta.url), "utf8");
 const a = html.indexOf("const Ops={"), b = html.indexOf("const Bridge={");
 assert.ok(a > 0 && b > a, "Ops block must exist in index.html");
 const src = html.slice(a, b);

@@ -11,25 +11,24 @@ const fail = (m) => { bad++; console.log("  FAIL " + m); };
 const read = (p) => readFileSync(join(root, p), "utf8");
 
 // 1) JavaScript syntax
-for (const f of ["worker/worker.js", "worker/budget.js", "worker/news.js", "news/yt-news.js", "anim/yt-anim.js", "app.js"]) {
+for (const f of ["worker/worker.js", "worker/news.js", "news/yt-news.js", "anim/yt-anim.js"]) {
   try { execFileSync(process.execPath, ["--check", join(root, f)], { stdio: "pipe" }); ok(f + " syntax"); } catch (e) { fail(f + " syntax: " + String(e.stderr).split("\n")[0]); }
 }
 // 2) inline script of index.html
-const page = read("index.html"), app = read("app.js"), html = page + "\n" + app;   // v4.18: the app code lives in app.js (CSP without inline scripts)
-const inline = [...page.matchAll(/<script(?![^>]*\ssrc)[^>]*>([\s\S]*?)<\/script>/g)].map((m) => m[1]);
-inline.length ? fail("index.html still has " + inline.length + " inline <script> block(s): CSP forbids them") : ok("index.html has no inline script (CSP script-src without unsafe-inline)");
+const html = read("index.html");
+const inline = [...html.matchAll(/<script(?![^>]*\ssrc)[^>]*>([\s\S]*?)<\/script>/g)].map((m) => m[1]);
 inline.forEach((code, i) => { try { new Function(code); ok("index.html inline script #" + (i + 1)); } catch (e) { fail("index.html inline script #" + (i + 1) + ": " + e.message); } });
 // 3) every local file referenced by index.html exists
-for (const m of page.matchAll(/(?:src|href)="((?!https?:|#|data:)[^"]+)"/g)) {
+for (const m of html.matchAll(/(?:src|href)="((?!https?:|#|data:)[^"]+)"/g)) {
   try { statSync(join(root, m[1])); ok("index.html -> " + m[1]); } catch (e) { fail("index.html references missing file " + m[1]); }
 }
 // 4) duplicate element ids
-const ids = [...page.matchAll(/\sid="([^"]+)"/g)].map((m) => m[1]);
+const ids = [...html.slice(0, html.indexOf("<script>")).matchAll(/\sid="([^"]+)"/g)].map((m) => m[1]);
 const dup = ids.filter((x, i) => ids.indexOf(x) !== i);
 dup.length ? fail("duplicate ids: " + [...new Set(dup)].join(", ")) : ok("no duplicate element ids");
 // 5) wrangler.toml essentials
 const toml = read("worker/wrangler.toml");
-for (const need of ['main = "worker.js"', 'class_name = "Hub"', 'class_name = "Notify"', 'new_sqlite_classes = ["Hub"]', 'new_sqlite_classes = ["Notify"]', 'class_name = "Budget"', 'new_sqlite_classes = ["Budget"]'])
+for (const need of ['main = "worker.js"', 'class_name = "Hub"', 'class_name = "Notify"', 'new_sqlite_classes = ["Hub"]', 'new_sqlite_classes = ["Notify"]'])
   toml.includes(need) ? ok("wrangler.toml has " + need) : fail("wrangler.toml missing " + need);
 // 6) no default password in code
 /PASSWORD:\s*"[^"]+"/.test(read("worker/worker.js")) ? fail("worker.js contains a hard-coded password") : ok("worker.js has no hard-coded password");
@@ -75,16 +74,9 @@ eaVer && eaVer === defVer ? ok("EA #property version == YT_VER (" + eaVer + ")")
 const pkgVer = JSON.parse(read("package.json")).version;
 read("CHANGELOG.md").includes("## v" + pkgVer) ? ok("CHANGELOG has an entry for v" + pkgVer) : fail("CHANGELOG has no entry for package version " + pkgVer);
 new RegExp("bridge v" + pkgVer.replace(/\./g, "\\.")).test(wk.slice(0, 80)) ? ok("worker.js header version = v" + pkgVer) : fail("worker.js header comment is not v" + pkgVer);
-const csp = (page.match(/Content-Security-Policy"\s+content="([^"]+)"/) || [])[1] || "";
-const apiHost = (app.match(/baseUrl:\s*"(https:\/\/[^"\/]+)/) || [])[1];
+const csp = (html.match(/Content-Security-Policy"\s+content="([^"]+)"/) || [])[1] || "";
+const apiHost = (html.match(/baseUrl:\s*"(https:\/\/[^"\/]+)/) || [])[1];
 csp && apiHost && csp.includes("connect-src") && csp.split("connect-src")[1].split(";")[0].includes(apiHost) ? ok("index.html CSP allows connect-src only to the Worker (+ Telegram)") : fail("index.html CSP missing or connect-src does not list the Worker URL");
-const scriptSrc = (csp.split("script-src")[1] || "").split(";")[0];
-!/unsafe-inline|unsafe-eval/.test(scriptSrc) && /'self'/.test(scriptSrc) ? ok("CSP script-src: 'self' + telegram.org only (no unsafe-inline / unsafe-eval)") : fail("CSP script-src allows unsafe-inline / unsafe-eval");
-// v4.18 XSS lint: no inline event-handler attributes and no ${...} of a server-controlled id printed without idn()/Number()
-const sinks = [...(app + read("news/yt-news.js")).matchAll(/\son(click|change|input|error|load|keydown)="/g)];
-sinks.length ? fail(sinks.length + " inline on*=\"\" handler(s) in app.js / yt-news.js") : ok("no inline event-handler attributes");
-const rawId = [...app.matchAll(/\$\{(?:[a-z]+\.)?(?:ticket|no)\}/g)];
-rawId.length ? fail("ticket / trade number interpolated without idn(): " + rawId.map((m) => m[0]).join(" ")) : ok("tickets / trade numbers are printed only through idn()");
 /object-src 'none'/.test(csp) && /base-uri 'none'/.test(csp) ? ok("CSP blocks <object> and <base> injection") : fail("CSP lacks object-src/base-uri 'none'");
 
 

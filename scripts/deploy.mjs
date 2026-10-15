@@ -1,8 +1,9 @@
 // One-command Worker release:  npm run deploy
 //   1) npm run check + npm test (stops on failure)
-//   2) preflight: BOT_TOKEN + APP_PASSWORD secrets and PAIR_CODE (secret OR [vars]) must exist; a var+secret duplicate is REPORTED (never deleted silently)
+//   2) if PAIR_CODE is a [vars] entry in wrangler.toml AND a secret with the same name exists in Cloudflare,
+//      deletes that secret (a secret and a var with one name conflict and the deploy would fail)
 //   3) wrangler deploy
-//   4) verifies the Worker answers, runs this package's version, and has PAIR_CODE (probe, the cause of HTTP 503 pair_not_configured)
+//   4) GET <worker>/ and verifies pairConfigured:true (the cause of HTTP 503 pair_not_configured)
 // Needs Cloudflare auth in the terminal: `npx wrangler login` once, or env CLOUDFLARE_API_TOKEN (+ CLOUDFLARE_ACCOUNT_ID).
 // Flags: --dry (print what would run, change nothing)   --skip-tests
 import { readFileSync } from "node:fs";
@@ -31,20 +32,23 @@ if (!skipTests) {
   }
 }
 
-// 2) configuration preflight (v4.18): everything the Worker needs must exist BEFORE we deploy, and nothing is deleted behind your back
-//    BOT_TOKEN + APP_PASSWORD = secrets.  PAIR_CODE = secret (created by `npm run setup`) OR an explicit [vars] entry you added yourself.
-//    No default / example value for any of them exists in this repository.
+// 2) var-vs-secret conflict
 const toml = readFileSync(join(root, cfg), "utf8");
 const varPair = /^\s*PAIR_CODE\s*=\s*"([^"]+)"/m.exec(toml);
-let names = null;
-const ls = run(npx, ["wrangler", "secret", "list", "--config", cfg, "--format", "json"], { capture: true });
-if (!dry) {
-  if (ls.status !== 0) die("could not list the Worker's secrets (not logged in?). Run `npx wrangler login` or set CLOUDFLARE_API_TOKEN.\n" + (ls.stderr || ""));
-  try { names = JSON.parse(ls.stdout.slice(ls.stdout.indexOf("["))).map((x) => x.name); } catch { die("could not parse the secret list - nothing was deployed"); }
-  const missing = ["BOT_TOKEN", "APP_PASSWORD"].filter((n) => !names.includes(n));
-  if (!varPair && !names.includes("PAIR_CODE")) missing.push("PAIR_CODE");
-  if (missing.length) die("required configuration is missing: " + missing.join(", ") + "\n  -> first-time setup: `npm run setup`   |   one secret: `npx wrangler secret put <NAME>`   (nothing was deployed)");
-  if (varPair && names.includes("PAIR_CODE")) die("PAIR_CODE is defined TWICE: as a [vars] line in worker/wrangler.toml AND as a Cloudflare secret (a var and a secret with one name conflict).\n  Keep ONE: delete the PAIR_CODE line from wrangler.toml (recommended - the secret is stronger), or run `npx wrangler secret delete PAIR_CODE`. Nothing was changed.");
+if (varPair) {
+  log("PAIR_CODE is set in wrangler.toml [vars]; checking for a conflicting Cloudflare secret...");
+  const ls = run(npx, ["wrangler", "secret", "list", "--config", cfg, "--format", "json"], { capture: true });
+  if (!dry) {
+    if (ls.status !== 0) die("could not list secrets (not logged in?). Run `npx wrangler login` or set CLOUDFLARE_API_TOKEN.\n" + (ls.stderr || ""));
+    let names = [];
+    try { names = JSON.parse(ls.stdout.slice(ls.stdout.indexOf("["))).map((x) => x.name); } catch { log("could not parse the secret list; continuing"); }
+    if (names.includes("PAIR_CODE")) {
+      log("a secret named PAIR_CODE exists -> deleting it so the [vars] value (" + varPair[1].length + " chars) takes over");
+      const del = run(npx, ["wrangler", "secret", "delete", "PAIR_CODE", "--config", cfg], { capture: true, input: "y\n" });
+      if (del.status !== 0) die("could not delete the PAIR_CODE secret:\n" + (del.stderr || del.stdout));
+    }
+    for (const need of ["BOT_TOKEN", "APP_PASSWORD"]) if (names.length && !names.includes(need)) log("WARNING: required secret " + need + " is missing -> npx wrangler secret put " + need);
+  }
 }
 
 // 3) deploy
@@ -52,16 +56,14 @@ log("wrangler deploy");
 const dep = run(npx, ["wrangler", "deploy", "--config", cfg]);
 if (dep.status !== 0) die("wrangler deploy failed (see the message above)");
 
-// 4) verify: the Worker answers, runs THIS release, and PAIR_CODE is configured (harmless probe, see scripts/probe.mjs)
-const app = readFileSync(join(root, "app.js"), "utf8");
-const url = ((/baseUrl:\s*"(https:\/\/[^"]+)"/.exec(app) || [])[1] || "").replace(/\/+$/, "");
-const want = JSON.parse(readFileSync(join(root, "package.json"), "utf8")).version;
-if (dry || !url) { log(dry ? "(dry) skipping verification" : "no api.baseUrl found in app.js; skipping verification"); process.exit(0); }
-await new Promise((r) => setTimeout(r, 3000));
-const { probeWorker } = await import("./probe.mjs");
-const pr = await probeWorker(url);
-log("probe -> " + JSON.stringify(pr));
-if (!pr.up) die("deployed, but " + url + "/ did not answer (wrong api.baseUrl in app.js, or the workers.dev subdomain differs)");
-if (pr.v !== want) die("deployed, but the Worker reports v" + pr.v + " and this package is v" + want + " (an old deployment is still serving)");
-if (pr.pair !== "configured") die("deployed, but pairing is not usable: " + (pr.pair === "missing" ? "the Worker has no PAIR_CODE (503 pair_not_configured)" : "unexpected probe answer - " + pr.note));
-log("OK: Worker v" + pr.v + " is live and PAIR_CODE is configured (the EA reads the same code from Yetimmm.cfg).");
+// 4) verify
+const ea = readFileSync(join(root, "ea", "Yetimmm.mq5"), "utf8");
+const url = ((/InpBrUrl\s*=\s*"(https:\/\/[^"]+)"/.exec(ea) || [])[1] || "").replace(/\/+$/, "");
+if (dry || !url) { log(dry ? "(dry) skipping verification" : "no InpBrUrl found; skipping verification"); process.exit(0); }
+try {
+  await new Promise((r) => setTimeout(r, 3000));
+  const j = await (await fetch(url + "/")).json();
+  log("GET / -> " + JSON.stringify({ ok: j.ok, v: j.v, ea_protocol: j.ea_protocol, pairConfigured: j.pairConfigured }));
+  if (!j.pairConfigured) die("deployed, but pairConfigured is false: the Worker still has no PAIR_CODE");
+  log("OK: Worker " + j.v + " is live with PAIR_CODE configured. EA input InpBrPairCode must equal it (default 123123).");
+} catch (e) { die("deployed, but " + url + "/ did not answer: " + e.message + " (wrong InpBrUrl, or workers.dev subdomain differs)"); }

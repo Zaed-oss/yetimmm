@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import vm from "node:vm";
 const rd = (p) => fs.readFileSync(new URL("../" + p, import.meta.url), "utf8");
-const html = rd("index.html") + "\n" + rd("app.js"), ea = rd("ea/Yetimmm.mq5"), js = rd("anim/yt-anim.js");
+const html = rd("index.html"), ea = rd("ea/Yetimmm.mq5"), js = rd("anim/yt-anim.js");
 
 // extract Login.out and run it with fakes
 const a = html.indexOf("async out(call,msg){"), b = html.indexOf("msg(){let m=");

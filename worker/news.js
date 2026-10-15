@@ -175,7 +175,7 @@ export class Notify {
     const c = await this.loadCal(), e = c.events.find((x) => x.id === id), al = await this.loadAl(), key = "al:" + uid + ":" + id, old = al[key];
     const offs = [...new Set((Array.isArray(b.offsets) ? b.offsets : []).map(Number).filter((o) => OFFSETS.includes(o)))].sort((x, y) => x - y);
     if (b.enabled === false || !offs.length) {                       // cancel = update the same record (no new row)
-      if (old && old.enabled) { old.enabled = false; old.status = "off"; old.trigger_time = null; old.updated_at = Date.now(); await this.ctx.storage.put(key, old); await this.note(old, "off", "\u{1F515} Alert Cancelled \u00B7 \u062A\u0645 \u0625\u0644\u063A\u0627\u0621 \u0627\u0644\u062A\u0646\u0628\u064A\u0647", `${old.ev.cur} \u00B7 ${old.ev.title}`); }
+      if (old && old.enabled) { old.enabled = false; old.status = "off"; old.trigger_time = null; old.updated_at = Date.now(); await this.ctx.storage.put(key, old); }
       return J({ ok: true, alert: old ? { offsets: [], status: "off" } : null });
     }
     if (!e && !old) return J({ ok: false, error: "no_event" }, 404);
@@ -185,12 +185,9 @@ export class Notify {
     r.enabled = true; r.account_id = acct || r.account_id || null; r.offsets = offs; r.ev = { title: ev.title, cur: ev.cur, ts: ev.ts, impact: ev.impact };
     if (!same) { r.updated_at = now; if (old && !old.enabled) r.fired = {}; }
     this.trig(r); al[key] = r; await this.ctx.storage.put(key, r); await this.schedule();
-    if (!same) await this.note(r, "armed", "\u2705 Alert Enabled \u00B7 \u062A\u0645 \u062A\u0641\u0639\u064A\u0644 \u0627\u0644\u062A\u0646\u0628\u064A\u0647", `${r.ev.cur} \u00B7 ${r.ev.title}\n${r.offsets.map((o) => (o === 0 ? "at event time \u00B7 \u0648\u0642\u062A \u0627\u0644\u062E\u0628\u0631" : o + " min before \u00B7 \u0642\u0628\u0644 " + o + " \u062F")).join("\n")}`);
     return J({ ok: true, alert: { offsets: r.offsets, status: r.status } });
   }
 
-  // v4.19: chat confirmation when an alert is switched on / off (unique id per action; failure never affects the alert)
-  async note(r, kind, title, body) { try { await this.emit({ uid: r.user_id, type: "news", event_id: r.event_id, alert_type: kind + Date.now(), title, body, account_id: r.account_id || null }); } catch (e) { /* ignore */ } }
   /* ── notification engine: dedupe -> store -> deliver (in-app is the record itself, Telegram is the push channel) ── */
   async emit(m) {
     const uid = String(m.uid || ""); if (!uid || !m.title) return { ok: false };

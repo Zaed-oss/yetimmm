@@ -10,22 +10,24 @@
 @keyframes lbar{0%,100%{transform:scaleY(.62)}50%{transform:scaleY(1)}}
 .lln{stroke-dasharray:70;stroke-dashoffset:70;animation:lln 2.8s ease-in-out infinite}@keyframes lln{0%{stroke-dashoffset:70}55%,100%{stroke-dashoffset:0}}
 .ldot{animation:ldt 2.8s ease-in-out infinite;transform-box:fill-box;transform-origin:center}@keyframes ldt{0%,45%{opacity:0;transform:scale(.3)}60%,100%{opacity:1;transform:scale(1)}}
-.logo3::after{content:"";position:absolute;inset:0;background:linear-gradient(115deg,transparent 35%,rgba(255,255,255,.35) 50%,transparent 65%);transform:translateX(-120%);animation:sw 9s ease-in-out infinite}
+.logo3::after{content:"";position:absolute;inset:0;background:linear-gradient(115deg,transparent 35%,rgba(255,255,255,.35) 50%,transparent 65%);transform:translateX(-120%);animation:sw 4s ease-in-out infinite}
 .hd .act{gap:8px}.hd .mode{padding:6px 11px;border:1px solid color-mix(in srgb,var(--gold) 25%,transparent)}
 .tools{display:flex;gap:2px;padding:3px;border-radius:99px;background:var(--surf);border:1px solid var(--line);box-shadow:inset 0 1px 0 rgba(255,255,255,.06)}
 .tools .ib{width:34px;height:34px;border:0;background:transparent}.tools .ib:hover{background:var(--surf2)}
 @media(max-width:380px){.hd .bt small{display:none}}
 /* ── 3D icons ── */
-.i3{stroke-width:2;filter:drop-shadow(0 1px 1.5px rgba(0,0,0,.28));transition:transform .28s cubic-bezier(.3,1.7,.5,1)}
-@media(hover:hover){.btn:hover .i3,.ib:hover .i3,.nav button:hover .i3{transform:translateY(-1px) scale(1.1)}}
+.i3{stroke-width:2.1;filter:drop-shadow(0 1px 0 rgba(255,255,255,.3)) drop-shadow(0 2px 3px rgba(0,0,0,.4));transition:transform .28s cubic-bezier(.3,1.7,.5,1)}
+.btn:hover .i3,.ib:hover .i3,.nav button:hover .i3{transform:translateY(-1px) scale(1.12) rotate(-4deg)}
 .btn:active .i3,.ib:active .i3{transform:scale(.85)}
-.i-bolt{animation:none}.hs.wt .i-clock{animation:icl 6s linear infinite}@keyframes icl{to{transform:rotate(360deg)}}
-.i-up,.i-dn{animation:none}
-@keyframes idn{50%{transform:translate(1.5px,1.5px)}}
-.note.er .i-alert{animation:ial 4s ease-in-out infinite}@keyframes ial{0%,80%,100%{transform:rotate(0)}85%{transform:rotate(-8deg)}90%{transform:rotate(8deg)}95%{transform:rotate(-4deg)}}
+.i-bolt{animation:ibl 2.8s ease-in-out infinite}@keyframes ibl{0%,86%,100%{opacity:1}90%{opacity:.35}94%{opacity:1}}
+.hs.wt .i-clock,.i-clock{animation:icl 6s linear infinite}@keyframes icl{to{transform:rotate(360deg)}}
+.i-up{animation:iup 2.4s ease-in-out infinite}.i-dn{animation:idn 2.4s ease-in-out infinite}
+@keyframes iup{50%{transform:translate(1.5px,-1.5px)}}@keyframes idn{50%{transform:translate(1.5px,1.5px)}}
+.i-alert{animation:ial 3s ease-in-out infinite}@keyframes ial{0%,80%,100%{transform:rotate(0)}85%{transform:rotate(-8deg)}90%{transform:rotate(8deg)}95%{transform:rotate(-4deg)}}
 .ib:active .i-refresh,.btn:active .i-refresh{transform:rotate(180deg)}
-.i-pause{animation:none}.sico,.hs{box-shadow:inset 0 1px 0 rgba(255,255,255,.28),inset 0 -6px 10px rgba(0,0,0,.12),0 8px 16px color-mix(in srgb,var(--c,currentColor) 22%,transparent);background:linear-gradient(150deg,color-mix(in srgb,var(--c,currentColor) 30%,transparent),color-mix(in srgb,var(--c,currentColor) 8%,transparent))}
-.sico{animation:none}@keyframes sfl{50%{transform:translateY(-2px)}}
+.i-pause{animation:ipa 2.6s ease-in-out infinite}@keyframes ipa{50%{opacity:.5}}
+.sico,.hs{box-shadow:inset 0 1px 0 rgba(255,255,255,.28),inset 0 -6px 10px rgba(0,0,0,.12),0 8px 16px color-mix(in srgb,var(--c,currentColor) 22%,transparent);background:linear-gradient(150deg,color-mix(in srgb,var(--c,currentColor) 30%,transparent),color-mix(in srgb,var(--c,currentColor) 8%,transparent))}
+.sico{animation:sfl 4s ease-in-out infinite}@keyframes sfl{50%{transform:translateY(-2px)}}
 /* ── Ripple / press ── */
 .btn,.ib,.sm,.chip,.nav button{overflow:hidden;position:relative}
 .rip{position:absolute;border-radius:50%;pointer-events:none;background:color-mix(in srgb,var(--gold2) 45%,transparent);transform:scale(0);animation:rip .6s ease-out forwards}
@@ -77,10 +79,10 @@
 .bot[data-s=trade] .rg{opacity:.45;animation:brs 6s linear infinite}
 @keyframes bpl{from{transform:scale(.6)}to{transform:scale(1.2);opacity:0}}
 .bot[data-s=waiting]{--ec:var(--gold2)}.bot[data-s=waiting] .eyes{animation:bscan 4.5s ease-in-out infinite}
-.bot[data-s=analyzing]{--ec:var(--info)}.bot[data-s=analyzing] .rg{opacity:.75;animation:brs 3.2s linear infinite}.bot[data-s=analyzing] .eyes{animation:bscan 2s ease-in-out infinite}
+.bot[data-s=analyzing]{--ec:#5cc8ff}.bot[data-s=analyzing] .rg{opacity:.75;animation:brs 3.2s linear infinite}.bot[data-s=analyzing] .eyes{animation:bscan 2s ease-in-out infinite}
 .bot[data-s=analyzing] .pt circle,.bot[data-s=profit] .pt circle{animation:bpt 1.8s ease-in-out infinite}.bot .pt circle:nth-child(2){animation-delay:.6s!important}.bot .pt circle:nth-child(3){animation-delay:1.2s!important}
 @keyframes bpt{0%{opacity:0;transform:rotate(0) translateY(-46px)}30%{opacity:1}100%{opacity:0;transform:rotate(300deg) translateY(-46px)}}
-.bot[data-s=signal]{--ec:var(--info);--bc:#2f9fe0}.bot[data-s=signal] .m-o{opacity:1}.bot[data-s=signal] .bd,.bot[data-s=signal] .bi-bolt{opacity:1}.bot[data-s=signal] .ey{animation:bwide .5s}.bot[data-s=signal] .fl{animation:bhop .6s}
+.bot[data-s=signal]{--ec:#5cc8ff;--bc:#2f9fe0}.bot[data-s=signal] .m-o{opacity:1}.bot[data-s=signal] .bd,.bot[data-s=signal] .bi-bolt{opacity:1}.bot[data-s=signal] .ey{animation:bwide .5s}.bot[data-s=signal] .fl{animation:bhop .6s}
 @keyframes bwide{50%{transform:scale(1.3)}}@keyframes bhop{30%{transform:translateY(-8px)}}
 .bot[data-s=placed]{--ec:var(--gold2);--bc:var(--gold)}.bot[data-s=placed] .m-s,.bot[data-s=placed] .bd,.bot[data-s=placed] .bi-ok{opacity:1}.bot[data-s=placed] .fl{animation:bnod .7s}
 @keyframes bnod{30%{transform:translateY(5px) scale(1.03,.96)}60%{transform:translateY(-4px)}}
@@ -95,6 +97,7 @@
 .bot[data-s=closed] .fl,.bot[data-s=stopped] .fl{animation-duration:7s}.bot[data-s=closed] .bd,.bot[data-s=closed] .bi-z{opacity:1}
 .bot[data-s=stopped] .m-f{opacity:1}
 .bot.pulse .fl{animation:bnod .6s}.bot.off *,body.yt-hid .bot *{animation-play-state:paused!important}
+.bot-t{position:absolute;inset-inline:0;bottom:-2px}
 .lnk{gap:14px;padding:12px 14px}.lnk>i{display:none}.lnk .bot{margin:-6px 0 -8px}
 #lg .box>.bot,#vf .box>.bot{margin:-6px auto 4px}
 @media(prefers-reduced-motion:reduce){.b3 *,.logo3 *{animation:none!important}.bot .rg,.bot .pt{display:none}}

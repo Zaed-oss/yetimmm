@@ -20,7 +20,7 @@
 .nx{display:flex;gap:12px;align-items:center}.nx .cdn{font-size:26px;font-weight:700;letter-spacing:.5px;color:var(--gold2)}
 .nx .inf{flex:1;min-width:0}.nx .inf b{display:block;font-size:14px;line-height:1.35}.nx .inf small{color:var(--mute);font-size:11.5px}
 .imp{display:inline-flex;align-items:center;gap:5px;font-size:10.5px;font-weight:700;padding:3px 8px;border-radius:99px;white-space:nowrap;--c:var(--mute);color:var(--c);background:color-mix(in srgb,var(--c) 14%,transparent)}
-.imp.high{--c:var(--dn)}.imp.medium{--c:var(--warn)}.imp.low{--c:var(--up)}.imp.holiday{--c:var(--mute)}
+.imp.high{--c:var(--dn)}.imp.medium{--c:#f0a23c}.imp.low{--c:var(--up)}.imp.holiday{--c:var(--mute)}
 .imp i{display:flex;gap:2px;align-items:flex-end;height:10px}.imp i u{width:3px;border-radius:1px;background:currentColor;opacity:.28;text-decoration:none}.imp i u:nth-child(1){height:4px}.imp i u:nth-child(2){height:7px}.imp i u:nth-child(3){height:10px}
 .imp.high i u,.imp.medium i u:nth-child(-n+2),.imp.low i u:first-child{opacity:1}
 .day{margin-top:12px;border:1px solid var(--line);border-radius:18px;background:var(--surf);overflow:hidden}
@@ -43,7 +43,7 @@
 .ib.al{width:34px;height:34px;position:relative}.ib.al.on{color:var(--up);border-color:var(--up);background:color-mix(in srgb,var(--up) 14%,var(--surf))}
 .ib.al.on::after{content:"";position:absolute;top:5px;inset-inline-end:5px;width:7px;height:7px;border-radius:50%;background:var(--up);box-shadow:0 0 0 2px var(--surf)}
 .ib.al:disabled{opacity:.35}
-.bn{display:flex;gap:9px;align-items:center;padding:10px 12px;border-radius:13px;font-size:12.5px;margin-top:12px;color:var(--warn);background:color-mix(in srgb,var(--warn) 12%,transparent);border:1px solid color-mix(in srgb,var(--warn) 30%,transparent)}
+.bn{display:flex;gap:9px;align-items:center;padding:10px 12px;border-radius:13px;font-size:12.5px;margin-top:12px;color:#f0a23c;background:color-mix(in srgb,#f0a23c 12%,transparent);border:1px solid color-mix(in srgb,#f0a23c 30%,transparent)}
 .bn .ic{font-size:18px;flex:none}.bn small{display:block;color:var(--mute);font-size:11px}
 .sk2{height:56px;border-radius:14px;margin-top:10px;background:linear-gradient(90deg,var(--surf2),var(--line),var(--surf2));background-size:200% 100%;animation:sk 1.2s infinite}
 .chk2{display:flex;gap:10px;align-items:center;padding:11px 12px;border-radius:12px;background:var(--surf2);margin-top:8px;font-size:13px;font-weight:600;cursor:pointer;border:1px solid var(--line);transition:border-color .2s}
@@ -51,7 +51,7 @@
 .pop h4{font-size:12px;color:var(--gold2);margin:14px 0 4px}.pop p{margin:0 0 4px;font-size:12.5px;color:var(--txt);line-height:1.65}
 .pop .hd2{display:flex;gap:10px;align-items:center;margin-bottom:8px}.pop .hd2 b{font-size:16px;line-height:1.3}
 .pop .scn{padding:9px 11px;border-radius:12px;background:var(--surf2);margin-top:7px;font-size:12px;line-height:1.6}.pop .scn b{display:block;font-size:12px;margin-bottom:2px}
-.pop .wn{margin-top:12px;padding:9px 11px;border-radius:12px;font-size:11.5px;color:var(--warn);background:color-mix(in srgb,var(--warn) 11%,transparent)}
+.pop .wn{margin-top:12px;padding:9px 11px;border-radius:12px;font-size:11.5px;color:#f0a23c;background:color-mix(in srgb,#f0a23c 11%,transparent)}
 .pop .tl{display:flex;gap:6px;flex-wrap:wrap;margin-top:6px}.pop .tl span{font-size:11px;padding:3px 9px;border-radius:99px;background:var(--surf2)}
 .pop{max-height:82vh;overflow-y:auto}
 .nbadge{position:absolute;top:1px;inset-inline-end:0;min-width:16px;height:16px;padding:0 4px;border-radius:99px;background:var(--dn);color:#fff;font-size:10px;font-weight:700;line-height:16px;text-align:center;box-shadow:0 0 0 2px var(--bg)}

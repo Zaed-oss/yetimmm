@@ -4,7 +4,7 @@
 //|  MetaTrader 5 | Telegram control | State recovery | Trade log    |
 //+------------------------------------------------------------------+
 #property copyright "Yetimmm"
-#property version   "2.34"
+#property version   "2.31"
 #property description "Yetimmm | XAUUSD | Two-level Stop Buy / Stop Sell switch + risk sequence | Telegram integration"
 
 #include <Trade\Trade.mqh>
@@ -97,22 +97,8 @@ enum ENUM_YT_STATE
 //--- (MT5 cannot cap slippage on server-triggered stop orders, so it is enforced right after the fill)
 enum ENUM_YT_DEV_ACTION
   {
-   YT_DEV_REJECT=0,   // Reject: close the position immediately (legacy: slippage ALONE cancels the trade)
-   YT_DEV_ALERT=1,    // Alert only
-   YT_DEV_RISKCAP=2   // v2.34 DEFAULT: keep the position, recompute the ACTUAL risk from the real fill, act only if it exceeds the explicit risk cap
-  };
-
-//--- v2.34 EXECUTION ENGINE: every broker answer is classified; the class (not the mere fact of a failure) decides what happens next
-enum ENUM_YT_RC_CLASS
-  {
-   RCC_OK=0,        // accepted
-   RCC_PRICE=1,     // requote / price changed / price off / invalid price or stops: refresh the quote, re-validate, retry at once
-   RCC_FAST=2,      // temporary broker / server / connection hiccup: retry with a short, bounded back-off
-   RCC_INDOUBT=3,   // no confirmed answer (timeout): the server is queried BEFORE any resend, so a trade is never sent twice
-   RCC_SLOW=4,      // market closed / trading disabled / no margin / throttled: the setup is KEPT and retried slowly
-   RCC_REBUILD=5,   // the request itself must be rebuilt from the live broker spec (volume / filling / expiration), then retried
-   RCC_FINAL=6,     // a permanent broker rule: retrying cannot help; logged clearly and bounded
-   RCC_UNKNOWN=7    // unclassified: bounded retries, then ERROR (unchanged behaviour)
+   YT_DEV_REJECT=0,   // Reject: close the position immediately
+   YT_DEV_ALERT=1     // Alert only (legacy behaviour)
   };
 
 //--- synchronisation status of one pending order (Desired State vs Actual State on the server)
@@ -174,7 +160,7 @@ enum ENUM_YT_RISKPOL
    YT_RISK_CLAMP_MIN=1   // use the broker minimum volume and SAY SO: Requested Risk / Effective Risk are both shown and logged
   };
 
-#define YT_VER "2.34"
+#define YT_VER "2.30"
 #define YT_DUP_HALT_SEC 30     // v2.29: the Worker keeps reporting another live copy for this long -> this copy halts
 #define YT_VANISH_WAIT_SEC 90  // v2.29: a vanished position keeps the SAFE state (no orders, sequence untouched) and the history is re-read every 5 s for this long
 #define YT_INST_STALE_SEC 15   // v2.28: a copy that has not refreshed its heartbeat for this long is considered dead
@@ -195,49 +181,47 @@ input double InpSellStop       = 0.0;     // (DEPRECATED v2.27 - IGNORED) orders
 
 input group "=== Risk Management ==="
 input double InpInitialRisk    = 1.0;     // Initial Risk ($) - lot is rounded DOWN to the broker step: real risk <= requested
-input double InpTargetProfit   = 20.0;    // Net Profit Target ($) - the winning trade must repay ALL accumulated losses AND leave this much NET profit (v2.30: sizes the TP from the ACTUAL lot; does NOT stop the EA)
-input double InpRiskReward     = 20.0;    // Risk/Reward - FALLBACK ONLY (v2.30): the TP is computed from the actual lot, symbol spec and costs; this ratio is used only while no executable lot exists
-input double InpRiskGrowthPct  = 5.0;     // Risk growth after every losing trade (%): R(n) = R(n-1) x (1 + g/100). 5 = x1.05 (the binding specification). Applied to the RISK in $, never to the lot
-input double InpNetTolerance   = 0.01;    // Net-target tolerance ($): a TP closes the cycle only if the cycle net >= target - this (cent rounding only)
-input double InpCommissionPerLot = -1.0;  // Round-trip commission per 1.00 lot in account currency. -1 = learn it from this symbol's closed deals (0 until the first trade); 0 = none
+input double InpTargetProfit   = 20.0;    // Recovery Target ($) - extra profit the NEXT trade must earn on top of the accumulated loss (sizes the next risk; does NOT stop the EA)
+input double InpRiskReward     = 20.0;    // Risk/Reward (TP = SL distance x this)
 input bool   InpResetRiskOnStart = true;  // Reset risk sequence when started after STOP
 
 input group "=== Risk / Broker engine (v2.23) ==="
 input ENUM_YT_RISKPOL InpRiskPolicy = YT_RISK_STRICT; // STRICT = never exceed the requested risk (WAITING_VOLUME when the broker minimum lot risks more) | CLAMP_TO_MIN = use the broker minimum lot and report the Effective Risk
 input bool   InpOrderCheck     = true;    // Run OrderCheck (server pre-flight) before every pending OrderSend
-input int    InpMaxSpread      = 0;       // DEPRECATED (v2.34): the spread is MEASURED, LOGGED and SHOWN but it NEVER blocks, delays or cancels an order. Kept only so old presets load. Use Spread Alert for a warning
+input int    InpMaxSpread      = 0;       // Max Spread to ARM (points, live Ask-Bid). 0 = off. Above it NEW orders wait (WAITING_SPREAD); open trades are never touched
 input double InpMaxRevGap      = 0.0;     // Max Reversal Distance ($, BREACH_MARKET/VIRTUAL only): market entry farther than this from the level is skipped. 0 = off
-input bool   InpTpResetNetOnly = true;    // REQUIRED by the specification (keep true): a TP closes the sequence only when the cycle NET (after commission/swap) repaid ALL losses AND left the net target; otherwise the sequence continues and the shortfall is carried
+input bool   InpTpResetNetOnly = true;    // A TP resets the risk sequence only when its NET result (after commission/swap) repaid the accumulated loss; otherwise the remaining debt is kept
 
 input group "=== Recovery Plan Guard (v2.24) ==="
-input int    InpMaxSeqLosses   = 0;       // Max consecutive losses in one recovery cycle. 0 = off. When reached, NEW orders wait (WAITING_SEQCAP); open trades are never touched. Resume: New Cycle / Reset, or raise the cap. Report recommendation: 15-20
+input int    InpMaxSeqLosses   = 20;      // Max consecutive losses in one recovery cycle. 0 = off. When reached, NEW orders wait (WAITING_SEQCAP); open trades are never touched. Resume: New Cycle / Reset, or raise the cap. Report recommendation: 15-20
+input double InpMaxLot         = 0.0;     // v2.31 Max lot allowed for ONE trade (hard safety cap for recovery sizing). 0 = broker maximum only. Above it NEW orders wait (WAITING_VOLUME) - the lot is never forced beyond it
+input bool   InpRecoveryRoundUp = true;   // v2.31 In a recovery cycle the lot is rounded UP to the broker step so the TP repays ALL accumulated losses + the Recovery Target (otherwise rounding down leaves a small debt)
 input double InpMaxRiskPctBal  = 0.0;     // Max risk of ONE trade as % of the account balance. 0 = off. If the next planned risk is above it, NEW orders wait (WAITING_RISKCAP). Report recommendation: 2-3
 input bool   InpPlanLog        = true;    // Print the exact recovery plan (risk / target / cumulative loss / balance needed) in the Experts log at start
 
-input group "=== Execution engine (v2.34) ==="
-input int    InpExecFastRetries  = 8;     // v2.34: how many consecutive retries of one setup use the short back-off (price / hiccup class) before it widens
-input int    InpExecBackoffMaxMs = 5000;  // v2.34: upper bound of the retry back-off (ms, 500..60000). A retry is never faster than 50 ms and never an endless loop inside OnTick
-input int    InpExecDevCapPts    = 1000;  // v2.34: a market order widens its allowed price deviation after repeated requotes, never above this (points)
-input bool   InpExecJournal      = true;  // v2.34: one compact line per execution attempt / fill in Yetimmm_<magic>_Exec.csv (setup id, class, spread, expected vs actual price, slippage, actual risk)
-input bool   InpExecSelfTest     = false; // v2.34: run the built-in execution self-test at start and print PASS/FAIL in the Experts log (Strategy Tester / demo)
-
-input group "=== Execution ===" 
+input group "=== Execution ==="
 input int    InpMaxDeviation   = 30;      // Max Slippage Check (points) - checked AFTER every fill (stop orders cannot be capped by MT5); a market reversal also sends it as a price guard
-input ENUM_YT_DEV_ACTION InpDevAction = YT_DEV_RISKCAP; // Action when a fill slips: RISKCAP (default) keeps the trade and acts only if the ACTUAL risk at the real fill exceeds the explicit cap | ALERT = never close | REJECT = legacy, close on slippage alone
+input ENUM_YT_DEV_ACTION InpDevAction = YT_DEV_REJECT; // Action when a fill exceeds the Max Slippage Check
 input int    InpWarnSpread     = 60;      // Spread Alert (points) - ALERT ONLY, trading is never blocked
 input double InpMinLevelGap    = 0.0;     // Minimum gap between Buy/Sell levels ($)
-input bool   InpTurbo          = true;    // TURBO (impulse mode): after an SL the opposite side is entered AT MARKET the instant the level is already crossed (no waiting for the price to come back), every tick is evaluated with a 20 ms gate, and no network call (Mini App / Telegram) is started while the price is near a level or moving fast
-input int    InpTurboDevPts    = 300;     // TURBO: a fill slippage up to this many points is ACCEPTED (a rocket candle always slips). Above it the normal Max Slippage Check still applies
-input int    InpTurboMomPts    = 150;     // TURBO: momentum = price moved at least this many points within InpTurboMomMs
-input int    InpTurboMomMs     = 700;     // TURBO: momentum window (ms)
-input int    InpTurboNearPts   = 600;     // TURBO: network calls are postponed while the price is within this many points of a level / trigger
-input int    InpTurboHotMs     = 4000;    // TURBO: how long the "hot" state (no network, fast gate) lasts after momentum is detected (ms)
 input ENUM_YT_ENTRY InpEntryMode = ENTRY_PENDING; // v2.23 DEFAULT = PENDING (real Buy Stop + Sell Stop on the server = the strategy). VIRTUAL = stored zone + tick trigger + market execution (advanced, opt-in)
 input bool   InpZoneGate     = true;    // v2.18 ZONE GATE: when BOTH Buy Stop and Sell Stop are missing, place them TOGETHER only when the price is inside the zone (no lone order in a trending market)
 input ENUM_YT_BREACH InpBreachPolicy = BREACH_WAIT; // After an SL: WAIT (DEFAULT v2.23: pending pair re-armed, WAITING_REENTRY until both Stops are placeable - Market Reversal OFF) or MARKET (advanced: opens the opposite side at market; a different strategy with a different SL distance)
 input bool   InpPriceFallback  = true;    // v2.28 DEFAULT = ON: classify SL/TP by exit price ONLY when the deal reason is unknown (never for manual / stop-out / EA closes). Prevents a broker SL with slippage from being labelled "Other" (which used to stop the sequence)
 input bool   InpCombinedMargin  = true;    // Place a missing Buy Stop / Sell Stop pair only when the margin of BOTH missing orders is available (off = each order is checked alone)
 input int    InpProtectCloseSec = 20;     // Position WITHOUT SL/TP: emergency-close after N seconds of failed protection. TRADING DECISION: 20 = "never stay unprotected" (a transient connection problem can close the trade at a loss larger than the planned risk); 0 = never force-close (alert + retry only; the position may stay unprotected)
+
+input group "=== Fast Execution (v2.30) ==="
+input bool   InpFastCatch      = true;    // v2.30 FAST CATCH: a level that the price has ALREADY crossed while no pending order of that side is on the server is entered AT MARKET on that very tick (SL = opposite level, lot sized from the real entry, risk unchanged)
+input bool   InpCatchAfterSL   = true;    // FAST CATCH also right after a Stop Loss (WAITING_REENTRY). false = only when the price was seen INSIDE the zone first
+input double InpCatchMaxGap    = 0.0;     // FAST CATCH: skip the market entry when the price is farther than this ($) beyond the level. 0 = no limit (the lot shrinks with the distance, risk stays)
+input int    InpCatchDeviation = 300;     // FAST CATCH: max slippage (points) sent with the market order AND tolerated after the fill (a fast market needs a wide window or the broker re-quotes / rejects)
+input int    InpFastMovePts    = 80;      // A price range of at least this many points inside 1 second = FAST MARKET: no network calls (Telegram / Mini App) so every tick is processed. 0 = off
+input double InpHotZone        = 1.5;     // No network calls while the price is within this distance ($) of a level (or outside the zone) - WebRequest blocks the EA and ticks are lost. 0 = off
+input int    InpHotHoldSec     = 3;       // Seconds the network stays silent after a fast move
+input int    InpNetMaxDeferSec = 20;      // Network is never silent longer than this: one call is allowed every N seconds even in a hot market
+input double InpMoneyScale     = 0.0;     // v2.30 CENT SUPPORT: account-currency units per 1 main unit. 0 = AUTO (USC/EUC/GBC/AUC... = 100), 1 = off, 100 = force (e.g. a cent account that reports "USD"). With it, EVERY money figure (Risk, Target, losses, balance, margin, panel, Telegram, Mini App) is in MAIN units ($), so a cent account runs the SAME system as a standard one (Risk 1 / Target 20) with its smaller lot sizes
+input int    InpNetTimeoutMs   = 2000;    // WebRequest timeout (ms, 500..5000) - was 3000; it is the longest time the EA can be blind
 
 input group "=== Manual changes in MT5 ==="
 input ENUM_YT_EXT  InpExtPolicy  = YT_EXT_ADOPT;   // Order moved in MT5 (ADOPT = MT5 sets ENTRY only; SL/TP re-derived)
@@ -253,6 +237,7 @@ input group "=== Telegram ==="
 input bool   InpTgEnable       = true;    // Enable Telegram
 input bool   InpTgNotify       = true;    // Telegram Notifications
 input bool   InpTgControl      = true;    // Telegram Control Enabled
+input int    InpTgPollSec      = 2;       // (deprecated - replaced by Telegram fast polling below)
 input bool   InpTgViaWorker    = true;    // v2.23: notifications go EA -> Worker (unique event id) -> Telegram. The Bot Token is NEVER sent to / stored in MT5 and the EA never polls Telegram
 input bool   InpTgMenu         = false;   // v2.25: attach the START/STOP/CANCEL/STATUS... inline keyboard to every bot message. Default OFF (clean messages). Typing /menu always shows it on demand; every /command and callback keeps working
 input bool   InpTgAutoHeal     = true;    // Self-heal: single poller per token, auto-clear webhook on 409, auto-pause polling if another instance owns the token
@@ -264,12 +249,6 @@ input string InpBrUrl      = "";      // Worker URL. LEAVE EMPTY (v2.27): read a
 input string InpBrPairCode   = "";      // Pairing code. LEAVE EMPTY (v2.27): read automatically from Common\Files\Yetimmm.cfg written by `npm run setup`. Fill only to override.
 input bool   InpBrResetPw    = false;   // Set TRUE once (then back to FALSE) to sign every device out of this account (a normal EA restart does NOT sign anyone out since v4.1)
 input int    InpCmdTtlSec      = 30;      // v2.23: a Mini App command older than this when it reaches the EA is EXPIRED (acked, never executed)
-input int    InpBrFastMs       = 300;     // v2.32 FAST LANE: while the Mini App is open, a light price+commands exchange every this many ms (150..2000, 0 = off). Auto-slows if the network round trip is slow
-input int    InpBrHotMs        = 1000;    // v2.32: while the price is near an entry level / moving fast, the fast lane is limited to one light exchange per this many ms (the trading thread has priority)
-input int    InpBrMaxDutyPct   = 25;      // v2.33 DUTY RULE: the fast lane may keep the trading thread blocked at most this % of the time while the market is far from every entry level (3..30). It shrinks to a third of it near a level and to 3 % when hot. Replaces the old fixed "1/3 of the round trip" rule
-input int    InpBrLaneMaxMs    = 900;     // v2.33 CIRCUIT BREAKER: one fast-lane request that blocks the thread longer than this (ms) suspends the lane
-input int    InpBrLaneSuspendSec = 20;    // v2.33: how long the lane stays suspended after the breaker tripped (5..600)
-input bool   InpFreezePriceWhenStopped = false; // v2.32: false = the app price card is ALWAYS the live broker tick (same tick the orders use). true = old behaviour: frozen at the STOP price
 input int    InpBrPollSec      = 1;       // Bridge sync interval (sec) - v2.22: 1 s (was 3) so the Mini App price follows the broker closely
 string g_brUrl="", g_brPair="";   // resolved at OnInit: input if filled, else Common\Files\Yetimmm.cfg (url=... / pair=...)
 
@@ -328,6 +307,17 @@ ulong         g_nextExtraMs=0;
 bool          g_connected=true;
 bool          g_dirty=true;
 bool          g_busy=false;
+//--- v2.30 fast execution state
+double        g_hkLo=0.0, g_hkHi=0.0;       // price range of the current 1-second window
+ulong         g_hkMs=0;                     // start of that window
+ulong         g_fastUntil=0;                // network silent until (fast market seen)
+ulong         g_netDeferSince=0;            // when the network went silent
+ulong         g_nextCatchMs=0;              // fast-catch throttle
+bool          g_catchArmed=false;           // the price was inside the zone (or a sequence is re-entering): crossing a level may now be caught
+double        g_catchLb=0.0, g_catchLs=0.0; // levels the flag belongs to
+int           NetTimeout();                 // forward declaration (defined with the network-silence helpers)
+double        g_mscale=1.0;                 // v2.30: account-currency units per 1 MAIN unit (cent account = 100)
+double        AcM(const double v) { return v/g_mscale; }   // account-currency money -> main-currency money (the unit of every figure the bot shows / stores)
 ulong         g_nextPlaceMs=0;
 ulong         g_lastSyncMs=0;
 int           g_failCount=0;
@@ -360,49 +350,6 @@ int           g_raceCnt[2]={0,0};           // v2.16: quiet retries when the mar
 bool          g_hold[2]={false,false};      // external change / missing order: no automatic action until APPLY / START
 double        g_waitBuf[2]={0.0,0.0};       // v2.17: adaptive safety buffer added to the trigger distance after a "market moved" race (decays after a success)
 ulong         g_trigMs[2]={0,0};            // v2.17: moment the price first reached the trigger (execution latency is measured from it)
-//--- v2.33 MEASUREMENT + FAST-LANE GOVERNOR (declared early: the order engine records the trigger -> send latency)
-#define YT_PF_N        64
-#define YT_DUTY_SLOTS  10
-double   g_pfCmdL[YT_PF_N], g_pfCmdF[YT_PF_N], g_pfExec[YT_PF_N], g_pfTrig[YT_PF_N], g_pfRtt[YT_PF_N];   // last 64 samples (ms): command latency via lane / via full sync, command execution, trigger->send, lane round trip
-int      g_pfCmdLn=0, g_pfCmdFn=0, g_pfExecn=0, g_pfTrign=0, g_pfRttn=0;
-ulong    g_dutyMs[YT_DUTY_SLOTS], g_dutySec[YT_DUTY_SLOTS];     // ms the fast lane kept the thread blocked, per second, rolling 10 s
-ulong    g_brBlkMax=0, g_brBlkMaxAt=0;                          // longest single lane block (ms), reset every 10 min
-ulong    g_laneOffUntil=0;                                      // circuit breaker: the lane is suspended until this tick count
-int      g_laneSusp=0, g_laneZone=0, g_laneSame=0;
-long     g_laneN=0;
-double   g_laneLastBid=0.0, g_laneLastAsk=0.0;
-datetime g_brLaneLog=0;
-ulong    g_brHintFastMs=0;                                      // Worker pace hints (activity tier x Cloudflare budget): minimum lane interval, full-sync seconds, user interacting
-int      g_brHintSyncSec=1;
-bool     g_brHintAct=true;
-bool     g_evNow=false;                                         // a notification is waiting: the next full sync ignores the Worker's slow-down hint
-void PfAdd(double &ring[],int &cnt,const double v) { ring[cnt%YT_PF_N]=v; cnt++; }
-string PfStat(const double &ring[],const int cnt)
-  {
-   int n=MathMin(cnt,YT_PF_N);
-   if(n<=0) return "{\"n\":0,\"p50\":0,\"p95\":0}";
-   double tmp[];
-   ArrayResize(tmp,n);
-   for(int i=0;i<n;i++) tmp[i]=ring[i];
-   ArraySort(tmp);
-   int i50=(int)MathFloor(0.50*(double)(n-1)), i95=(int)MathFloor(0.95*(double)(n-1)+0.5);
-   return "{\"n\":"+IntegerToString(cnt)+",\"p50\":"+IntegerToString((int)MathRound(tmp[i50]))+",\"p95\":"+IntegerToString((int)MathRound(tmp[i95]))+"}";
-  }
-void DutyNote(const ulong ms)
-  {
-   ulong now=GetTickCount64(), sec=now/1000;
-   int i=(int)(sec%(ulong)YT_DUTY_SLOTS);
-   if(g_dutySec[i]!=sec) { g_dutySec[i]=sec; g_dutyMs[i]=0; }
-   g_dutyMs[i]+=ms;
-   if(now-g_brBlkMaxAt>600000) { g_brBlkMaxAt=now; g_brBlkMax=0; }
-   if(ms>g_brBlkMax) g_brBlkMax=ms;
-  }
-double DutyPct()
-  {
-   ulong sec=GetTickCount64()/1000, sum=0;
-   for(int i=0;i<YT_DUTY_SLOTS;i++) if(g_dutySec[i]>0 && sec-g_dutySec[i]<(ulong)YT_DUTY_SLOTS) sum+=g_dutyMs[i];
-   return 100.0*(double)sum/(double)(YT_DUTY_SLOTS*1000);
-  }
 double        g_trig[2]={0.0,0.0};          // v2.17: cached trigger price of a waiting side (0 = not waiting). Buy: Ask <= trig, Sell: Bid >= trig
 double        g_deferLvl[2]={0.0,0.0};      // v2.16: level for which the "waiting for the market" notice was already sent (one notice per level)
 ulong         g_missMs[2]={0,0};            // first time a tracked ticket was not found (history may lag behind)
@@ -420,19 +367,8 @@ color         g_uiCol[];
 //--- runtime configuration (inputs are the defaults; the panel can override and the values persist in a config file)
 double        g_target=20.0;
 double        g_rr=20.0;
-double        g_banked=0.0;     // v2.30: net profit already banked by TPs of the CURRENT cycle that did not reach the target (the cycle is not closed)
-double        g_cplVal=0.0;     // v2.30: cached round-trip commission per lot (account currency)
-datetime      g_cplAt=0;
-string        g_planSig="";
 int           g_maxDev=30;
 int           g_warn=60;
-//--- v2.34 execution engine state
-int           g_attempt[2]={0,0};      // attempts of the CURRENT setup per side (reset on success or when the setup changes)
-ulong         g_inDoubtMs[2]={0,0};    // in-doubt hold: no resend before this tick count (the server is queried first)
-string        g_setupId[2]={"",""};    // stable id of the setup (side + level + cycle position) that ties every attempt together
-ulong         g_revInDoubtMs=0;
-ulong         g_sideNextMs[2]={0,0};   // per-side retry gate: a failing Buy Stop never delays the independent Sell Stop (and vice versa)
-int           g_revAttempt=0;
 bool          g_tgEn=false;
 bool          g_tgNot=true;
 bool          g_tgCtl=true;
@@ -468,6 +404,10 @@ int           g_page=0;
 bool          g_uiTgEn=false;
 bool          g_uiTgNot=false;
 bool          g_uiTgCtl=false;
+string        g_edBuy="";
+string        g_edSell="";
+string        g_edRisk="";
+bool          g_edHave=false;
 double        g_frzBid=0.0,g_frzAsk=0.0;   // v2.19: price frozen at the moment the bot was stopped
 long          g_frzTs=0;
 string        g_brSig="";                  // v2.19: duplicate-command guard
@@ -509,6 +449,7 @@ datetime      g_tgWhTry=0;         // last deleteWebhook attempt
 datetime      g_tgPausedUntil=0;   // polling paused (another instance owns the token) - notifications keep working  // ms tick: pause polling after a failed getUpdates
 bool          g_tgOk=false;
 datetime      g_tgLastOk=0;
+datetime      g_tgLastPoll=0;
 ulong         g_tgLastPollMs=0;    // v2.13: millisecond polling gate
 ulong         g_slowMs=0;          // v2.13: gate of the 1-second slow cycle
 datetime      g_tgLastErrLog=0;
@@ -578,20 +519,6 @@ string RunStatus()
 //+------------------------------------------------------------------+
 //| Global-variable persistence                                      |
 //+------------------------------------------------------------------+
-void RefreshBrokerSpec();   // v2.32: defined with the turbo block below
-
-//--- v2.32 BROKER-AGNOSTIC GOLD DETECTION: brokers name gold XAUUSD, XAUUSDm, XAUUSD.a, XAUUSD#, GOLD, GOLDm, XAUUSD_i ... The check follows the symbol's own specification, not a fixed name.
-bool IsGoldSymbol(const string sym)
-  {
-   string up=sym;
-   StringToUpper(up);
-   if(StringFind(up,"XAUUSD")>=0 || StringFind(up,"GOLD")>=0) return true;
-   string base=SymbolInfoString(sym,SYMBOL_CURRENCY_BASE);
-   string prof=SymbolInfoString(sym,SYMBOL_CURRENCY_PROFIT);
-   StringToUpper(base); StringToUpper(prof);
-   return (base=="XAU" && (prof=="USD" || StringLen(prof)==0));
-  }
-
 string GN(const string k) { return "YT"+IntegerToString(g_magic)+"_"+k; }
 bool   GHas(const string k) { return GlobalVariableCheck(GN(k)); }
 double GV(const string k,const double def=0.0) { string n=GN(k); if(GlobalVariableCheck(n)) return GlobalVariableGet(n); return def; }
@@ -638,49 +565,24 @@ string CfgGet(const string k,const string def="")
   }
 
 string CfgFile() { return "Yetimmm_"+IntegerToString(g_magic)+"_Config.cfg"; }
-string YtSha256Hex(const string src);   // defined with the bridge code below
 
-//--- v2.31 CONFIG FILE PROTECTION (honest scope: MT5 cannot encrypt files or restrict who reads MQL5\Files, so this is integrity + binding, NOT secrecy):
-//---  * the file carries "acct=<login>" and "chk=<SHA-256 of the canonical content + login + magic>". A file that was edited by hand, truncated, written by another program, or copied from
-//---    ANOTHER ACCOUNT fails the check and is IGNORED as a whole (the inputs are used; nothing is deleted or overwritten until the next normal save). Old files without a seal are accepted and sealed on the next save.
-//---  * the seal is not a secret (it is derived from public values): it detects accidents and foreign files, not a determined attacker with write access to the folder.
-string CfgCanon()
-  {
-   string c="ytcfg|"+IntegerToString((long)AccountInfoInteger(ACCOUNT_LOGIN))+"|"+IntegerToString(g_magic)+"\n";
-   for(int i=0;i<ArraySize(g_ckKey);i++) c+=g_ckKey[i]+"="+g_ckVal[i]+"\n";
-   return c;
-  }
 void CfgLoadFile()
   {
    ArrayResize(g_ckKey,0);
    ArrayResize(g_ckVal,0);
    int h=FileOpen(CfgFile(),FILE_READ|FILE_TXT|FILE_ANSI|FILE_SHARE_READ|FILE_SHARE_WRITE);
    if(h==INVALID_HANDLE) return;
-   string seal="", acct="";
    while(!FileIsEnding(h))
      {
       string line=FileReadString(h);
       StringTrimRight(line);
       int p=StringFind(line,"=");
       if(p<=0) continue;
-      string k=StringSubstr(line,0,p), v=StringSubstr(line,p+1);
-      if(k=="chk")  { seal=v; continue; }
-      if(k=="acct") { acct=v; continue; }
-      CfgSet(k,v);
+      CfgSet(StringSubstr(line,0,p),StringSubstr(line,p+1));
      }
    FileClose(h);
-   long login=(long)AccountInfoInteger(ACCOUNT_LOGIN);
-   if(StringLen(seal)>0 && login>0)
-     {
-      string want=YtSha256Hex(CfgCanon());
-      if(acct!=IntegerToString(login) || (StringLen(want)>0 && seal!=want))
-        {
-         YLog("Config file "+CfgFile()+" FAILED its integrity / account check (edited, damaged or from another account) - IGNORED: the EA inputs are used. Nothing was deleted.");
-         ArrayResize(g_ckKey,0);
-         ArrayResize(g_ckVal,0);
-        }
-     }
   }
+
 void CfgSaveFile()
   {
    int h=FileOpen(CfgFile(),FILE_WRITE|FILE_TXT|FILE_ANSI|FILE_SHARE_READ|FILE_SHARE_WRITE);
@@ -690,11 +592,18 @@ void CfgSaveFile()
       return;
      }
    for(int i=0;i<ArraySize(g_ckKey);i++) FileWriteString(h,g_ckKey[i]+"="+g_ckVal[i]+"\r\n");
-   long login=(long)AccountInfoInteger(ACCOUNT_LOGIN);
-   string seal=(login>0)?YtSha256Hex(CfgCanon()):"";
-   if(StringLen(seal)>0) { FileWriteString(h,"acct="+IntegerToString(login)+"\r\n"); FileWriteString(h,"chk="+seal+"\r\n"); }
    FileClose(h);
   }
+
+double CfgD(const string key,const double inp)
+  {
+   bool changed=(!CfgHas("in_"+key) || MathAbs(StringToDouble(CfgGet("in_"+key))-inp)>1e-9);
+   double eff=(changed || !CfgHas(key))?inp:StringToDouble(CfgGet(key));
+   CfgSet("in_"+key,DoubleToString(inp,8));
+   CfgSet(key,DoubleToString(eff,8));
+   return eff;
+  }
+
 bool CfgB(const string key,const bool inp)
   {
    bool changed=(!CfgHas("in_"+key) || (CfgGet("in_"+key)=="1")!=inp);
@@ -704,14 +613,7 @@ bool CfgB(const string key,const bool inp)
    return eff;
   }
 
-double CfgD(const string key,const double inp)
-  {
-   bool changed=(!CfgHas("in_"+key) || MathAbs(StringToDouble(CfgGet("in_"+key))-inp)>1e-12);
-   double eff=(changed || !CfgHas(key))?inp:StringToDouble(CfgGet(key));
-   CfgSet("in_"+key,DoubleToString(inp,8));
-   CfgSet(key,DoubleToString(eff,8));
-   return eff;
-  }string CfgS(const string key,const string inp)
+string CfgS(const string key,const string inp)
   {
    bool changed=(!CfgHas("in_"+key) || CfgGet("in_"+key)!=inp);
    string eff=(changed || !CfgHas(key))?inp:CfgGet(key);
@@ -770,7 +672,6 @@ void SaveState()
    GS("IR",g_initRisk);
    GS("CRK",g_curRisk);
    GS("AL",g_accLoss);
-   GS("BNK",g_banked);
    GS("SEQ",(double)g_seq);
    GS("TNO",(double)g_tradeNo);
    GS("FRESH",g_fresh?1.0:0.0);
@@ -793,7 +694,6 @@ void LoadState()
       g_initRisk=GV("IR",InpInitialRisk);
       g_curRisk=GV("CRK",g_initRisk);
       g_accLoss=GV("AL",0);
-      g_banked=GV("BNK",0);
       g_seq=(int)GV("SEQ",0);
       g_tradeNo=(long)GV("TNO",0);
       g_fresh=(GV("FRESH",0)>0.5);
@@ -808,7 +708,7 @@ void LoadState()
    else
      {
       g_state=YT_IDLE; g_mode=YM_NONE; g_buyLevel=0; g_sellLevel=0;
-      g_initRisk=InpInitialRisk; g_curRisk=InpInitialRisk; g_accLoss=0; g_banked=0; g_seq=0;
+      g_initRisk=InpInitialRisk; g_curRisk=InpInitialRisk; g_accLoss=0; g_seq=0;
       g_tradeNo=(long)GV("TNO",0); g_fresh=false; g_lastDeal=0; g_pendBuy=0; g_pendSell=0; g_lastSLSide=0;
       g_stateRecovered=false;
      }
@@ -818,7 +718,6 @@ void LoadState()
 void ResetRisk()
   {
    g_accLoss=0.0;
-   g_banked=0.0;
    g_seq=0;
    g_curRisk=g_initRisk;
   }
@@ -837,24 +736,10 @@ void ResetRiskLogged(const string src)
    if(oa>1e-9 || os>0) TgQueue("♻️ RISK SEQUENCE RESET ("+src+")\nBefore: Seq "+IntegerToString(os)+" | Acc.Loss $"+D2(oa)+" | Risk $"+D2(oc)+"\nAfter: Seq "+IntegerToString(g_seq)+" | Acc.Loss $"+D2(g_accLoss)+" | Risk $"+D2(g_curRisk));
   }
 
-//--- v2.30 BINDING SPECIFICATION: the target risk is Risk(1) = initial risk ($1) and Risk(n) = Risk(n-1) x 1.05 after every losing trade.
-//--- It is a function of the number of consecutive losing SL trades only; it never depends on the lot or on rounding.
-double GrowthFactor()
+double NextRiskFor(const double L)
   {
-   double g=InpRiskGrowthPct;
-   if(!MathIsValidNumber(g) || g<0.0) g=5.0;
-   return 1.0+g/100.0;
-  }
-double RiskAtSeq(const int n)
-  {
-   if(n<=0) return g_initRisk;
-   return g_initRisk*MathPow(GrowthFactor(),(double)n);
-  }
-//--- NET profit the next winning trade must deliver: repay every loss of the cycle, give back what partial TPs already banked, and leave the target
-double RequiredNet()
-  {
-   double need=(g_accLoss-g_banked)+g_target;
-   return (need>0.01)?need:0.01;
+   if(L<=1e-9) return g_initRisk;
+   return (L+g_target)/g_rr;
   }
 
 //+------------------------------------------------------------------+
@@ -1053,8 +938,7 @@ double SLPrice(const bool buy,const double entry)
    if(!buy && g_buyLevel>0.0  && g_buyLevel>entry)  return RoundTick(g_buyLevel);
    return 0.0;
   }
-//--- FALLBACK ONLY (v2.30): ratio-based TP, used while no executable lot exists. The real TP is TPPrice() further below (actual lot + symbol spec + costs).
-double TPPriceRR(const bool buy,const double entry)
+double TPPrice(const bool buy,const double entry)
   {
    double d=SLDist()*g_rr;
    if(d<=0.0) return 0.0;
@@ -1070,7 +954,7 @@ bool ProfitCcyIsAccount()
 void VerifyContract(const double dist,const double brokerPerLot)
   {
    if(g_contract<=0.0 || !ProfitCcyIsAccount() || dist<=0.0) return;
-   double expected=dist*g_contract;
+   double expected=dist*g_contract/g_mscale;
    if(MathAbs(brokerPerLot-expected)/expected>0.02 && !g_csWarned)
      {
       g_csWarned=true;
@@ -1089,13 +973,14 @@ double PerLotLossSL(const bool buy,const double entry,const double sl)
    ENUM_ORDER_TYPE ot=buy?ORDER_TYPE_BUY:ORDER_TYPE_SELL;
    if(OrderCalcProfit(ot,g_sym,1.0,entry,sl,profit) && profit<0.0)
      {
+      profit=AcM(profit);                                   // v2.30: cent account -> main units
       VerifyContract(MathAbs(entry-sl),-profit);
       return -profit;
      }
    double tv=SymbolInfoDouble(g_sym,SYMBOL_TRADE_TICK_VALUE_LOSS);
    if(tv<=0.0) tv=SymbolInfoDouble(g_sym,SYMBOL_TRADE_TICK_VALUE);
-   if(tv>0.0 && g_tick>0.0) return MathAbs(entry-sl)/g_tick*tv;
-   if(g_contract>0.0 && ProfitCcyIsAccount()) return MathAbs(entry-sl)*g_contract;
+   if(tv>0.0 && g_tick>0.0) return AcM(MathAbs(entry-sl)/g_tick*tv);
+   if(g_contract>0.0 && ProfitCcyIsAccount()) return AcM(MathAbs(entry-sl)*g_contract);
    return 0.0;
   }
 
@@ -1111,53 +996,6 @@ double PerLotLoss(const bool buy,const double entry)
 //| BrokerSpec (live) -> RiskCompute -> (OrderCheck) -> OrderSend.   |
 //| The EA is the authority; the Mini App only displays the result.  |
 //+------------------------------------------------------------------+
-//--- v2.30 TRADING COSTS: round-trip commission per 1.00 lot in account currency.
-//--- InpCommissionPerLot >= 0 is used as given; -1 learns it from the closed deals of THIS symbol/magic (commission + fee of every leg / entry volume).
-//--- It is only REFRESHED from the timer / init (HistorySelect must never run inside a history loop); everything else reads the cache.
-double CommissionPerLot()
-  {
-   if(InpCommissionPerLot>=0.0) return InpCommissionPerLot;
-   return g_cplVal;
-  }
-
-void RefreshCommission()
-  {
-   if(InpCommissionPerLot>=0.0) { g_cplVal=InpCommissionPerLot; g_cplAt=TimeCurrent(); return; }
-   datetime now=TimeCurrent();
-   g_cplAt=now;
-   if(!HistorySelect(now-90*86400,now+86400)) return;
-   ulong pids[];
-   int np=0;
-   int n=HistoryDealsTotal();
-   for(int i=n-1;i>=0 && np<20;i--)
-     {
-      ulong d=HistoryDealGetTicket(i);
-      if(d==0) continue;
-      if(HistoryDealGetString(d,DEAL_SYMBOL)!=g_sym) continue;
-      if((long)HistoryDealGetInteger(d,DEAL_MAGIC)!=g_magic) continue;
-      if(HistoryDealGetInteger(d,DEAL_ENTRY)!=DEAL_ENTRY_OUT) continue;
-      ArrayResize(pids,np+1);
-      pids[np]=(ulong)HistoryDealGetInteger(d,DEAL_POSITION_ID);
-      np++;
-     }
-   double sumC=0.0,sumV=0.0;
-   for(int k=0;k<np;k++)
-     {
-      if(!HistorySelectByPosition(pids[k])) continue;
-      int m=HistoryDealsTotal();
-      double c=0.0,vin=0.0;
-      for(int j=0;j<m;j++)
-        {
-         ulong e=HistoryDealGetTicket(j);
-         if(e==0) continue;
-         c+=HistoryDealGetDouble(e,DEAL_COMMISSION)+HistoryDealGetDouble(e,DEAL_FEE);
-         if(HistoryDealGetInteger(e,DEAL_ENTRY)==DEAL_ENTRY_IN) vin+=HistoryDealGetDouble(e,DEAL_VOLUME);
-        }
-      if(vin>0.0) { sumC+=c; sumV+=vin; }
-     }
-   g_cplVal=(sumV>0.0)?MathMax(0.0,-sumC/sumV):0.0;
-  }
-
 struct SRiskResult
   {
    bool   valid;
@@ -1168,12 +1006,35 @@ struct SRiskResult
    bool   buy;
    double entry, sl;
    double requested, perLot, rawVol, vol, minVol, maxVol, step, limit;
-   double effective, minRisk, maxRisk, margin, cost;
+   double effective, minRisk, maxRisk, margin;
   };
 
 SRiskResult g_rk;
 
-string AccCcy() { return AccountInfoString(ACCOUNT_CURRENCY); }
+string AccCcyRaw() { return AccountInfoString(ACCOUNT_CURRENCY); }
+//--- label of the MAIN unit: USC->USD, EUC->EUR, GBC->GBP ... (a cent account is shown in dollars, like a standard one)
+string AccCcy()
+  {
+   string c=AccCcyRaw();
+   if(g_mscale<=1.0) return c;
+   string u=c; StringToUpper(u);
+   if(u=="USC") return "USD";
+   if(u=="EUC") return "EUR";
+   if(u=="GBC") return "GBP";
+   if(u=="AUC") return "AUD";
+   if(u=="NZC") return "NZD";
+   if(u=="CHC") return "CHF";
+   if(u=="JPC") return "JPY";
+   return c;
+  }
+//--- v2.30: 0 = auto (known cent currencies), otherwise the explicit factor
+double DetectMoneyScale()
+  {
+   if(InpMoneyScale>0.0) return MathMax(1.0,InpMoneyScale);
+   string u=AccCcyRaw(); StringToUpper(u);
+   if(u=="USC" || u=="EUC" || u=="GBC" || u=="AUC" || u=="NZC" || u=="CHC" || u=="JPC") return 100.0;
+   return 1.0;
+  }
 
 //--- volume already open + pending on the symbol in ONE direction (own pending orders are excluded: they are the ones being (re)placed).
 //--- only called when the broker sets SYMBOL_VOLUME_LIMIT > 0
@@ -1207,7 +1068,7 @@ bool RiskCompute(const double risk,const bool buy,const double entry,const doubl
   {
    r.valid=false; r.clamped=false; r.code="OK"; r.text=""; r.buy=buy; r.entry=entry; r.sl=sl;
    r.policy=(InpRiskPolicy==YT_RISK_CLAMP_MIN)?"CLAMP_TO_MIN":"STRICT";
-   r.requested=risk; r.perLot=0.0; r.rawVol=0.0; r.vol=0.0; r.effective=0.0; r.minRisk=0.0; r.maxRisk=0.0; r.margin=0.0; r.cost=0.0;
+   r.requested=risk; r.perLot=0.0; r.rawVol=0.0; r.vol=0.0; r.effective=0.0; r.minRisk=0.0; r.maxRisk=0.0; r.margin=0.0;
    double vmin=SymbolInfoDouble(g_sym,SYMBOL_VOLUME_MIN);
    double vmax=SymbolInfoDouble(g_sym,SYMBOL_VOLUME_MAX);
    double step=SymbolInfoDouble(g_sym,SYMBOL_VOLUME_STEP);
@@ -1218,12 +1079,10 @@ bool RiskCompute(const double risk,const bool buy,const double entry,const doubl
    string ccy=AccCcy();
    double perLot=PerLotLossSL(buy,entry,sl);
    if(perLot<=0.0) { r.code="RISK_NO_SPEC"; r.text="Cannot determine the loss per lot from the broker specifications."; return false; }
-   //--- v2.30: the loss at SL = price loss + round-trip commission, per 1.00 lot. The lot is sized so that this TOTAL never exceeds the target risk.
-   double cost=CommissionPerLot();
-   double perLotAll=perLot+cost;
-   r.perLot=perLot; r.cost=cost; r.minRisk=vmin*perLotAll; r.maxRisk=vmax*perLotAll;
-   double raw=risk/perLotAll;
+   r.perLot=perLot; r.minRisk=vmin*perLot; r.maxRisk=vmax*perLot;
+   double raw=risk/perLot;
    r.rawVol=raw;
+   if(InpMaxLot>0.0 && InpMaxLot<vmax) { vmax=InpMaxLot; r.maxVol=vmax; r.maxRisk=vmax*perLot; }   // v2.31 hard safety cap
    double lot;
    if(raw<vmin-1e-9)
      {
@@ -1235,12 +1094,17 @@ bool RiskCompute(const double risk,const bool buy,const double entry,const doubl
          return false;
         }
      }
-   else lot=vmin+MathFloor((raw-vmin)/step+1e-7)*step;           // rounded DOWN to the step: real risk <= requested
+   else
+     {
+      lot=vmin+MathFloor((raw-vmin)/step+1e-7)*step;           // rounded DOWN to the step: real risk <= requested
+      //--- v2.31 recovery: the lot must be big enough that the TP repays the accumulated loss + target -> round UP (never beyond the caps below)
+      if(InpRecoveryRoundUp && g_accLoss>1e-9 && lot*perLot<risk-1e-9) lot+=step;
+     }
    lot=NormalizeDouble(lot,g_lotDigits);
    if(lot>vmax+1e-9)
      {
       r.code="RISK_ABOVE_MAX_VOLUME";
-      r.text="Required volume "+DoubleToString(lot,g_lotDigits)+" exceeds the broker maximum "+DoubleToString(vmax,g_lotDigits)+". WAITING_VOLUME.";
+      r.text="Required volume "+DoubleToString(lot,g_lotDigits)+" exceeds the allowed maximum "+DoubleToString(vmax,g_lotDigits)+" (broker max / Max Lot cap). WAITING_VOLUME - safety limit: the lot is NOT forced higher.";
       return false;
      }
    if(lim>0.0)
@@ -1254,16 +1118,17 @@ bool RiskCompute(const double risk,const bool buy,const double entry,const doubl
         }
      }
    r.vol=lot;
-   r.effective=lot*perLotAll;
+   r.effective=lot*perLot;
    double margin=0.0;
    ENUM_ORDER_TYPE ot=buy?ORDER_TYPE_BUY:ORDER_TYPE_SELL;
    if(OrderCalcMargin(ot,g_sym,lot,entry,margin))
      {
+      margin=AcM(margin);
       r.margin=margin;
-      if(margin>AccountInfoDouble(ACCOUNT_MARGIN_FREE))
+      if(margin>AcM(AccountInfoDouble(ACCOUNT_MARGIN_FREE)))
         {
          r.code="RISK_NO_MARGIN";
-         r.text="Not enough free margin: required "+D2(margin)+" "+ccy+", free "+D2(AccountInfoDouble(ACCOUNT_MARGIN_FREE))+" "+ccy+". WAITING_MARGIN.";
+         r.text="Not enough free margin: required "+D2(margin)+" "+ccy+", free "+D2(AcM(AccountInfoDouble(ACCOUNT_MARGIN_FREE)))+" "+ccy+". WAITING_MARGIN.";
          return false;
         }
      }
@@ -1290,197 +1155,13 @@ double LiveSpread()
    return (double)SymbolInfoInteger(g_sym,SYMBOL_SPREAD)*g_point;
   }
 
-//--- v2.34: the spread is a MEASUREMENT, never a gate. The function stays so that every old call site remains valid; it can only return false.
 bool SpreadTooWide(string &why)
   {
    why="";
+   if(InpMaxSpread<=0) return false;
+   double sp=LiveSpread()/g_point;
+   if(sp>(double)InpMaxSpread) { why="WAITING_SPREAD: spread "+DoubleToString(sp,0)+" pts > Max Spread "+IntegerToString(InpMaxSpread)+" pts (new orders wait; open trades are untouched)"; return true; }
    return false;
-  }
-
-//+------------------------------------------------------------------+
-//| v2.34 EXECUTION ENGINE                                           |
-//| ClassifyRetcode -> ExecBackoffMs / ExecDeviation -> ExecJournal. |
-//| Pure helpers (no trading) so they can be self-tested.            |
-//+------------------------------------------------------------------+
-int ClassifyRetcode(const uint rc)
-  {
-   switch((int)rc)
-     {
-      case TRADE_RETCODE_DONE:
-      case TRADE_RETCODE_PLACED:
-      case TRADE_RETCODE_DONE_PARTIAL:
-         return RCC_OK;
-      case TRADE_RETCODE_REQUOTE:
-      case TRADE_RETCODE_PRICE_CHANGED:
-      case TRADE_RETCODE_PRICE_OFF:
-      case TRADE_RETCODE_INVALID_PRICE:
-      case TRADE_RETCODE_INVALID_STOPS:
-         return RCC_PRICE;
-      case TRADE_RETCODE_REJECT:
-      case TRADE_RETCODE_ERROR:
-      case TRADE_RETCODE_CANCEL:
-      case TRADE_RETCODE_ORDER_CHANGED:
-      case TRADE_RETCODE_CONNECTION:
-         return RCC_FAST;
-      case TRADE_RETCODE_TIMEOUT:
-         return RCC_INDOUBT;
-      case TRADE_RETCODE_MARKET_CLOSED:
-      case TRADE_RETCODE_TRADE_DISABLED:
-      case TRADE_RETCODE_CLIENT_DISABLES_AT:
-      case TRADE_RETCODE_SERVER_DISABLES_AT:
-      case TRADE_RETCODE_NO_MONEY:
-      case TRADE_RETCODE_TOO_MANY_REQUESTS:
-      case TRADE_RETCODE_LOCKED:
-      case TRADE_RETCODE_FROZEN:
-         return RCC_SLOW;
-      case TRADE_RETCODE_INVALID_VOLUME:
-      case TRADE_RETCODE_INVALID_FILL:
-      case TRADE_RETCODE_INVALID_EXPIRATION:
-      case TRADE_RETCODE_INVALID:
-      case TRADE_RETCODE_INVALID_ORDER:
-         return RCC_REBUILD;
-      case TRADE_RETCODE_LONG_ONLY:
-      case TRADE_RETCODE_SHORT_ONLY:
-      case TRADE_RETCODE_CLOSE_ONLY:
-      case TRADE_RETCODE_ONLY_REAL:
-      case TRADE_RETCODE_LIMIT_ORDERS:
-      case TRADE_RETCODE_LIMIT_POSITIONS:
-      case TRADE_RETCODE_LIMIT_VOLUME:
-      case TRADE_RETCODE_HEDGE_PROHIBITED:
-      case TRADE_RETCODE_FIFO_CLOSE:
-         return RCC_FINAL;
-     }
-   return RCC_UNKNOWN;
-  }
-
-string RcClassName(const int cls)
-  {
-   switch(cls)
-     {
-      case RCC_OK:      return "OK";
-      case RCC_PRICE:   return "PRICE_CHANGED";
-      case RCC_FAST:    return "TRANSIENT";
-      case RCC_INDOUBT: return "IN_DOUBT";
-      case RCC_SLOW:    return "WAIT_BROKER";
-      case RCC_REBUILD: return "REBUILD_REQUEST";
-      case RCC_FINAL:   return "FINAL_BROKER_RULE";
-     }
-   return "UNKNOWN";
-  }
-
-//--- a request that produced NO retcode at all (rc 0: no confirmed answer / failed before the server replied) is IN DOUBT for a bounded number of attempts,
-//--- then UNKNOWN (bounded retries, then ERROR) - it can never retry forever, and it is never resent before the server state was queried
-int ClassifyResult(const uint rc,const int attempt)
-  {
-   if(rc==0) return (attempt<=3*MathMax(1,InpExecFastRetries))?RCC_INDOUBT:RCC_UNKNOWN;
-   return ClassifyRetcode(rc);
-  }
-
-//--- retry delay of attempt n (1-based) for a class: bounded, never below 50 ms, never an unbounded wait
-ulong ExecBackoffMs(const int cls,const int attempt)
-  {
-   if(cls==RCC_INDOUBT) return 1500;
-   int a=MathMax(1,attempt);
-   int fast=MathMax(0,InpExecFastRetries);
-   double cap=(double)MathMin(60000,MathMax(500,InpExecBackoffMaxMs));
-   double d;
-   if(cls==RCC_PRICE)        d=(a<=fast)?120.0:250.0*(double)(a-fast+1);
-   else if(cls==RCC_FAST)
-     {
-      d=200.0*MathPow(2.0,(double)MathMin(a-1,4));
-      if(a>fast) d=MathMax(d,1000.0*(double)(a-fast+1));     // never shrinks as attempts grow
-     }
-   else if(cls==RCC_REBUILD) d=500.0*(double)MathMin(a,10);
-   else                      d=2000.0*MathPow(2.0,(double)MathMin(a-1,5));
-   if(d>cap) d=cap;
-   if(d<50.0) d=50.0;
-   return (ulong)d;
-  }
-
-//--- allowed price deviation of a MARKET order: widens after repeated requotes, bounded by InpExecDevCapPts
-int ExecDeviation(const int attempt)
-  {
-   int base=InpTurbo?MathMax(g_maxDev,InpTurboDevPts):g_maxDev;
-   int cap=MathMax(base,InpExecDevCapPts);
-   long d=(long)base*(long)(1+MathMax(0,attempt)/2);
-   long c=(long)cap;
-   return (int)((d<c)?d:c);
-  }
-
-//--- read-only accessor of the EXPLICIT per-trade risk cap input (% of balance, 0 = off). The risk decisions themselves are untouched.
-double ExplicitRiskCapPct() { return InpMaxRiskPctBal; }
-
-//--- the ACTUAL risk at the real fill exceeds the explicit cap (% of balance). cap off (0) = never.
-bool OverRiskCap(const double actRisk,const double balance,const double pct)
-  {
-   return (pct>0.0 && balance>0.0 && actRisk>balance*pct/100.0+1e-9);
-  }
-
-string SetupId(const bool buy,const double level)
-  {
-   return "YS-"+(buy?"B":"S")+"-"+DoubleToString(level,g_digits)+"-L"+IntegerToString(g_seq);
-  }
-
-const string EXEC_HEADER="Time;SetupId;Kind;Attempt;Retcode;Class;Comment;SpreadPts;ExpectedPx;ActualPx;SlipPts;SlipMoney;ActualRisk;PlannedRisk;Note";
-string ExecFile() { return "Yetimmm_"+IntegerToString(g_magic)+"_Exec.csv"; }
-
-//--- one compact line per ATTEMPT or FILL (never per tick). Writing it never blocks an order: it runs after the broker answered.
-void ExecJournal(const string sid,const string kind,const int attempt,const uint rc,const int cls,const string cm,
-                 const double expPx,const double actPx,const double slipPts,const double slipMoney,const double actRisk,const double planRisk,const string note)
-  {
-   if(!InpExecJournal) return;
-   string line=TimeToString(TimeCurrent(),TIME_DATE|TIME_SECONDS)+";"+Clean(sid)+";"+kind+";"+IntegerToString(attempt)+";"+IntegerToString((int)rc)+";"+RcClassName(cls)+";"+Clean(cm)+";"+
-               DoubleToString(LiveSpread()/g_point,0)+";"+(expPx>0.0?PX(expPx):"")+";"+(actPx>0.0?PX(actPx):"")+";"+DoubleToString(slipPts,0)+";"+D2(slipMoney)+";"+D2(actRisk)+";"+D2(planRisk)+";"+Clean(note);
-   AppendLine(ExecFile(),EXEC_HEADER,line);
-  }
-
-//--- v2.34 built-in execution self-test (InpExecSelfTest = true). Pure checks only: it never sends or modifies an order.
-void STCheck(const bool cond,const string name,int &pass,int &fail)
-  {
-   if(cond) pass++; else fail++;
-   YLog("EXEC SELF-TEST "+(cond?"PASS":"FAIL")+": "+name);
-  }
-
-void ExecSelfTest()
-  {
-   int ok=0,bad=0;
-   string w="";
-   STCheck(!SpreadTooWide(w),"a wide spread never blocks an order (SpreadTooWide can only return false)",ok,bad);
-   STCheck(ClassifyRetcode(TRADE_RETCODE_DONE)==RCC_OK && ClassifyRetcode(TRADE_RETCODE_PLACED)==RCC_OK && ClassifyRetcode(TRADE_RETCODE_DONE_PARTIAL)==RCC_OK,"DONE / PLACED / DONE_PARTIAL = accepted",ok,bad);
-   STCheck(ClassifyRetcode(TRADE_RETCODE_REQUOTE)==RCC_PRICE && ClassifyRetcode(TRADE_RETCODE_PRICE_CHANGED)==RCC_PRICE,"requote / price changed = refresh the price and retry",ok,bad);
-   STCheck(ClassifyRetcode(TRADE_RETCODE_TIMEOUT)==RCC_INDOUBT,"timeout = in doubt: query the server before any resend",ok,bad);
-   STCheck(ClassifyRetcode(TRADE_RETCODE_REJECT)==RCC_FAST && ClassifyRetcode(TRADE_RETCODE_CONNECTION)==RCC_FAST,"a temporary broker rejection / connection loss never abandons the setup",ok,bad);
-   STCheck(ClassifyRetcode(TRADE_RETCODE_MARKET_CLOSED)==RCC_SLOW && ClassifyRetcode(TRADE_RETCODE_NO_MONEY)==RCC_SLOW,"market closed / no margin = keep the setup, retry slowly",ok,bad);
-   STCheck(ClassifyRetcode(TRADE_RETCODE_INVALID_VOLUME)==RCC_REBUILD && ClassifyRetcode(TRADE_RETCODE_INVALID_FILL)==RCC_REBUILD,"volume / filling refusal = rebuild the request from the broker spec",ok,bad);
-   STCheck(ClassifyRetcode(TRADE_RETCODE_LONG_ONLY)==RCC_FINAL && ClassifyRetcode(TRADE_RETCODE_LIMIT_ORDERS)==RCC_FINAL,"a permanent broker rule is FINAL (logged, bounded)",ok,bad);
-   STCheck(ClassifyRetcode(99999)==RCC_UNKNOWN,"an unknown retcode is UNKNOWN (bounded retries)",ok,bad);
-   STCheck(ClassifyResult(0,1)==RCC_INDOUBT && ClassifyResult(0,100000)==RCC_UNKNOWN,"no retcode at all = in doubt for a bounded number of attempts, never forever",ok,bad);
-   uint temp[]={TRADE_RETCODE_REQUOTE,TRADE_RETCODE_PRICE_CHANGED,TRADE_RETCODE_PRICE_OFF,TRADE_RETCODE_REJECT,TRADE_RETCODE_TIMEOUT,TRADE_RETCODE_CONNECTION,TRADE_RETCODE_MARKET_CLOSED,TRADE_RETCODE_TOO_MANY_REQUESTS,TRADE_RETCODE_NO_MONEY};
-   bool noneFinal=true;
-   for(int i=0;i<ArraySize(temp);i++) if(ClassifyRetcode(temp[i])==RCC_FINAL || ClassifyRetcode(temp[i])==RCC_UNKNOWN) noneFinal=false;
-   STCheck(noneFinal,"no temporary condition is ever classified FINAL",ok,bad);
-   bool bounded=true, mono=true;
-   for(int c=RCC_PRICE;c<=RCC_REBUILD;c++)
-     {
-      ulong prev=0;
-      for(int a=1;a<=200;a++)
-        {
-         ulong d=ExecBackoffMs(c,a);
-         ulong hi=(ulong)MathMax(1500,MathMin(60000,MathMax(500,InpExecBackoffMaxMs)));
-         if(d<50 || d>hi) bounded=false;
-         if(c!=RCC_INDOUBT && d<prev && !(d==(ulong)MathMin(60000,MathMax(500,InpExecBackoffMaxMs)))) mono=false;
-         prev=d;
-        }
-     }
-   STCheck(bounded,"the retry back-off is always between 50 ms and its configured cap (no endless fast loop)",ok,bad);
-   STCheck(mono,"the retry back-off never shrinks as attempts grow",ok,bad);
-   int base=InpTurbo?MathMax(g_maxDev,InpTurboDevPts):g_maxDev;
-   STCheck(ExecDeviation(0)==base && ExecDeviation(1000)<=MathMax(base,InpExecDevCapPts) && ExecDeviation(4)>=ExecDeviation(2),"the market deviation widens after repeated requotes and stays under its cap",ok,bad);
-   STCheck(!OverRiskCap(1000.0,5000.0,0.0) && OverRiskCap(100.0,5000.0,1.0) && !OverRiskCap(40.0,5000.0,1.0),"actual risk beats the explicit cap only when the cap is on and really exceeded",ok,bad);
-   STCheck(SetupId(true,2650.50)==SetupId(true,2650.50) && SetupId(true,2650.50)!=SetupId(false,2650.50),"the setup id is stable per setup and differs per side",ok,bad);
-   STCheck(RevRetcodeTransient(TRADE_RETCODE_REQUOTE) && RevRetcodeTransient(TRADE_RETCODE_TIMEOUT) && RevRetcodePermanent(TRADE_RETCODE_LONG_ONLY) && !RevRetcodePermanent(TRADE_RETCODE_REQUOTE),"market reversal: requote / timeout retry, a permanent rule does not",ok,bad);
-   YLog("EXEC SELF-TEST: "+IntegerToString(ok)+" passed, "+IntegerToString(bad)+" failed");
-   if(bad>0) Alert("Yetimmm execution self-test: "+IntegerToString(bad)+" check(s) FAILED - see the Experts log");
   }
 
 //--- v2.24 Recovery Plan Guard: caps the risk-multiplication cycle (report recommendations 3 and 4).
@@ -1496,7 +1177,7 @@ bool RecoveryGuardBlocks(string &why,string &code)
      }
    if(InpMaxRiskPctBal>0.0)
      {
-      double bal=AccountInfoDouble(ACCOUNT_BALANCE);
+      double bal=AcM(AccountInfoDouble(ACCOUNT_BALANCE));
       double cap=(bal>0.0)?bal*InpMaxRiskPctBal/100.0:0.0;
       if(g_curRisk>cap+1e-9)
         {
@@ -1508,75 +1189,43 @@ bool RecoveryGuardBlocks(string &why,string &code)
    return false;
   }
 
-//--- v2.30: the 80-trade plan (8 groups x 10) from the REAL formulas and the LIVE broker specification (never "lot 1.00").
-//--- Target risk: R(1)=initial risk, R(n)=R(n-1) x 1.05. Lot: computed from SL distance, point value, contract spec, lot limits and costs.
-//--- Required profit of trade n = losses of trades 1..n-1 + the net target. Needs the levels (SL distance); without them the lot is unknown and says so.
-string PlanSig()
+//--- exact plan (same recurrence as NextRiskFor: risk = (accLoss + target) / RR; with target = RR = 20 the growth is exactly 5% per loss)
+//--- v2.30: the recovery maths is (loss + target) / RR. Risk and Target are in ACCOUNT currency, so on a CENT account (USC/EUC) both must be scaled
+//--- together (x100). If the target is too small for the risk, the risk after a loss would be SMALLER than the start risk (it shrinks instead of growing).
+void RiskScaleAdvisory()
   {
-   return DoubleToString(g_buyLevel,g_digits)+"|"+DoubleToString(g_sellLevel,g_digits)+"|"+DoubleToString(g_initRisk,4)+"|"+DoubleToString(g_target,4)+"|"+
-          DoubleToString(InpRiskGrowthPct,4)+"|"+DoubleToString(CommissionPerLot(),4)+"|"+DoubleToString(SymbolInfoDouble(g_sym,SYMBOL_VOLUME_MIN),6)+"|"+
-          DoubleToString(SymbolInfoDouble(g_sym,SYMBOL_VOLUME_STEP),6)+"|"+DoubleToString(SymbolInfoDouble(g_sym,SYMBOL_TRADE_TICK_VALUE_LOSS),6)+"|"+
-          ((InpRiskPolicy==YT_RISK_CLAMP_MIN)?"C":"S");
-  }
-
-void BuildPlan(const bool toLog,const bool toCsv)
-  {
-   string ccy=AccCcy();
-   bool haveLv=(g_buyLevel>0.0 && g_sellLevel>0.0 && g_buyLevel>g_sellLevel);
-   string head="Recovery plan, 80 trades | start risk "+D2(g_initRisk)+" | growth x"+DoubleToString(GrowthFactor(),4)+" per loss | net target "+D2(g_target)+" | SL distance "+(haveLv?PX(g_buyLevel-g_sellLevel):"NOT SET (lot unknown)")+
-              " | commission/lot "+D2(CommissionPerLot())+" | policy "+((InpRiskPolicy==YT_RISK_CLAMP_MIN)?"CLAMP_TO_MIN":"STRICT")+" | balance "+D2(AccountInfoDouble(ACCOUNT_BALANCE))+" "+ccy;
-   int h=INVALID_HANDLE;
-   if(toCsv)
+   if(g_initRisk>0.0 && g_rr>1.0 && NextRiskFor(g_initRisk)<g_initRisk-1e-9)
      {
-      h=FileOpen("Yetimmm_"+IntegerToString(g_magic)+"_Plan80.csv",FILE_WRITE|FILE_TXT|FILE_ANSI|FILE_SHARE_READ);
-      if(h!=INVALID_HANDLE)
-        {
-         FileWriteString(h,"# "+head+"\r\n");
-         FileWriteString(h,"Group;Trade;Target Risk "+ccy+";Lot (auto);Expected Loss at SL "+ccy+";Cumulative Loss "+ccy+";Required Profit "+ccy+" (repay all + target);Note\r\n");
-        }
+      string m="RISK_SCALE: Recovery Target "+D2(g_target)+" "+AccCcy()+" is too small for the start risk "+D2(g_initRisk)+" "+AccCcy()+": after a loss the next risk would be "+D2(NextRiskFor(g_initRisk))+" (SMALLER). Risk and Target must keep the ratio Target = "+D2(g_rr)+" x start risk (the standard 1 / 20). On a CENT account that reports a plain currency code set InpMoneyScale=100 instead of scaling by hand.";
+      YLog(m);
+      RaiseAlert("RISKSCALE",m,false,true);
      }
-   if(toLog) YLog(head);
-   double cum=0.0;
-   for(int n=1;n<=80;n++)
-     {
-      double risk=RiskAtSeq(n-1);
-      double lot=0.0, loss=risk;
-      string note="";
-      if(haveLv)
-        {
-         SRiskResult r;
-         RiskCompute(risk,true,g_buyLevel,g_sellLevel,r);
-         if(r.vol>0.0) { lot=r.vol; loss=r.effective; if(r.clamped) note="CLAMP_TO_MIN: effective loss above the target risk"; else if(!r.valid) { note=WaitCodeOf(r.code); if(note=="") note=r.code; } }
-         else { note=WaitCodeOf(r.code); if(note=="") note=r.code; note+=" (loss assumed = target risk)"; }
-        }
-      else note="levels not set";
-      double need=cum+g_target;
-      cum+=loss;
-      int grp=(n-1)/10+1;
-      if(toLog)
-        {
-         if((n-1)%10==0) YLog("  --- Group "+IntegerToString(grp)+" (trades "+IntegerToString(n)+"-"+IntegerToString(n+9)+") ---");
-         YLog("  #"+IntegerToString(n)+" | risk "+D2(risk)+" | lot "+(lot>0.0?LotS(lot):"n/a")+" | loss at SL "+D2(loss)+" | cumulative loss "+D2(cum)+" | profit needed "+D2(need)+(note!=""?" | "+note:""));
-        }
-      if(h!=INVALID_HANDLE)
-         FileWriteString(h,IntegerToString(grp)+";"+IntegerToString(n)+";"+D2(risk)+";"+(lot>0.0?LotS(lot):"n/a")+";"+D2(loss)+";"+D2(cum)+";"+D2(need)+";"+note+"\r\n");
-     }
-   if(toLog) YLog("  balance needed to survive 80 consecutive losses: >= "+D2(cum)+" "+ccy+" (before margin).");
-   if(h!=INVALID_HANDLE) FileClose(h);
+   else ClearAlert("RISKSCALE");
   }
 
 void PrintRecoveryPlan()
   {
-   RefreshCommission();
-   g_planSig=PlanSig();
-   BuildPlan(InpPlanLog,true);
+   RiskScaleAdvisory();
+   if(!InpPlanLog) return;
+   double L=0.0;
+   string ccy=AccCcy();
+   YLog("Recovery plan | start risk "+D2(g_initRisk)+" | target "+D2(g_target)+" | RR "+D2(g_rr)+" | cap seq "+(InpMaxSeqLosses>0?IntegerToString(InpMaxSeqLosses):"off")+" | cap risk% "+(InpMaxRiskPctBal>0.0?DoubleToString(InpMaxRiskPctBal,2):"off")+" | balance "+D2(AcM(AccountInfoDouble(ACCOUNT_BALANCE)))+" "+ccy);
+   int last=(InpMaxSeqLosses>0)?InpMaxSeqLosses:20;
+   for(int n=1;n<=last;n++)
+     {
+      double r=(n==1)?g_initRisk:NextRiskFor(L);
+      L+=r;
+      if(n<=5 || n==10 || n==15 || n==20 || n==last)
+         YLog("  loss #"+IntegerToString(n)+": risk "+D2(r)+" | TP profit if it wins "+D2(r*g_rr)+" | cumulative loss "+D2(L));
+     }
+   YLog("  balance needed to survive "+IntegerToString(last)+" consecutive losses: >= "+D2(L)+" "+ccy+" (before spread/commission/margin).");
   }
 
 //--- minimum width of a Buy Stop / Sell Stop PAIR at the live market: both must sit outside their Stops Level
 double PairMinWidth()
   {
    double sl=(double)SymbolInfoInteger(g_sym,SYMBOL_TRADE_STOPS_LEVEL)*g_point;
-   return 2.0*sl;        // v2.34: a momentary spread spike must never reject the user's levels (the orders simply wait for a valid price)
+   return 2.0*sl+LiveSpread();
   }
 
 //--- pending order lifetime allowed by the symbol (GTC when permitted)
@@ -1637,41 +1286,6 @@ bool CalcLot(const double risk,const bool buy,const double entry,double &lot,dou
    return CalcLotSL(risk,buy,entry,SLPrice(buy,entry),lot,estLoss,err);
   }
 
-//--- v2.30 TAKE PROFIT FROM THE ACTUAL LOT.
-//--- The winning trade must repay every loss of the cycle and leave the net target: NET profit required = RequiredNet().
-//--- Gross profit needed = that + round-trip commission of THIS lot. Profit per price unit comes from the broker's own loss-per-lot figure
-//--- (OrderCalcProfit / tick value), so every symbol and broker is handled by its real specification. The distance is rounded UP to the tick
-//--- (never short of the requirement) and never below the broker's minimum stop distance.
-double TPPriceLot(const bool buy,const double entry,const double sl,const double lot,const double perLotLoss)
-  {
-   if(lot<=0.0 || perLotLoss<=0.0 || sl<=0.0) return 0.0;
-   double dSL=MathAbs(entry-sl);
-   if(dSL<=0.0) return 0.0;
-   double unit=perLotLoss/dSL;                    // account currency per 1.00 lot per 1.00 of price
-   double gross=RequiredNet()+lot*CommissionPerLot();
-   double d=gross/(lot*unit);
-   double tk=(g_tick>0.0)?g_tick:g_point;
-   double minD=(double)SymbolInfoInteger(g_sym,SYMBOL_TRADE_STOPS_LEVEL)*g_point+tk;
-   if(d<minD) d=minD;
-   d=MathCeil(d/tk-1e-6)*tk;
-   return NormalizeDouble(buy?entry+d:entry-d,g_digits);
-  }
-
-double TPPrice(const bool buy,const double entry)
-  {
-   double slp=SLPrice(buy,entry);
-   if(slp>0.0)
-     {
-      SRiskResult r;
-      if(RiskCompute(g_curRisk,buy,entry,slp,r) && r.vol>0.0)
-        {
-         double tp=TPPriceLot(buy,entry,slp,r.vol,r.perLot);
-         if(tp>0.0) return tp;
-        }
-     }
-   return TPPriceRR(buy,entry);
-  }
-
 //--- PRE-FLIGHT of a MARKET order against the REAL prices (the same discipline PlacementOk applies to pending orders):
 //--- trading allowed for the direction, SL and TP present, on the correct side of the market, outside the broker Stops Level
 bool MarketPreflight(const bool buy,const double sl,const double tp,string &why)
@@ -1729,7 +1343,7 @@ string ValidateLevels(const double buy,const double sell)
      {
       double need=PairMinWidth();
       if(buy-sell<need-1e-9)
-         return "PAIR_NOT_EXECUTABLE: a Buy Stop and a Sell Stop can never exist together at this width. Minimum width now = "+DoubleToString(need,g_digits)+" (2 x Stops Level).";
+         return "PAIR_NOT_EXECUTABLE: a Buy Stop and a Sell Stop can never exist together at this width. Minimum width now = "+DoubleToString(need,g_digits)+" (2 x Stops Level + live spread).";
      }
    return "";
   }
@@ -2100,6 +1714,12 @@ int PlacementState(const bool buy,const double price,string &why)
    return 0;
   }
 
+//--- can a stop order of this side sit at this price right now? (symbol rules + broker minimum distance)
+bool PlacementOk(const bool buy,const double price,string &why)
+  {
+   return PlacementState(buy,price,why)==0;
+  }
+
 void BrWaitActivated(const bool buy,const double level,const ulong ticket,const ulong latMs=0);   // v2.17 (defined with the Mini App command log)
 
 //--- v2.17: distance (broker minimum + learned safety buffer) between the market and a waiting level, and the resulting TRIGGER price
@@ -2133,6 +1753,23 @@ bool FrozenNow(const bool buy,const double orderPrice)
    MqlTick t;
    if(!SymbolInfoTick(g_sym,t)) return false;
    return buy?(orderPrice-t.ask<=fz+1e-9):(t.bid-orderPrice<=fz+1e-9);
+  }
+
+//--- APPLY pre-check: when a live order has to be MODIFIED, the new price must be acceptable right now
+string CheckModifiable(const double buy,const double sell)
+  {
+   for(int k=0;k<2;k++)
+     {
+      bool b=(k==0);
+      double nl=b?buy:sell;
+      ulong tk; double ap;
+      if(!SideActual(b,tk,ap)) continue;        // no live order on this side: it is simply created
+      if(PriceEq(ap,nl)) continue;              // price unchanged
+      string why;
+      if(PlacementState(b,nl,why)==2) return SideName(b)+" "+PX(nl)+" cannot be applied now: "+why;   // v2.16: a level that only waits for the market is accepted
+      if(FrozenNow(b,ap)) return SideName(b)+" cannot be modified now: the order is inside the Freeze Level.";
+     }
+   return "";
   }
 
 //--- APPLY pre-check = broker rules BEFORE anything is sent: a request that cannot become a real order is rejected with the reason
@@ -2752,6 +2389,18 @@ bool TgAuthorized(const long from)
    return false;
   }
 
+void TgAddId(const long id)
+  {
+   if(id==0) return;
+   for(int i=0;i<ArraySize(g_tgIds);i++) if(g_tgIds[i]==id) return;
+   if(ArraySize(g_tgIds)>=50) return;                       // hard cap: a public bot must not grow the list without limit
+   g_tgPub+=(StringLen(g_tgPub)>0?",":"")+IntegerToString(id);
+   CfgSet("tgpub",g_tgPub);
+   CfgSaveFile();
+   ParseIds();
+   YLog("Telegram: chat registered automatically (id "+IntegerToString(id)+").");
+  }
+
 string UrlEnc(const string s)
   {
    char b[];
@@ -2820,7 +2469,6 @@ void EvEmit(const string text)
      }
    ArrayResize(g_evId,n+1); ArrayResize(g_evK,n+1); ArrayResize(g_evT,n+1); ArrayResize(g_evB,n+1);
    g_evId[n]=id; g_evK[n]=kind; g_evT[n]=title; g_evB[n]=body;
-   g_evNow=true;                                       // v2.33: a notification is waiting - the Worker's idle slow-down must not delay it
   }
 
 void EvAckFrom(const string resp)
@@ -2896,7 +2544,7 @@ bool TgCall(const string method,const string body,string &resp)
    int n=StringToCharArray(body,data,0,WHOLE_ARRAY,CP_UTF8);
    if(n>0) ArrayResize(data,n-1);
    ResetLastError();
-   int code=WebRequest("POST",url,"Content-Type: application/x-www-form-urlencoded\r\n",2000,data,res,rh);   // v2.31: 2 s (was 3 s)
+   int code=WebRequest("POST",url,"Content-Type: application/x-www-form-urlencoded\r\n",NetTimeout(),data,res,rh);
    if(code==-1)
      {
       int e=GetLastError();
@@ -2950,7 +2598,7 @@ void TgFlush()
    if(!TgActive()) { if(ArraySize(g_qText)>60) TgPop(); return; }
    if(!g_connected) return;
    int sent=0;
-   while(ArraySize(g_qText)>0 && sent<2)      // v2.31: at most 2 blocking sends per call (was 5 = up to 15 s without processing prices)
+   while(ArraySize(g_qText)>0 && sent<5)
      {
       if(TgSend(g_qChat[0],g_qText[0],g_qMarkup[0]))
         {
@@ -3065,7 +2713,7 @@ bool OwnPosInfo(ulong &ticket,ulong &pid,bool &buy,double &vol,double &entry,dou
    entry=PositionGetDouble(POSITION_PRICE_OPEN);
    sl=PositionGetDouble(POSITION_SL);
    tp=PositionGetDouble(POSITION_TP);
-   profit=PositionGetDouble(POSITION_PROFIT)+PositionGetDouble(POSITION_SWAP);
+   profit=AcM(PositionGetDouble(POSITION_PROFIT)+PositionGetDouble(POSITION_SWAP));
    return true;
   }
 
@@ -3151,15 +2799,15 @@ string RiskText()
   {
    double lot,est; string err;
    bool ok=CurrentLotInfo(lot,est,err);
-   double nxt=g_curRisk*GrowthFactor();
+   double nxt=NextRiskFor(g_accLoss+(ok?est:g_curRisk));
    return "Risk Info\nInitial Risk: $"+D2(g_initRisk)+"\nCurrent Risk: $"+D2(g_curRisk)+"\nNext Risk (if SL): $"+D2(nxt)+"\nAccumulated Loss: $"+D2(g_accLoss)+
           "\nTrade Sequence: "+IntegerToString(g_seq)+"\nCurrent Lot: "+(ok?LotS(lot):"n/a ("+err+")")+"\nEstimated Loss at SL: "+(ok?"$"+D2(est):"n/a")+
-          "\nRequired TP net profit: $"+D2(RequiredNet())+"\nBanked in this cycle: $"+D2(g_banked);
+          "\nTheoretical TP Profit: "+(ok?"$"+D2(est*g_rr):"n/a");
   }
 
 string SettingsText()
   {
-   return "Yetimmm Settings\nSymbol: "+g_sym+"\nSL (Upper-Lower): $"+D2(SLDist())+"\nTP: computed from the actual lot (fallback R:R 1:"+DoubleToString(g_rr,0)+")\nNet Profit Target: $"+D2(g_target)+"\nRisk growth per loss: "+DoubleToString(InpRiskGrowthPct,2)+"%"+
+   return "Yetimmm Settings\nSymbol: "+g_sym+"\nSL (Upper-Lower): $"+D2(SLDist())+"\nRisk/Reward: 1:"+DoubleToString(g_rr,0)+"\nRecovery Target (sizes next risk): $"+D2(g_target)+
           "\nSpread Alert (alert only): "+IntegerToString(g_warn)+" pts\nMax Slippage Check (post-fill): "+IntegerToString(g_maxDev)+" pts\nMagic Number: "+IntegerToString(g_magic)+
           "\nContract Size: "+DoubleToString(g_contract,2)+"\nAccount Mode: "+(g_netting?"NETTING (external-position guard ON)":"HEDGING")+
           "\nDeviation Action: "+(InpDevAction==YT_DEV_REJECT?"REJECT (close)":"ALERT ONLY")+
@@ -3239,17 +2887,6 @@ void RejectExecution(const ulong pid,const double dev)
    GlobalVariablesFlush();
    YLog("Max Slippage Check exceeded ("+DoubleToString(dev,0)+" > "+IntegerToString(g_maxDev)+" pts): execution REJECTED - closing position "+UL(pid));
    TgQueue("🚫 EXECUTION REJECTED (Maximum Deviation)\nSlippage: "+DoubleToString(dev,0)+" pts > max "+IntegerToString(g_maxDev)+" pts\nThe position is being closed; the risk sequence is unchanged.");
-   CloseRejected(pid);
-  }
-
-//--- v2.34 explicit-cap policy: the fill's ACTUAL risk (recomputed from the real entry and the real SL) is above the explicit risk cap -> the position is closed,
-//--- the sequence is unchanged and the same orders are re-armed (same path as the legacy deviation reject, CRC 4). Never doubles a lot, never widens an SL.
-void RejectOverRisk(const ulong pid,const double actRisk,const double capMoney)
-  {
-   PSet(pid,"CRC",4.0);
-   GlobalVariablesFlush();
-   YLog("Actual risk $"+D2(actRisk)+" > explicit cap $"+D2(capMoney)+": position "+UL(pid)+" is being closed by the explicit-cap policy");
-   TgQueue("🚫 EXECUTION OVER THE RISK CAP\nActual risk at the SL: $"+D2(actRisk)+" > cap $"+D2(capMoney)+"\nThe position is being closed; the risk sequence is unchanged.");
    CloseRejected(pid);
   }
 
@@ -3428,15 +3065,17 @@ long RegisterPosition(const ulong pid)
    double level=buy?g_buyLevel:g_sellLevel;
    if(orderPrice<=0.0) orderPrice=(level>0.0)?level:entry;
    double dev=MathAbs(entry-orderPrice)/g_point;
-   double refPx=orderPrice;                 // v2.34: the price the lot / SL were planned from (level for a stop order, expected price for a market order)
    bool marketFill=(otype==(long)ORDER_TYPE_BUY || otype==(long)ORDER_TYPE_SELL);
+   double devLim=(double)g_maxDev;               // v2.30: a FAST CATCH fill is judged against the (wider) window it was sent with
    if(marketFill)
      {
       //--- v2.11: REAL post-fill slippage of a market reversal = |actual fill - the price the lot and TP were sized from|
       double expPx=GV("RVEXP",0.0);
-      if(expPx>0.0) refPx=expPx;
       dev=(expPx>0.0)?MathAbs(entry-expPx)/g_point:0.0;
       GS("RVEXP",0.0);                          // consumed
+      double rvDev=GV("RVDEV",0.0);
+      if(rvDev>devLim) devLim=rvDev;
+      GS("RVDEV",0.0);                          // consumed
       //--- the SL/TP the reversal REQUESTED (computed from the real execution price) is the expected protection of this position
       if(sl<=0.0) sl=GV("RVSL",0.0);
       if(tp<=0.0) tp=GV("RVTP",0.0);
@@ -3450,7 +3089,7 @@ long RegisterPosition(const ulong pid)
    PSet(pid,"N",(double)g_tradeNo);
    PSet(pid,"R",g_curRisk);
    PSet(pid,"AL",g_accLoss);
-   PSet(pid,"BB",AccountInfoDouble(ACCOUNT_BALANCE));
+   PSet(pid,"BB",AcM(AccountInfoDouble(ACCOUNT_BALANCE)));
    PSet(pid,"SP",spread);
    PSet(pid,"DV",dev);
    PSet(pid,"SLP",sl);
@@ -3485,30 +3124,10 @@ long RegisterPosition(const ulong pid)
    LogOrder("TRIGGERED",otype,orderPrice,vol,order,0,"Trade #"+TNo(g_tradeNo)+" fill "+PX(entry));
    TgQueue((buy?"🟢 BUY ACTIVATED":"🔴 SELL ACTIVATED")+"\nTrade #: "+TNo(g_tradeNo)+"\nEntry: "+PX(entry)+"\nSL: "+PX(sl)+"\nTP: "+PX(tp)+"\nLot: "+LotS(vol)+
            "\nRisk: $"+D2(g_curRisk)+"\nBuy Level: "+PX(g_buyLevel)+"\nSell Level: "+PX(g_sellLevel)+"\nTime: "+TimeToString(topen,TIME_DATE|TIME_SECONDS));
-   double devLimit=(double)g_maxDev;
-   if(InpTurbo && (double)InpTurboDevPts>devLimit) devLimit=(double)InpTurboDevPts;   // v2.31 TURBO: a rocket candle slips - the fill is kept up to InpTurboDevPts
-   //--- v2.34 ACTUAL RISK AT THE REAL FILL: lot x loss-per-lot from the REAL entry to the REAL SL (a worse fill = a farther SL = a larger loss at the SL)
-   double actRisk=0.0, slipMoney=0.0;
-   if(sl>0.0 && vol>0.0 && refPx>0.0)
+   if(dev>devLim)
      {
-      double plAct=PerLotLossSL(buy,entry,sl);
-      double plRef=PerLotLossSL(buy,refPx,sl);
-      actRisk=plAct*vol;
-      slipMoney=vol*(plAct-plRef);
-     }
-   double balNow=AccountInfoDouble(ACCOUNT_BALANCE);
-   bool overCap=OverRiskCap(actRisk,balNow,ExplicitRiskCapPct());
-   YLog("FILL Trade #"+TNo(g_tradeNo)+" | expected "+PX(refPx)+" actual "+PX(entry)+" | slippage "+DoubleToString(dev,0)+" pts (est. "+Money(-slipMoney)+") | actual risk at SL $"+D2(actRisk)+" vs planned $"+D2(g_curRisk)+(overCap?" | OVER THE EXPLICIT RISK CAP":""));
-   ExecJournal(SetupId(buy,orderPrice),marketFill?"FILL_MARKET":"FILL_PENDING",0,0,RCC_OK,"",refPx,entry,dev,slipMoney,actRisk,g_curRisk,overCap?"OVER_RISK_CAP":(dev>devLimit?"SLIP_ABOVE_LIMIT_KEPT":"ok"));
-   if(dev>devLimit)
-     {
-      RaiseAlert("DEV","Slippage: fill "+DoubleToString(dev,0)+" pts beyond the plan (> "+DoubleToString(devLimit,0)+") | actual risk at SL $"+D2(actRisk)+" vs planned $"+D2(g_curRisk)+" (Trade #"+TNo(g_tradeNo)+")"+(InpDevAction==YT_DEV_REJECT?"":" - the trade is KEPT, protected by its SL."),true,true);
-      if(InpDevAction==YT_DEV_REJECT && live!=0 && g_state!=YT_STOPPED) RejectExecution(pid,dev);   // legacy opt-in: slippage ALONE closes the trade
-     }
-   if(overCap)
-     {
-      RaiseAlert("RISKCAP","Actual risk $"+D2(actRisk)+" at the real fill exceeds the explicit cap ("+DoubleToString(ExplicitRiskCapPct(),2)+"% of balance = $"+D2(balNow*ExplicitRiskCapPct()/100.0)+") (Trade #"+TNo(g_tradeNo)+"). The loss is NOT guaranteed - this is the maximum at the SL.",true,true);
-      if(InpDevAction==YT_DEV_RISKCAP && live!=0 && g_state!=YT_STOPPED) RejectOverRisk(pid,actRisk,balNow*ExplicitRiskCapPct()/100.0);
+      RaiseAlert("DEV","Deviation exceeded: fill slippage "+DoubleToString(dev,0)+" pts > max "+DoubleToString(devLim,0)+" pts (Trade #"+TNo(g_tradeNo)+").",true,true);
+      if(InpDevAction==YT_DEV_REJECT && live!=0 && g_state!=YT_STOPPED) RejectExecution(pid,dev);
      }
    return g_tradeNo;
   }
@@ -3551,8 +3170,8 @@ bool ProcessClosedPosition(const ulong pid)
       double vol=HistoryDealGetDouble(d,DEAL_VOLUME);
       double pr=HistoryDealGetDouble(d,DEAL_PRICE);
       datetime tm=(datetime)HistoryDealGetInteger(d,DEAL_TIME);
-      comm+=HistoryDealGetDouble(d,DEAL_COMMISSION)+HistoryDealGetDouble(d,DEAL_FEE);
-      swap+=HistoryDealGetDouble(d,DEAL_SWAP);
+      comm+=AcM(HistoryDealGetDouble(d,DEAL_COMMISSION)+HistoryDealGetDouble(d,DEAL_FEE));
+      swap+=AcM(HistoryDealGetDouble(d,DEAL_SWAP));
       if(entry==DEAL_ENTRY_IN)
         {
          inVol+=vol;
@@ -3566,7 +3185,7 @@ bool ProcessClosedPosition(const ulong pid)
       else if(entry==DEAL_ENTRY_OUT || entry==DEAL_ENTRY_OUT_BY || entry==DEAL_ENTRY_INOUT)
         {
          outVol+=vol;
-         gross+=HistoryDealGetDouble(d,DEAL_PROFIT);
+         gross+=AcM(HistoryDealGetDouble(d,DEAL_PROFIT));
          dealOut=d; tClose=tm; exitPrice=pr;
          reason=HistoryDealGetInteger(d,DEAL_REASON);
          tCloseMsc=(long)HistoryDealGetInteger(d,DEAL_TIME_MSC);
@@ -3634,10 +3253,8 @@ bool ProcessClosedPosition(const ulong pid)
    if(entryLevel<=0.0) entryLevel=entryPrice;
    //--- theoretical loss at SL from the levels this position was opened with (not from today's levels)
    double theoSL=buy?lsell:lbuy;
-   double theoSLu=(theoSL>0.0 && theoSL!=entryLevel)?theoSL:SLPrice(buy,entryLevel);
-   double theoLoss=inVol*PerLotLossSL(buy,entryLevel,theoSLu);
+   double theoLoss=inVol*PerLotLossSL(buy,entryLevel,(theoSL>0.0 && theoSL!=entryLevel)?theoSL:SLPrice(buy,entryLevel));
    double theoProfit=theoLoss*g_rr;
-   if(tpp>0.0 && theoSLu>0.0 && MathAbs(entryLevel-theoSLu)>1e-12) theoProfit=theoLoss*MathAbs(tpp-entryLevel)/MathAbs(entryLevel-theoSLu);   // v2.30: from the real TP of this trade
 
    //--- Netting: a position that absorbed foreign volume has a P/L that is NOT purely this bot's.
    //--- It is logged, but it never feeds the risk sequence (no accumulated loss, no risk step, no TP reset).
@@ -3676,7 +3293,8 @@ bool ProcessClosedPosition(const ulong pid)
       if(isExtra && net<0.0)
         {
          g_accLoss+=-net;
-         YLog("Extra position loss "+D2(net)+" added to the accumulated loss -> Acc.Loss "+D2(g_accLoss)+" | risk unchanged "+D2(g_curRisk)+" (not an SL step); the next TP target now includes this loss");
+         g_curRisk=NextRiskFor(g_accLoss);
+         YLog("Extra position loss "+D2(net)+" added to the accumulated loss -> Acc.Loss "+D2(g_accLoss)+" | next risk "+D2(g_curRisk));
         }
       if(tainted)
         {
@@ -3687,7 +3305,7 @@ bool ProcessClosedPosition(const ulong pid)
         {
          if(net<0.0) g_accLoss+=-net;
          g_seq++;
-         g_curRisk=g_curRisk*GrowthFactor();    // v2.30 SPEC: R(n) = R(n-1) x 1.05 after every losing trade
+         g_curRisk=NextRiskFor(g_accLoss);
          if(keepState)
            {
             //--- v2.29: an OLD / overlapping SL: the loss and the Seq step count, but the CURRENT state, mode and levels are left exactly as they are
@@ -3719,14 +3337,14 @@ bool ProcessClosedPosition(const ulong pid)
         }
       else if(isTP)
         {
-         //--- v2.30: the sequence ends ONLY when this TP repaid every loss of the cycle AND left the net target (cycle net >= target).
-         double cycleNet=g_banked+net-g_accLoss;
-         if(InpTpResetNetOnly && cycleNet<g_target-MathMax(InpNetTolerance,0.0)-1e-9)
+         if(InpTpResetNetOnly && g_accLoss>1e-9 && net<g_accLoss-1e-6)
            {
-            double miss=g_target-cycleNet;
-            g_banked+=net;
-            YLog("TP net "+D2(net)+" -> cycle net "+D2(cycleNet)+" < target "+D2(g_target)+": sequence NOT reset | Acc.Loss "+D2(g_accLoss)+" | banked "+D2(g_banked)+" | still missing "+D2(miss)+" | risk stays "+D2(g_curRisk)+" (Seq "+IntegerToString(g_seq)+")");
-            RaiseAlert("TPPART"+IntegerToString((int)g_tradeNo),"TP closed with net "+D2(net)+" "+AccCcy()+" - the cycle net is "+D2(cycleNet)+" (target "+D2(g_target)+"). The sequence is NOT reset; the next TP must still earn "+D2(RequiredNet())+" "+AccCcy()+" net.",false,true);
+            //--- v2.23: the TP did NOT repay the cycle's accumulated loss after commission/swap/slippage: the remaining debt is kept
+            double rem=g_accLoss-MathMax(net,0.0);
+            YLog("TP net "+D2(net)+" < accumulated loss "+D2(g_accLoss)+": cycle NOT recovered - remaining debt "+D2(rem)+" carried into the next risk");
+            g_accLoss=rem;
+            g_curRisk=NextRiskFor(g_accLoss);
+            RaiseAlert("TPPART"+IntegerToString((int)g_tradeNo),"TP closed with net "+D2(net)+" "+AccCcy()+" - the accumulated loss is not fully repaid yet (remaining "+D2(rem)+"). Risk sequence continues.",false,true);
            }
          else ResetRisk();
          g_lastSLSide=0;
@@ -3783,14 +3401,13 @@ bool ProcessClosedPosition(const ulong pid)
                PX(entryPrice)+";"+PX(exitPrice)+";"+PX(slp)+";"+PX(tpp)+";"+LotS(inVol)+";"+D2(reqRisk)+";"+D2(theoLoss)+";"+D2(theoProfit)+";"+
                D2(gross)+";"+D2(comm)+";"+D2(swap)+";"+D2(net)+";"+DoubleToString(spread,0)+";"+DoubleToString(dev,0)+";"+
                TimeToString(tOpen,TIME_DATE|TIME_SECONDS)+";"+TimeToString(tClose,TIME_DATE|TIME_SECONDS)+";"+rs+";"+
-               D2(balBefore)+";"+D2(AccountInfoDouble(ACCOUNT_BALANCE))+";"+D2(accBefore)+";"+D2(accAfter)+";"+D2(reqRisk)+";"+D2(nextRisk)+";"+
+               D2(balBefore)+";"+D2(AcM(AccountInfoDouble(ACCOUNT_BALANCE)))+";"+D2(accBefore)+";"+D2(accAfter)+";"+D2(reqRisk)+";"+D2(nextRisk)+";"+
                PX(lbuy)+";"+PX(lsell)+";"+IntegerToString(g_magic)+";"+g_sym+";"+(tainted?"CLOSED_NET_TAINTED":"CLOSED")+";"+
                Clean(tainted?"Netting: external volume merged - risk sequence NOT updated":(bookkeeping?(replay?cnote:"bookkeeping only"):cnote));
    AppendLine(TradeFile(),TRADE_HEADER,line);
    MarkLogged(pid,dealOut);
    if(!tainted) StatsAdd(net,comm,swap,buy?"BUY":"SELL",inVol,reqRisk,rs);
    g_lastDeal=dealOut;
-   g_cplAt=0;                                // v2.30: the commission estimate is re-learned (timer) now that a new deal exists
    GS("LDT",(double)tClose);                 // time of the last processed closing deal (history-recovery fallback anchor)
    SaveState();
    ClearPosGV(pid);
@@ -4034,17 +3651,11 @@ bool TryPlace(const bool buy,const double level)
        return false;
       }
    }
-   if(nowMs<g_nextPlaceMs || nowMs<g_sideNextMs[s])
+   if(nowMs<g_nextPlaceMs)
      {
       if(g_sync[s]==YS_CREATING) SetSync(buy,YS_WAITING,"Retry cooldown");
       return false;
      }
-   //--- v2.34: one stable id per setup ties every attempt together; an in-doubt answer (timeout) holds the resend until the server state is known
-   {
-    string sid0=SetupId(buy,level);
-    if(g_setupId[s]!=sid0) { g_setupId[s]=sid0; g_attempt[s]=0; g_inDoubtMs[s]=0; }
-    if(nowMs<g_inDoubtMs[s]) { SetSync(buy,YS_WAITING,"IN_DOUBT: waiting for the server state before any resend"); return false; }
-   }
    MqlTick tk;
    if(!SymbolInfoTick(g_sym,tk) || tk.ask<=0.0 || tk.bid<=0.0)
      {
@@ -4089,7 +3700,8 @@ bool TryPlace(const bool buy,const double level)
       return false;
      }
    double lot=0,est=0; string err="";
-   //--- v2.34: NO spread gate. A wide spread is measured and journaled with the attempt; it never delays or cancels a valid setup.
+   string spw="";
+   if(SpreadTooWide(spw)) { g_wcode="WAITING_SPREAD"; g_waitReason=spw; g_nextPlaceMs=nowMs+2000; SetSync(buy,YS_WAITING,spw); return false; }
    string rgw="",rgc="";
    if(RecoveryGuardBlocks(rgw,rgc))
      {
@@ -4121,7 +3733,6 @@ bool TryPlace(const bool buy,const double level)
    }
    datetime pxExp=0;
    ENUM_ORDER_TYPE_TIME pxTT=PendingTimeType(pxExp);
-   g_attempt[s]++;
    bool r=buy?g_trade.BuyStop(lot,level,g_sym,slp,tpp,pxTT,pxExp,"Yetimmm")
              :g_trade.SellStop(lot,level,g_sym,slp,tpp,pxTT,pxExp,"Yetimmm");
    uint rc=g_trade.ResultRetcode();
@@ -4153,11 +3764,8 @@ bool TryPlace(const bool buy,const double level)
       g_waitBuf[s]=(g_waitBuf[s]>(g_tick>0.0?g_tick:g_point)*1.5)?g_waitBuf[s]*0.5:0.0;   // the learned buffer decays after a success
       ulong latMs=(g_trigMs[s]>0)?(GetTickCount64()-g_trigMs[s]):0;
       g_trigMs[s]=0;
-      if(latMs>0) PfAdd(g_pfTrig,g_pfTrign,(double)latMs);        // v2.33: measured trigger -> order-on-server latency
       BrWaitActivated(buy,level,ticket,latMs);           // v2.17: the waiting command in the app log becomes "activated"
       LogOrder("PLACED",otype,level,lot,ticket,rc,"Risk $"+D2(g_curRisk)+" SL "+PX(slp)+" TP "+PX(tpp));
-      ExecJournal(g_setupId[s],"PENDING",g_attempt[s],rc,RCC_OK,g_trade.ResultComment(),level,level,0.0,0.0,0.0,g_curRisk,"ticket "+UL(ticket)+" lot "+LotS(lot));
-      g_attempt[s]=0; g_inDoubtMs[s]=0;
       SetSync(buy,YS_PLACED,"Ticket #"+UL(ticket));
       PanelMsg(SideName(buy)+" PLACED #"+UL(ticket)+" @ "+PX(level),clrLime);
       bool reentry=(g_state==YT_WAITING_REENTRY);
@@ -4179,69 +3787,42 @@ bool TryPlace(const bool buy,const double level)
       double stp=MathMax((double)SymbolInfoInteger(g_sym,SYMBOL_SPREAD)*g_point,(g_tick>0.0)?g_tick:g_point);
       g_waitBuf[s]=MathMin(g_waitBuf[s]+stp,stp*8.0);
       g_trig[s]=WaitTrigger(buy,level);
-      g_sideNextMs[s]=nowMs+((g_raceCnt[s]<4)?250:(ulong)MathMin(3000.0,250.0*(g_raceCnt[s]-2)));   // v2.34: this side only
+      g_nextPlaceMs=nowMs+((g_raceCnt[s]<4)?250:(ulong)MathMin(3000.0,250.0*(g_raceCnt[s]-2)));
       SetSync(buy,YS_WAITING,"Market moved while sending - waiting for a safer price");
-      ExecJournal(g_setupId[s],"PENDING",g_attempt[s],rc,ClassifyRetcode(rc),cm,level,0.0,0.0,0.0,0.0,g_curRisk,"price class: quote refreshed, setup kept");
       if(g_raceCnt[s]==1 || g_raceCnt[s]%10==0)
          YLog(SideName(buy)+" "+PX(level)+": market moved while sending (retcode "+IntegerToString((int)rc)+") - safety buffer "+PX(g_waitBuf[s])+", waiting (attempt "+IntegerToString(g_raceCnt[s])+")");
       return false;
      }
-   int cls=ClassifyResult(rc,g_attempt[s]);
    LogOrder("REJECTED",otype,level,lot,0,rc,cm);
-   //--- v2.34: only a FINAL class is shown as a failure; every other class keeps the setup alive and shows RETRYING
-   if(cls==RCC_FINAL) SetSync(buy,YS_FAILED,"NOT PLACED: "+cm+" [retcode "+IntegerToString((int)rc)+" "+RcClassName(cls)+"]");
-   else SetSync(buy,YS_WAITING,"Retrying ("+RcClassName(cls)+", attempt "+IntegerToString(g_attempt[s])+"): "+cm+" [retcode "+IntegerToString((int)rc)+"]");
-   PanelMsg(SideName(buy)+(cls==RCC_FINAL?" NOT PLACED: ":" retrying: ")+cm,cls==RCC_FINAL?clrTomato:clrOrange);
-   YLog("Execution "+(cls==RCC_FINAL?"Rejected (final)":"attempt failed (retrying)")+": retcode "+IntegerToString((int)rc)+" "+cm+" | class "+RcClassName(cls)+" | setup "+g_setupId[s]+" | attempt "+IntegerToString(g_attempt[s]));
-   ExecJournal(g_setupId[s],"PENDING",g_attempt[s],rc,cls,cm,level,0.0,0.0,0.0,0.0,g_curRisk,"");
+   SetSync(buy,YS_FAILED,"NOT PLACED: "+cm+" [retcode "+IntegerToString((int)rc)+"]");
+   PanelMsg(SideName(buy)+" NOT PLACED: "+cm,clrTomato);
+   YLog("Execution Rejected: retcode "+IntegerToString((int)rc)+" "+cm);
    ulong delay=2000;
-   bool transient=true;
-   switch(cls)
+   bool transient=false;
+   switch((int)rc)
      {
-      case RCC_INDOUBT:
-         //--- no confirmed answer: the order may exist on the server. The top of TryPlace re-queries the server (SideOrderExists / OwnOrders) before ANY resend.
-         delay=ExecBackoffMs(cls,g_attempt[s]);
-         g_inDoubtMs[s]=nowMs+delay;
-         break;
-      case RCC_PRICE:
-      case RCC_FAST:
-         delay=ExecBackoffMs(cls,g_attempt[s]);
-         if((int)rc==TRADE_RETCODE_CONNECTION) delay=MathMax(delay,(ulong)3000);
-         break;
-      case RCC_REBUILD:
-         //--- the lot / expiration are rebuilt from the live spec on every attempt; a filling-mode refusal re-reads the broker's filling policy
-         if((int)rc==TRADE_RETCODE_INVALID_FILL) g_trade.SetTypeFillingBySymbol(g_sym);
-         delay=ExecBackoffMs(cls,g_attempt[s]);
-         break;
-      case RCC_SLOW:
-         switch((int)rc)
-           {
-            case TRADE_RETCODE_NO_MONEY:         g_blockReason="Insufficient margin for required risk."; delay=30000; break;
-            case TRADE_RETCODE_MARKET_CLOSED:    g_blockReason="Market closed"; delay=30000; break;
-            case TRADE_RETCODE_TRADE_DISABLED:
-            case TRADE_RETCODE_CLIENT_DISABLES_AT:
-            case TRADE_RETCODE_SERVER_DISABLES_AT: g_blockReason="Trading disabled"; delay=15000; break;
-            case TRADE_RETCODE_TOO_MANY_REQUESTS:delay=10000; break;
-            default:                             delay=ExecBackoffMs(cls,g_attempt[s]); break;
-           }
-         break;
+      case TRADE_RETCODE_NO_MONEY:         g_blockReason="Insufficient margin for required risk."; delay=30000; transient=true; break;
+      case TRADE_RETCODE_MARKET_CLOSED:    g_blockReason="Market closed"; delay=30000; transient=true; break;
+      case TRADE_RETCODE_TRADE_DISABLED:
+      case TRADE_RETCODE_CLIENT_DISABLES_AT:
+      case TRADE_RETCODE_SERVER_DISABLES_AT: g_blockReason="Trading disabled"; delay=15000; transient=true; break;
+      case TRADE_RETCODE_CONNECTION:       delay=5000; transient=true; break;
+      case TRADE_RETCODE_TOO_MANY_REQUESTS:delay=10000; transient=true; break;
+      case TRADE_RETCODE_INVALID_STOPS:
+      case TRADE_RETCODE_INVALID_PRICE:    delay=1500; transient=true; break;
       default:
-         //--- RCC_FINAL (permanent broker rule) or unclassified: permanent broker rule / unclassified: bounded. It is logged above with its class and ends in ERROR after repeated failures (as before)
-         transient=false;
          g_failCount++;
          delay=(ulong)MathMin(60000.0,2000.0*MathPow(2.0,MathMin(g_failCount,5)));
          break;
      }
-   //--- v2.34: a price / hiccup / in-doubt / rebuild class belongs to THIS side only; a market-wide or account-wide condition (closed, margin, broker rule) gates both
-   if(cls==RCC_SLOW || cls==RCC_FINAL || cls==RCC_UNKNOWN) g_nextPlaceMs=nowMs+delay;
-   else g_sideNextMs[s]=nowMs+delay;
-   RaiseAlert("REJ"+IntegerToString((int)rc),(cls==RCC_FINAL?"Order rejected by a broker rule (NOT PLACED) (":"Order attempt failed - retrying ("+RcClassName(cls)+") (")+(buy?"Buy Stop":"Sell Stop")+" "+PX(level)+"): "+cm+" [retcode "+IntegerToString((int)rc)+"]",cls==RCC_FINAL,true);
+   g_nextPlaceMs=nowMs+delay;
+   RaiseAlert("REJ"+IntegerToString((int)rc),"Order rejected (NOT PLACED) ("+(buy?"Buy Stop":"Sell Stop")+" "+PX(level)+"): "+cm+" [retcode "+IntegerToString((int)rc)+"]",true,true);
    if(!transient && g_failCount>=8)
      {
       g_state=YT_ERROR;
       GS("REVERR",0.0);                          // a placement error is not a reversal error: /start re-arms normally
       SaveState();
-      RaiseAlert("ERRSTATE","Bot moved to ERROR state after repeated order failures ("+RcClassName(cls)+", retcode "+IntegerToString((int)rc)+"). Fix the issue, then use /start or enter levels.",true,true);
+      RaiseAlert("ERRSTATE","Bot moved to ERROR state after repeated order failures. Fix the issue, then use /start or enter levels.",true,true);
      }
    return false;
   }
@@ -4290,17 +3871,29 @@ void EnforceSinglePosition(const ulong &pos[],const int np)
 //--- transient: can clear by itself (market closed, connection, requote ...) - never counted towards the ERROR threshold
 bool RevRetcodeTransient(const uint rc)
   {
-   int c=ClassifyRetcode(rc);
-   return (c==RCC_PRICE || c==RCC_FAST || c==RCC_INDOUBT || c==RCC_SLOW);
+   switch((int)rc)
+     {
+      case TRADE_RETCODE_MARKET_CLOSED:
+      case TRADE_RETCODE_CONNECTION:
+      case TRADE_RETCODE_TOO_MANY_REQUESTS:
+      case TRADE_RETCODE_REQUOTE:
+      case TRADE_RETCODE_PRICE_CHANGED:
+      case TRADE_RETCODE_PRICE_OFF:
+      case TRADE_RETCODE_TIMEOUT:
+         return true;
+     }
+   return false;
   }
 
 //--- permanent: retrying cannot help, the cause must be fixed by the user
 bool RevRetcodePermanent(const uint rc)
   {
-   if(ClassifyRetcode(rc)==RCC_FINAL) return true;
    switch((int)rc)
      {
       case TRADE_RETCODE_INVALID_VOLUME:
+      case TRADE_RETCODE_LONG_ONLY:
+      case TRADE_RETCODE_SHORT_ONLY:
+      case TRADE_RETCODE_CLOSE_ONLY:
       case TRADE_RETCODE_LIMIT_VOLUME:
          return true;
      }
@@ -4320,7 +3913,7 @@ void RevEnterError(const string why)
    g_dirty=true;
   }
 
-bool TryMarketReverse(const int force=0)   // force: 0 = reversal after an SL, 1 = virtual-entry BUY, 2 = virtual-entry SELL
+bool TryMarketReverse(const int force=0,const bool catchMode=false)   // force: 0 = reversal after an SL, 1 = virtual-entry BUY, 2 = virtual-entry SELL; catchMode (v2.30) = FAST CATCH of a crossed level
   {
    if(force==0 && g_lastSLSide!=1 && g_lastSLSide!=2) return false;
    if(!InstOkTrade("open a market reversal")) return false;                  // v2.29: lock re-verified before every send
@@ -4335,7 +3928,7 @@ bool TryMarketReverse(const int force=0)   // force: 0 = reversal after an SL, 1
    MqlTick tk;
    if(!SymbolInfoTick(g_sym,tk) || tk.ask<=0.0 || tk.bid<=0.0) return false;
    bool breached=(force!=0)?true:(revBuy?(tk.ask>=lvl):(tk.bid<=lvl));
-   if(!breached) { g_revHard=0; g_revAttempt=0; return false; }   // level still ahead of the price: a normal pending order is used
+   if(!breached) { g_revHard=0; return false; }   // level still ahead of the price: a normal pending order is used
    ulong nowMs=GetTickCount64();
    if(nowMs<g_nextRevMs) return true;
    string why;
@@ -4343,20 +3936,19 @@ bool TryMarketReverse(const int force=0)   // force: 0 = reversal after an SL, 1
 
    //--- 1) REAL execution price, SL = the opposite level, TP from the REAL entry and the REAL SL distance
    //---    (so profit at TP = risk x R/R exactly as the recovery maths assumes, even after a gap)
+   //--- v2.31 FIXED DISTANCES: SL = zone width (Upper-Lower) and TP = zone width x R/R, both measured from the REAL fill price.
+   //---    Before, SL was the opposite LEVEL, so a gap beyond the level made the SL farther -> SMALLER lot and a FARTHER TP (the wrong way round).
    double entry=revBuy?tk.ask:tk.bid;
-   double slp=RoundTick(slLvl);
-   double realDist=MathAbs(entry-slp);
-   double tpp=0.0;
-   {
-    SRiskResult rk0;
-    if(RiskCompute(g_curRisk,revBuy,entry,slp,rk0) && rk0.vol>0.0) tpp=TPPriceLot(revBuy,entry,slp,rk0.vol,rk0.perLot);   // v2.30: from the actual lot
-    if(tpp<=0.0) tpp=RoundTick(revBuy?entry+realDist*g_rr:entry-realDist*g_rr);                                            // fallback only
-   }
+   double fixedDist=SLDist();
+   if(fixedDist<=0.0) return false;
+   double slp=RoundTick(revBuy?entry-fixedDist:entry+fixedDist);
+   double tpp=RoundTick(revBuy?entry+fixedDist*g_rr:entry-fixedDist*g_rr);
    //--- v2.23 MAX REVERSAL DISTANCE: a market entry far beyond the level is a different trade (different SL distance / lot): do not take it
-   if(force==0 && InpMaxRevGap>0.0 && MathAbs(entry-lvl)>InpMaxRevGap)
+   double gapLim=catchMode?InpCatchMaxGap:((force==0)?InpMaxRevGap:0.0);
+   if(gapLim>0.0 && MathAbs(entry-lvl)>gapLim)
      {
       g_wcode="WAITING_REENTRY";
-      g_waitReason="Market reversal skipped: price is "+PX(MathAbs(entry-lvl))+" beyond the level (Max Reversal Gap "+PX(InpMaxRevGap)+") - waiting for the pending pair";
+      g_waitReason=(catchMode?"Fast catch skipped: price is ":"Market reversal skipped: price is ")+PX(MathAbs(entry-lvl))+" beyond the level (Max Gap "+PX(gapLim)+") - waiting for the pending pair";
       g_nextRevMs=nowMs+2000;
       return false;
      }
@@ -4367,7 +3959,7 @@ bool TryMarketReverse(const int force=0)   // force: 0 = reversal after an SL, 1
       g_revFails++;
       g_revHard++;
       g_waitReason="Market reversal blocked: "+why;
-      g_nextRevMs=nowMs+(InpTurbo && g_revFails<=3 ? (ulong)300 : (ulong)MathMin(15000.0,2000.0*g_revFails));
+      g_nextRevMs=nowMs+(ulong)MathMin(15000.0,2000.0*g_revFails);
       LogOrder("MARKET_REVERSAL_BLOCKED",revBuy?(long)ORDER_TYPE_BUY:(long)ORDER_TYPE_SELL,entry,0.0,0,0,why);
       YLog("Market reversal blocked by pre-flight: "+why+" (attempt "+IntegerToString(g_revFails)+")");
       RaiseAlert("REVBLOCK","Market reversal NOT sent (pre-flight): "+why+". Retrying; the opposite trade is not open yet.",true,true);
@@ -4401,20 +3993,18 @@ bool TryMarketReverse(const int force=0)   // force: 0 = reversal after an SL, 1
    //--- 5) send; the expected protection AND the expected price are remembered:
    //---    SL/TP -> repaired by the protection guard if missing; price -> REAL slippage is measured after the fill (RegisterPosition)
    GS("RVSL",slp); GS("RVTP",tpp); GS("RVEXP",entry);
-   g_revAttempt++;
-   g_trade.SetDeviationInPoints(ExecDeviation(g_revFails));   // v2.34: widens after repeated requotes (bounded by InpExecDevCapPts); the REAL slip is measured and the risk recomputed after the fill
+   int sendDev=catchMode?MathMax(g_maxDev,InpCatchDeviation):g_maxDev;     // v2.30: a fast market needs a wide window, otherwise requote / reject = a missed entry
+   GS("RVDEV",catchMode?(double)sendDev:0.0);                               // the same window is tolerated after the fill (RegisterPosition)
+   g_trade.SetDeviationInPoints(sendDev);
    //--- the expected price is sent with the request, so Max Slippage Check also works as a PRICE GUARD (a requote / reject instead of a bad fill)
    bool r=revBuy?g_trade.Buy(lot,g_sym,entry,slp,tpp,"Yetimmm"):g_trade.Sell(lot,g_sym,entry,slp,tpp,"Yetimmm");
    uint rc=g_trade.ResultRetcode();
    bool ok=(r && (rc==TRADE_RETCODE_DONE || rc==TRADE_RETCODE_PLACED || rc==TRADE_RETCODE_DONE_PARTIAL));
    long ot=revBuy?(long)ORDER_TYPE_BUY:(long)ORDER_TYPE_SELL;
-   string rsid=SetupId(revBuy,lvl);
    if(ok)
      {
       g_revFails=0;
       g_revHard=0;
-      ExecJournal(rsid,"MARKET",g_revAttempt,rc,RCC_OK,g_trade.ResultComment(),entry,0.0,0.0,0.0,0.0,g_curRisk,"sent; fill price and slippage are journaled when the position registers");
-      g_revAttempt=0; g_revInDoubtMs=0;
       g_waitReason="";
       double gapPts=MathAbs(entry-lvl)/g_point;
       LogOrder("MARKET_REVERSAL",ot,entry,lot,g_trade.ResultOrder(),rc,"level "+PX(lvl)+" already crossed (gap "+DoubleToString(gapPts,0)+" pts) | SL "+PX(slp)+" TP "+PX(tpp)+" | est. loss at SL $"+D2(est));
@@ -4423,19 +4013,17 @@ bool TryMarketReverse(const int force=0)   // force: 0 = reversal after an SL, 1
       g_dirty=true;
       return true;
      }
-   GS("RVSL",0.0); GS("RVTP",0.0); GS("RVEXP",0.0);
+   GS("RVSL",0.0); GS("RVTP",0.0); GS("RVEXP",0.0); GS("RVDEV",0.0);
    string cm=g_trade.ResultComment();
    g_revFails++;
-   if(!RevRetcodeTransient(rc) && ClassifyResult(rc,g_revAttempt)!=RCC_INDOUBT) g_revHard++;
+   if(!RevRetcodeTransient(rc)) g_revHard++;
    LogOrder("MARKET_REVERSAL_FAILED",ot,entry,lot,0,rc,cm);
-   YLog("Market reversal rejected: retcode "+IntegerToString((int)rc)+" "+cm+" (attempt "+IntegerToString(g_revFails)+")");
-   int rcls=ClassifyResult(rc,g_revAttempt);
-   ExecJournal(rsid,"MARKET",g_revAttempt,rc,rcls,cm,entry,0.0,0.0,0.0,0.0,g_curRisk,"dev "+IntegerToString(ExecDeviation(g_revFails-1)));
-   g_nextRevMs=nowMs+(ulong)MathMin(15000.0,2000.0*g_revFails);
-   //--- v2.34: the class decides the delay. price / hiccup = quote refreshed and retried fast (bounded back-off); in doubt = the server is queried first
-   //--- (OwnPositions at the top of this function blocks a second order if the first one did fill); never an endless loop inside OnTick
-   if(rcls==RCC_PRICE || rcls==RCC_FAST) g_nextRevMs=nowMs+ExecBackoffMs(rcls,g_revFails);
-   else if(rcls==RCC_INDOUBT) { g_revInDoubtMs=nowMs+ExecBackoffMs(rcls,g_revFails); g_nextRevMs=g_revInDoubtMs; YLog("Market reversal IN_DOUBT: no confirmed answer - the server is queried before any resend"); }
+   YLog((catchMode?"Fast catch rejected: retcode ":"Market reversal rejected: retcode ")+IntegerToString((int)rc)+" "+cm+" (attempt "+IntegerToString(g_revFails)+")");
+   //--- v2.30: a requote / price change in a fast market is retried within 80 ms, not after seconds (the price is moving, every second is a worse entry)
+   if((rc==TRADE_RETCODE_REQUOTE || rc==TRADE_RETCODE_PRICE_CHANGED || rc==TRADE_RETCODE_PRICE_OFF || rc==TRADE_RETCODE_REJECT || rc==TRADE_RETCODE_TIMEOUT) && g_revFails<12)
+      g_nextRevMs=nowMs+80;
+   else
+      g_nextRevMs=nowMs+(ulong)MathMin(15000.0,2000.0*g_revFails);
    if(g_revFails>=5) RaiseAlert("REVFAIL","Market reversal keeps failing ("+cm+" [retcode "+IntegerToString((int)rc)+"]). The opposite trade is NOT open - check the account / market.",true,true);
    if(RevRetcodePermanent(rc) || g_revHard>=YT_REV_MAX_HARD)
       RevEnterError(cm+" [retcode "+IntegerToString((int)rc)+"]");
@@ -4450,6 +4038,13 @@ bool TryMarketReverse(const int force=0)   // force: 0 = reversal after an SL, 1
 //| at the opposite level. Both levels are always honoured, so there  |
 //| is no zone gate, no Stops-Level window and no lone order.         |
 //+------------------------------------------------------------------+
+bool VirtualInside()
+  {
+   MqlTick tk;
+   if(!SymbolInfoTick(g_sym,tk) || tk.ask<=0.0 || tk.bid<=0.0 || g_buyLevel<=g_sellLevel) return false;
+   return (tk.bid>g_sellLevel && tk.ask<g_buyLevel);
+  }
+
 bool VirtualWake()
   {
    if(InpEntryMode!=ENTRY_VIRTUAL) return false;
@@ -4489,6 +4084,123 @@ void VirtualEntryPass()
      }
    if(tk.ask>=g_buyLevel)       TryMarketReverse(1);
    else if(tk.bid<=g_sellLevel) TryMarketReverse(2);
+  }
+
+//+------------------------------------------------------------------+
+//| v2.30 FAST CATCH. The pending Stop orders are the strategy, and   |
+//| the server fills them itself. But when a level is crossed while   |
+//| NO order of that side is on the server (re-arming after a Stop    |
+//| Loss, zone gate, "market moved" wait, ...) the old code simply    |
+//| waited and the move was lost. Now the crossing is entered AT      |
+//| MARKET on that very tick: SL = opposite level, TP from the real   |
+//| entry, lot from the real entry-to-SL distance (risk unchanged).   |
+//| Safe-guards: the zone must have been seen first (no instant entry |
+//| on START with the price far outside), one position only, the      |
+//| previous closure must be booked first, optional max gap.          |
+//+------------------------------------------------------------------+
+void SyncAll();   // defined below
+
+bool CatchTick(const MqlTick &tk,const ulong now)
+  {
+   if(!InpFastCatch || InpEntryMode!=ENTRY_PENDING) return false;
+   if(g_state!=YT_ARMED && g_state!=YT_WAITING_REENTRY) { g_catchArmed=false; return false; }
+   if(g_buyLevel<=0.0 || g_sellLevel<=0.0 || g_buyLevel<=g_sellLevel) return false;
+   if(g_mode!=YM_BOTH && g_mode!=YM_BUY && g_mode!=YM_SELL) return false;
+   if(MathAbs(g_catchLb-g_buyLevel)>1e-9 || MathAbs(g_catchLs-g_sellLevel)>1e-9) { g_catchArmed=false; g_catchLb=g_buyLevel; g_catchLs=g_sellLevel; }   // new levels: the zone must be seen again
+   bool inside=(tk.bid>g_sellLevel && tk.ask<g_buyLevel);
+   if(inside) g_catchArmed=true;
+   else if(g_state==YT_WAITING_REENTRY && InpCatchAfterSL) g_catchArmed=true;
+   if(!g_catchArmed) return false;
+   int force=0;
+   if((g_mode==YM_BOTH || g_mode==YM_BUY)  && tk.ask>=g_buyLevel  && tk.bid>g_sellLevel) force=1;
+   else if((g_mode==YM_BOTH || g_mode==YM_SELL) && tk.bid<=g_sellLevel && tk.ask<g_buyLevel) force=2;
+   if(force==0 || now<g_nextCatchMs || g_busy) return false;
+   g_nextCatchMs=now+50;
+   //--- the server fills its own order: only a MISSING order needs the catch
+   if(SideOrderExists(force==1)) return false;
+   //--- one position at most, and the closure of the previous one is booked first (the risk of the new trade depends on it)
+   {
+    ulong pp[];
+    if(OwnPositions(pp)>0) return false;
+   }
+   if(ClosurePendingBlocks())
+     {
+      SyncAll();                                       // books the closing deal in milliseconds in the normal case
+      if(g_state!=YT_ARMED && g_state!=YT_WAITING_REENTRY) return false;
+      if(ClosurePendingBlocks()) return false;         // not booked yet: retried on the next tick (bounded to 20 s inside)
+     }
+   g_busy=true;
+   bool r=TryMarketReverse(force,true);
+   g_busy=false;
+   if(r)
+     {
+      //--- TryMarketReverse also returns true for "consumed, retry later" (requote, waiting volume ...): disarm only when a position really exists
+      ulong p2[];
+      if(OwnPositions(p2)>0) g_catchArmed=false;
+     }
+   return r;
+  }
+
+void CatchTimer()
+  {
+   if(!InpFastCatch) return;
+   MqlTick tk;
+   if(SymbolInfoTick(g_sym,tk) && tk.ask>0.0 && tk.bid>0.0) CatchTick(tk,GetTickCount64());
+  }
+
+//+------------------------------------------------------------------+
+//| v2.30 NETWORK SILENCE. MT5 runs an EA on ONE thread: while a      |
+//| WebRequest waits (up to its timeout) NO tick is processed - that  |
+//| was the "the bot froze and did not execute" in a fast move.       |
+//| The network is therefore silent while the market is hot.          |
+//+------------------------------------------------------------------+
+void HotTrack(const MqlTick &tk,const ulong now)
+  {
+   double mid=(tk.bid+tk.ask)*0.5;
+   if(g_hkMs==0 || now-g_hkMs>=1000) { g_hkMs=now; g_hkLo=mid; g_hkHi=mid; return; }
+   if(mid<g_hkLo) g_hkLo=mid;
+   if(mid>g_hkHi) g_hkHi=mid;
+   if(InpFastMovePts>0 && (g_hkHi-g_hkLo)>=(double)InpFastMovePts*g_point)
+      g_fastUntil=now+(ulong)MathMax(1,InpHotHoldSec)*1000;
+  }
+
+bool NetHot()
+  {
+   ulong now=GetTickCount64();
+   if(now<g_fastUntil) return true;
+   if(g_dirty) return true;                                   // a trade event is waiting to be processed
+   if(g_state==YT_BUY_ACTIVE || g_state==YT_SELL_ACTIVE)
+     {
+      ulong od[];
+      return OwnOrders(od)>0;                                 // the opposite pending order must disappear first
+     }
+   if(g_state!=YT_ARMED && g_state!=YT_WAITING_REENTRY) return false;
+   if(g_trig[0]>0.0 || g_trig[1]>0.0) return true;            // an order is waiting for the price to allow it
+   if(g_sync[0]==YS_CREATING || g_sync[1]==YS_CREATING) return true;
+   if(InpHotZone>0.0 && g_buyLevel>g_sellLevel && g_sellLevel>0.0)
+     {
+      MqlTick t;
+      if(SymbolInfoTick(g_sym,t) && t.ask>0.0 && t.bid>0.0)
+        {
+         if(t.ask>=g_buyLevel-InpHotZone || t.bid<=g_sellLevel+InpHotZone) return true;   // near / beyond a level (covers outside-the-zone too)
+        }
+     }
+   return false;
+  }
+
+//--- true = a WebRequest may run now. A hot market silences it, but never longer than InpNetMaxDeferSec
+bool NetAllowed()
+  {
+   if(!NetHot()) { g_netDeferSince=0; return true; }
+   ulong now=GetTickCount64();
+   if(g_netDeferSince==0) g_netDeferSince=now;
+   if(now-g_netDeferSince>=(ulong)MathMax(1,InpNetMaxDeferSec)*1000) { g_netDeferSince=now; return true; }
+   return false;
+  }
+
+int NetTimeout()
+  {
+   return MathMax(500,MathMin(5000,InpNetTimeoutMs));
   }
 
 //+------------------------------------------------------------------+
@@ -4631,7 +4343,7 @@ void Reconcile()
    if((needBuy && g_buyLevel<=0.0) || (needSell && g_sellLevel<=0.0)) return;
 
    //--- v2.00: optional market reversal when the stop-out already crossed the opposite level
-   if(g_state==YT_WAITING_REENTRY && (InpBreachPolicy==BREACH_MARKET || InpTurbo || InpEntryMode==ENTRY_VIRTUAL) && TryMarketReverse()) return;
+   if(g_state==YT_WAITING_REENTRY && (InpBreachPolicy==BREACH_MARKET || InpEntryMode==ENTRY_VIRTUAL) && TryMarketReverse()) return;
    if(InpEntryMode==ENTRY_VIRTUAL && needBuy && needSell && g_buyLevel>g_sellLevel) { VirtualEntryPass(); return; }
 
    //--- 0) manual changes in MT5 are DETECTED first (moved / deleted / SL-TP edited), then handled by the explicit policy
@@ -4685,9 +4397,9 @@ void Reconcile()
    if(InpCombinedMargin && needBuy && needSell && okB && okS && (keepT[0]==0 || keepT[1]==0))
      {
       double mB=0.0,mS=0.0,mNeed=0.0;
-      if(keepT[0]==0 && OrderCalcMargin(ORDER_TYPE_BUY, g_sym,expBuy, g_buyLevel, mB)) mNeed+=mB;
-      if(keepT[1]==0 && OrderCalcMargin(ORDER_TYPE_SELL,g_sym,expSell,g_sellLevel,mS)) mNeed+=mS;
-      double mFree=AccountInfoDouble(ACCOUNT_MARGIN_FREE);
+      if(keepT[0]==0 && OrderCalcMargin(ORDER_TYPE_BUY, g_sym,expBuy, g_buyLevel, mB)) mNeed+=AcM(mB);
+      if(keepT[1]==0 && OrderCalcMargin(ORDER_TYPE_SELL,g_sym,expSell,g_sellLevel,mS)) mNeed+=AcM(mS);
+      double mFree=AcM(AccountInfoDouble(ACCOUNT_MARGIN_FREE));
       if(mNeed>mFree+1e-9)
         {
          cmHold=true;
@@ -4723,11 +4435,11 @@ void Reconcile()
          g_trig[0]=WaitTrigger(true, g_buyLevel);
          g_trig[1]=WaitTrigger(false,g_sellLevel);
          string zt="Zone gate: waiting for the price to enter the zone (Sell "+PX(g_sellLevel)+" - Buy "+PX(g_buyLevel)+"); both orders are placed together";
-         //--- v2.22: the zone must be wider than both broker gaps, otherwise both orders can NEVER exist together
-         double zNeed=WaitGap(true)+WaitGap(false);          // v2.34: no live spread here - a spread spike must not raise a false "zone too narrow" alert
+         //--- v2.22: the zone must be wider than both broker gaps + the spread, otherwise both orders can NEVER exist together
+         double zNeed=WaitGap(true)+WaitGap(false)+LiveSpread();
          if(g_buyLevel-g_sellLevel<zNeed)
            {
-            zt="⚠️ ZONE TOO NARROW: width "+PX(g_buyLevel-g_sellLevel)+" < minimum "+PX(zNeed)+" (Stops Level x2). Both orders can never be placed together - widen the zone.";
+            zt="⚠️ ZONE TOO NARROW: width "+PX(g_buyLevel-g_sellLevel)+" < minimum "+PX(zNeed)+" (Stops Level x2 + spread). Both orders can never be placed together - widen the zone.";
             RaiseAlert("ZONENARROW",zt,true,true);
            }
          else ClearAlert("ZONENARROW");
@@ -4859,7 +4571,7 @@ bool ApplyLevels(const double buy,const double sell,const double risk,const stri
      }
 
    if(risk>0.0) g_initRisk=risk;
-   g_failCount=0; g_nextPlaceMs=0; g_sideNextMs[0]=0; g_sideNextMs[1]=0; g_blockReason="";
+   g_failCount=0; g_nextPlaceMs=0; g_blockReason="";
 
    //--- a sequence is running: it keeps its ORIGINAL levels, the new ones wait for the next TP
    if(locked)
@@ -4869,7 +4581,7 @@ bool ApplyLevels(const double buy,const double sell,const double risk,const stri
       g_fresh=true;
       YLog("New levels ("+src+") stored as PENDING: Buy "+PX(buy)+" Sell "+PX(sell)+" | running sequence keeps ORIGINAL levels Buy "+PX(g_buyLevel)+" Sell "+PX(g_sellLevel));
       if(g_state==YT_ERROR && (g_mode==YM_BUY || g_mode==YM_SELL)) g_state=YT_WAITING_REENTRY;
-      if(g_seq<=0) g_curRisk=g_initRisk;
+      if(g_accLoss<=1e-9) g_curRisk=g_initRisk;
       SaveState();
       g_dirty=true;
       SyncAll();
@@ -4908,7 +4620,7 @@ bool ApplyLevels(const double buy,const double sell,const double risk,const stri
          if(g_mode!=YM_BUY && g_mode!=YM_SELL) g_mode=YM_BOTH;   // ARMED single-side (sequence) keeps its side
          break;
      }
-   if(g_seq<=0) g_curRisk=g_initRisk;
+   if(g_accLoss<=1e-9) g_curRisk=g_initRisk;
    SaveState();
    g_dirty=true;
    SyncAll();
@@ -4932,7 +4644,7 @@ string LevelsAcceptedText()
 
 string DoStart(const string src)
   {
-   if(!IsGoldSymbol(g_sym)) return "❌ START FAILED\nReason: Symbol is not gold (XAUUSD / GOLD).";
+   if(StringFind(g_sym,"XAUUSD")<0) return "❌ START FAILED\nReason: Symbol is not XAUUSD.";
    if(!g_connected) return "❌ START FAILED\nReason: No connection to the trade server.";
    if(!TerminalInfoInteger(TERMINAL_TRADE_ALLOWED) || !MQLInfoInteger(MQL_TRADE_ALLOWED)) return "❌ START FAILED\nReason: AutoTrading is disabled.";
    if(!AccountInfoInteger(ACCOUNT_TRADE_ALLOWED) || !AccountInfoInteger(ACCOUNT_TRADE_EXPERT)) return "❌ START FAILED\nReason: Trading not allowed on this account.";
@@ -4955,7 +4667,7 @@ string DoStart(const string src)
    g_revFails=0; g_revHard=0; g_nextRevMs=0;
    if(resumeRev) { g_state=YT_WAITING_REENTRY; g_mode=YM_BOTH; }
    else { g_state=YT_ARMED; if(g_mode==YM_NONE) g_mode=YM_BOTH; }
-   g_stopCleanup=false; g_failCount=0; g_nextPlaceMs=0; g_sideNextMs[0]=0; g_sideNextMs[1]=0; g_blockReason="";
+   g_stopCleanup=false; g_failCount=0; g_nextPlaceMs=0; g_blockReason="";
    g_deferLvl[0]=0.0; g_deferLvl[1]=0.0;
    ResetSyncBackoff();
    SaveState();
@@ -5640,9 +5352,9 @@ void UpdatePanel()
      }
    UI_Val(13,lotTxt,lotCol);
    UI_Val(14,"$"+D2(g_accLoss));
-   UI_Val(15,"$"+D2(g_curRisk*GrowthFactor()));
-   UI_Val(16,"$"+D2(RequiredNet()));
-   UI_Val(17,(ok && est>0.0)?"1:"+DoubleToString(RequiredNet()/est,1):"n/a");
+   UI_Val(15,"$"+D2(NextRiskFor(g_accLoss+(ok?est:g_curRisk))));
+   UI_Val(16,ok?"$"+D2(est*g_rr):"n/a");
+   UI_Val(17,"1:"+DoubleToString(g_rr,0));
    UI_Val(18,g_connected?"ONLINE":"OFFLINE",g_connected?clrLime:clrTomato);
    double sp=(double)SymbolInfoInteger(g_sym,SYMBOL_SPREAD);
    UI_Val(19,DoubleToString(sp,0)+" pts",sp>(double)g_warn?clrTomato:clrWhite);
@@ -5698,8 +5410,8 @@ void PanelSaveSettings()
 
    if(tradeChanged)
      {
-      g_nextPlaceMs=0;           // v2.30: the target no longer sizes the risk, so the risk is untouched; the TP / lot follow on the next sync
-
+      g_curRisk=(g_accLoss>1e-9)?NextRiskFor(g_accLoss):g_initRisk;
+      g_nextPlaceMs=0;
       ResetSyncBackoff();
      }
    //--- never execute commands that piled up while Telegram was off or the bot changed
@@ -5891,19 +5603,6 @@ bool BrShared()
 int      g_brCv=0;                 // v2.19b: version of the Telegram config received from the Worker
 bool     g_brCvLoaded=false;
 datetime g_brLast=0;
-//--- v2.31 NETWORK PROTECTION: WebRequest is synchronous (the EA is blocked while it waits). Failed syncs back off 1,2,4,8,16,30 s instead of blocking for the full timeout every second;
-//--- the bridge and Telegram never both block the same timer tick; no network call while an entry trigger has just been reached (see NetDeferForEntry).
-ulong g_brNetBackoffUntil=0;
-int   g_brNetFails=0;
-bool  g_brNetThisTick=false;
-bool  g_brFastOn=false;            // v2.32: the Worker says an app is open right now -> the light fast lane may run
-ulong g_brLiteMs=0, g_brFullMs=0;  // start times of the last light / full exchange
-ulong g_brRtt=0;                   // smoothed WebRequest round trip (ms): the fast lane never blocks the trading thread more than ~1/3 of the time
-void  BrRttNote(const ulong ms) { g_brRtt=(g_brRtt==0)?ms:(g_brRtt*3+ms)/4; }
-int   g_netDefers=0;
-void  BrNetFail() { g_brNetFails++; g_brNetBackoffUntil=GetTickCount64()+(ulong)MathMin(30000.0,1000.0*MathPow(2.0,(double)MathMin(5,g_brNetFails-1))); }
-void  BrNetOk()   { g_brNetFails=0; g_brNetBackoffUntil=0; }
-void  BrUrlPin();   // defined with LoadAutoConfig below
 datetime g_brErrLog=0;
 bool     g_brOk=false;
 bool     g_brFirst=true;          // first successful sync: queued commands are discarded, never executed
@@ -5923,21 +5622,7 @@ string JEsc(const string s)
    StringReplace(r,"\r"," ");
    StringReplace(r,"\n"," | ");
    StringReplace(r,"\t"," ");
-   //--- v2.31: any OTHER control character (0x00-0x1F, 0x7F) is illegal inside a JSON string and made the Worker reject the whole body: replaced by a blank
-   int len=StringLen(r);
-   for(int i=0;i<len;i++)
-     {
-      ushort ch=StringGetCharacter(r,i);
-      if(ch<32 || ch==127) StringSetCharacter(r,i,32);
-     }
    return r;
-  }
-
-//--- v2.31: a number that is always valid JSON (NaN / infinity would otherwise produce "nan" / "inf" and corrupt the message)
-string JNumSafe(const double v,const int digits)
-  {
-   if(!MathIsValidNumber(v)) return "0";
-   return DoubleToString(v,digits);
   }
 
 //+------------------------------------------------------------------+
@@ -6264,7 +5949,7 @@ string BrCmdsJson()
      {
       if(i<n-1) out+=",";
       out+="{\"id\":\""+JEsc(g_cmId[i])+"\",\"cmd\":\""+JEsc(g_cmCmd[i])+"\",\"det\":\""+JEsc(g_cmDet[i])+"\",\"text\":\""+JEsc(g_cmTxt[i])+
-           "\",\"ok\":"+(g_cmOk[i]?"true":"false")+",\"st\":\""+JEsc(g_cmSt[i])+"\",\"wb\":"+JNumSafe(g_cmWB[i],g_digits)+",\"ws\":"+JNumSafe(g_cmWS[i],g_digits)+
+           "\",\"ok\":"+(g_cmOk[i]?"true":"false")+",\"st\":\""+g_cmSt[i]+"\",\"wb\":"+DoubleToString(g_cmWB[i],g_digits)+",\"ws\":"+DoubleToString(g_cmWS[i],g_digits)+
            ",\"ts\":"+IntegerToString(g_cmTs[i])+",\"t\":\""+TimeToString((datetime)g_cmTs[i],TIME_SECONDS)+"\"}";
      }
    out+="]";
@@ -6440,7 +6125,7 @@ string BsJson()
    MqlTick t;
    double bid=0.0, ask=0.0;
    if(SymbolInfoTick(g_sym,t)) { bid=t.bid; ask=t.ask; }
-   double tvl=SymbolInfoDouble(g_sym,SYMBOL_TRADE_TICK_VALUE_LOSS), tvp=SymbolInfoDouble(g_sym,SYMBOL_TRADE_TICK_VALUE_PROFIT);
+   double tvl=AcM(SymbolInfoDouble(g_sym,SYMBOL_TRADE_TICK_VALUE_LOSS)), tvp=AcM(SymbolInfoDouble(g_sym,SYMBOL_TRADE_TICK_VALUE_PROFIT));   // v2.30: main units
    double vmin=SymbolInfoDouble(g_sym,SYMBOL_VOLUME_MIN), vmax=SymbolInfoDouble(g_sym,SYMBOL_VOLUME_MAX), vst=SymbolInfoDouble(g_sym,SYMBOL_VOLUME_STEP), vlm=SymbolInfoDouble(g_sym,SYMBOL_VOLUME_LIMIT);
    long stops=SymbolInfoInteger(g_sym,SYMBOL_TRADE_STOPS_LEVEL), frz=SymbolInfoInteger(g_sym,SYMBOL_TRADE_FREEZE_LEVEL);
    long exe=SymbolInfoInteger(g_sym,SYMBOL_TRADE_EXEMODE), fil=SymbolInfoInteger(g_sym,SYMBOL_FILLING_MODE), exm=SymbolInfoInteger(g_sym,SYMBOL_EXPIRATION_MODE), tm=SymbolInfoInteger(g_sym,SYMBOL_TRADE_MODE);
@@ -6456,7 +6141,7 @@ string BsJson()
    j+=",\"contract\":"+JNum8(contract)+",\"tick\":"+JNum8(g_tick)+",\"tvl\":"+JNum8(tvl)+",\"tvp\":"+JNum8(tvp)+",\"point\":"+JNum8(g_point)+",\"digits\":"+IntegerToString(g_digits);
    j+=",\"stops\":"+IntegerToString((int)stops)+",\"freeze\":"+IntegerToString((int)frz)+",\"exe\":"+IntegerToString((int)exe)+",\"fill\":"+IntegerToString((int)fil)+",\"expm\":"+IntegerToString((int)exm)+",\"tmode\":"+IntegerToString((int)tm);
    j+=",\"ccy\":\""+JEsc(AccCcy())+"\",\"pccy\":\""+JEsc(SymbolInfoString(g_sym,SYMBOL_CURRENCY_PROFIT))+"\",\"hedge\":"+(AccountInfoInteger(ACCOUNT_MARGIN_MODE)==ACCOUNT_MARGIN_MODE_RETAIL_HEDGING?"true":"false");
-   j+=",\"bid\":"+DoubleToString(bid,g_digits)+",\"ask\":"+DoubleToString(ask,g_digits)+",\"spr\":"+DoubleToString((ask>=bid&&bid>0.0)?ask-bid:0.0,g_digits)+",\"maxSpr\":"+IntegerToString(InpMaxSpread)+",\"cpl\":"+D2(CommissionPerLot())+"}";
+   j+=",\"bid\":"+DoubleToString(bid,g_digits)+",\"ask\":"+DoubleToString(ask,g_digits)+",\"spr\":"+DoubleToString((ask>=bid&&bid>0.0)?ask-bid:0.0,g_digits)+",\"maxSpr\":"+IntegerToString(InpMaxSpread)+"}";
    return j;
   }
 
@@ -6478,20 +6163,9 @@ string RkJson()
       else st="NO_SPEC";
      }
    else if(r.clamped) st="CLAMPED";
-   string j="{\"side\":\""+(b?"BUY":"SELL")+"\",\"req\":"+D2(r.requested)+",\"raw\":"+JNum8(r.rawVol)+",\"vol\":"+JNum8(r.vol)+",\"vmin\":"+JNum8(r.minVol)+",\"eff\":"+D2(r.effective)+",\"minRisk\":"+D2(r.minRisk)+",\"perLot\":"+D2(r.perLot)+",\"cost\":"+D2(r.cost);
+   string j="{\"side\":\""+(b?"BUY":"SELL")+"\",\"req\":"+D2(r.requested)+",\"raw\":"+JNum8(r.rawVol)+",\"vol\":"+JNum8(r.vol)+",\"vmin\":"+JNum8(r.minVol)+",\"eff\":"+D2(r.effective)+",\"minRisk\":"+D2(r.minRisk)+",\"perLot\":"+D2(r.perLot);
    j+=",\"margin\":"+D2(r.margin)+",\"policy\":\""+r.policy+"\",\"status\":\""+st+"\",\"clamped\":"+(r.clamped?"true":"false")+",\"ccy\":\""+JEsc(AccCcy())+"\"}";
    return j;
-  }
-
-//--- v2.33: the measurement block the app shows (lane health, command latency, trigger -> order latency)
-string PerfJson()
-  {
-   ulong now=GetTickCount64();
-   string s="{\"fast\":"+(InpBrFastMs>0?"1":"0")+",\"on\":"+(g_brFastOn?"1":"0")+",\"susp\":"+(now<g_laneOffUntil?"1":"0")+",\"ms\":"+IntegerToString(InpBrFastMs);
-   s+=",\"rtt\":"+UL(g_brRtt)+",\"duty\":"+DoubleToString(DutyPct(),1)+",\"blk\":"+UL(g_brBlkMax)+",\"ln\":"+IntegerToString((int)MathMin(2000000000.0,(double)g_laneN))+",\"zone\":"+IntegerToString(g_laneZone);
-   s+=",\"hf\":"+UL(g_brHintFastMs)+",\"hs\":"+IntegerToString(g_brHintSyncSec)+",\"ia\":"+(g_brHintAct?"1":"0");
-   s+=",\"cmdL\":"+PfStat(g_pfCmdL,g_pfCmdLn)+",\"cmdF\":"+PfStat(g_pfCmdF,g_pfCmdFn)+",\"exec\":"+PfStat(g_pfExec,g_pfExecn)+",\"trig\":"+PfStat(g_pfTrig,g_pfTrign)+",\"rttS\":"+PfStat(g_pfRtt,g_pfRttn)+"}";
-   return s;
   }
 
 string BrStateJson()
@@ -6500,15 +6174,11 @@ string BrStateJson()
    bool frz=(g_state==YT_STOPPED);
    if(!frz) { g_frzBid=0.0; g_frzAsk=0.0; g_frzTs=0; }
    else if(g_frzBid<=0.0) { g_frzBid=SymbolInfoDouble(g_sym,SYMBOL_BID); g_frzAsk=SymbolInfoDouble(g_sym,SYMBOL_ASK); g_frzTs=(long)TimeCurrent(); }
-   //--- v2.32: ONE live tick (bid, ask and its own time) read from the connected broker - the card and the order engine read the same source
-   MqlTick lt; bool hasLt=SymbolInfoTick(g_sym,lt) && lt.bid>0.0 && lt.ask>0.0;
-   double liveBid=hasLt?lt.bid:SymbolInfoDouble(g_sym,SYMBOL_BID), liveAsk=hasLt?lt.ask:SymbolInfoDouble(g_sym,SYMBOL_ASK);
-   bool useFrz=(frz && InpFreezePriceWhenStopped);
-   s+="\"price\":"+DoubleToString(useFrz?g_frzBid:liveBid,g_digits);
-   s+=",\"ask\":"+DoubleToString(useFrz?g_frzAsk:liveAsk,g_digits)+",\"frzPx\":"+DoubleToString(frz?g_frzBid:0.0,g_digits)+",\"minDist\":"+DoubleToString(SymbolInfoInteger(g_sym,SYMBOL_TRADE_STOPS_LEVEL)*SymbolInfoDouble(g_sym,SYMBOL_POINT),g_digits);
+   s+="\"price\":"+DoubleToString(frz?g_frzBid:SymbolInfoDouble(g_sym,SYMBOL_BID),g_digits);
+   s+=",\"ask\":"+DoubleToString(frz?g_frzAsk:SymbolInfoDouble(g_sym,SYMBOL_ASK),g_digits)+",\"minDist\":"+DoubleToString(SymbolInfoInteger(g_sym,SYMBOL_TRADE_STOPS_LEVEL)*SymbolInfoDouble(g_sym,SYMBOL_POINT),g_digits);
    s+=",\"run\":"+(g_state==YT_STOPPED?"false":"true");
    s+=",\"frz\":"+(frz?"true":"false")+",\"frzT\":"+IntegerToString(g_frzTs);
-   s+=",\"state\":\""+JEsc(StateText())+"\"";
+   s+=",\"state\":\""+StateText()+"\"";
    string msg=g_blockReason;
    if(StringLen(msg)==0) msg=WaitNote();
    s+=",\"msg\":\""+JEsc(msg)+"\"";
@@ -6520,13 +6190,13 @@ string BrStateJson()
       ",\"ping\":"+IntegerToString((int)(TerminalInfoInteger(TERMINAL_PING_LAST)/1000))+"}";
    s+=",\"mode\":\""+(g_mode==YM_BOTH?"BOTH":(g_mode==YM_BUY?"BUY":(g_mode==YM_SELL?"SELL":"NONE")))+"\"";
    s+=",\"buy\":"+DoubleToString(g_buyLevel,g_digits)+",\"sell\":"+DoubleToString(g_sellLevel,g_digits);
-   s+=",\"risk\":"+D2(g_initRisk)+",\"cur\":"+DoubleToString(g_curRisk,4)+",\"acc\":"+D2(g_accLoss)+",\"bank\":"+D2(g_banked)+",\"grow\":"+DoubleToString(GrowthFactor(),6);
+   s+=",\"risk\":"+D2(g_initRisk)+",\"cur\":"+D2(g_curRisk)+",\"acc\":"+D2(g_accLoss);
    s+=",\"rstStart\":"+(InpResetRiskOnStart?"true":"false");   // v2.29: the app warns that START after STOP clears the loss when this is on
    s+=",\"seq\":"+IntegerToString(g_seq)+",\"no\":"+IntegerToString(g_tradeNo);
    s+=",\"target\":"+D2(g_target)+",\"rr\":"+DoubleToString(g_rr,2);
    s+=",\"maxDev\":"+IntegerToString(g_maxDev)+",\"warn\":"+IntegerToString(g_warn);
    s+=",\"breach\":\""+(InpBreachPolicy==BREACH_MARKET?"MARKET":"WAIT")+"\",\"entry\":\""+(InpEntryMode==ENTRY_PENDING?"PENDING":"VIRTUAL")+"\"";
-   s+=",\"wcode\":\""+JEsc(frz?"":g_wcode)+"\",\"bs\":"+BsJson()+",\"rk\":"+RkJson();
+   s+=",\"wcode\":\""+(frz?"":g_wcode)+"\",\"bs\":"+BsJson()+",\"rk\":"+RkJson();
    s+=",\"spread\":"+IntegerToString((int)SymbolInfoInteger(g_sym,SYMBOL_SPREAD));
    if(g_fresh && g_pendBuy>0.0 && g_pendSell>0.0)
       s+=",\"pend\":{\"buy\":"+DoubleToString(g_pendBuy,g_digits)+",\"sell\":"+DoubleToString(g_pendSell,g_digits)+",\"risk\":"+D2(g_initRisk)+",\"target\":"+D2(g_target)+",\"rr\":"+DoubleToString(g_rr,2)+"}";
@@ -6546,26 +6216,15 @@ string BrStateJson()
       ",\"avgW\":"+D2(g_st.avgProfit)+",\"avgL\":"+D2(g_st.avgLoss)+",\"maxW\":"+D2(g_st.maxProfit)+",\"maxL\":"+D2(g_st.maxLoss)+",\"pf\":"+D2(pf)+
       ",\"streak\":"+IntegerToString((int)g_st.streak)+",\"comm\":"+D2(g_st.commission)+",\"swap\":"+D2(g_st.swap)+",\"vol\":"+DoubleToString(g_st.volume,g_lotDigits)+
       ",\"hiRisk\":"+D2(g_st.highRisk)+",\"hiLot\":"+DoubleToString(g_st.highLot,g_lotDigits)+"}";
-   s+=",\"acct\":{\"bal\":"+D2(AccountInfoDouble(ACCOUNT_BALANCE))+",\"eq\":"+D2(AccountInfoDouble(ACCOUNT_EQUITY))+",\"mg\":"+D2(AccountInfoDouble(ACCOUNT_MARGIN))+
-      ",\"fm\":"+D2(AccountInfoDouble(ACCOUNT_MARGIN_FREE))+",\"fl\":"+D2(AccountInfoDouble(ACCOUNT_PROFIT))+",\"lev\":"+IntegerToString((int)AccountInfoInteger(ACCOUNT_LEVERAGE))+
-      ",\"cur\":\""+JEsc(AccountInfoString(ACCOUNT_CURRENCY))+"\",\"login\":"+IntegerToString((long)AccountInfoInteger(ACCOUNT_LOGIN))+",\"srv\":\""+JEsc(AccountInfoString(ACCOUNT_SERVER))+"\"";
+   s+=",\"acct\":{\"bal\":"+D2(AcM(AccountInfoDouble(ACCOUNT_BALANCE)))+",\"eq\":"+D2(AcM(AccountInfoDouble(ACCOUNT_EQUITY)))+",\"mg\":"+D2(AcM(AccountInfoDouble(ACCOUNT_MARGIN)))+
+      ",\"fm\":"+D2(AcM(AccountInfoDouble(ACCOUNT_MARGIN_FREE)))+",\"fl\":"+D2(AcM(AccountInfoDouble(ACCOUNT_PROFIT)))+",\"lev\":"+IntegerToString((int)AccountInfoInteger(ACCOUNT_LEVERAGE))+
+      ",\"cur\":\""+JEsc(AccCcy())+"\",\"login\":"+IntegerToString((long)AccountInfoInteger(ACCOUNT_LOGIN))+",\"srv\":\""+JEsc(AccountInfoString(ACCOUNT_SERVER))+"\"";
    int npos=0; double ovol=BrOpenVolume(npos);
    s+=",\"ovol\":"+DoubleToString(ovol,g_lotDigits)+",\"np\":"+IntegerToString(npos)+",\"ml\":"+D2(AccountInfoDouble(ACCOUNT_MARGIN_LEVEL))+"}";
-   s+=",\"perf\":"+PerfJson();
    if(StringLen(g_brLastId)>0)
       s+=",\"lastCmd\":{\"id\":\""+JEsc(g_brLastId)+"\",\"ok\":"+(g_brLastOk?"true":"false")+",\"text\":\""+JEsc(g_brLastText)+"\"}";
    s+="}";
    return s;
-  }
-
-//--- v2.31: ONE ownership rule for every ticket-based Mini App command (modify AND delete): the ticket must be a live order of THIS bot (symbol + magic), nothing else
-bool OwnOrderTicket(const double tkd)
-  {
-   if(!MathIsValidNumber(tkd) || tkd<=0.0 || tkd!=MathFloor(tkd) || tkd>9.0e15) return false;   // not a plausible ticket
-   ulong od[];
-   int n=OwnOrders(od);
-   for(int i=0;i<n;i++) if(od[i]==(ulong)tkd) return true;
-   return false;
   }
 
 //--- executes ONE command through the existing Telegram-command functions
@@ -6596,7 +6255,6 @@ string BrExec(const string cmd,const string seg)
          if(sdl!="BUY" && sdl!="SELL") return "❌ Invalid command: order ticket or side missing.";
          return ExecDeleteLevel(sdl=="BUY","MiniApp");
         }
-      if(!OwnOrderTicket(tkd)) return "❌ Order not found (not a Yetimmm order, already filled or deleted).";
       return ExecDeleteOrder((ulong)tkd,"MiniApp");
      }
    if(cmd=="delpend")
@@ -6633,7 +6291,7 @@ string BrExec(const string cmd,const string seg)
            }
          else
            {
-            if(!OwnOrderTicket(tkm) || !OrderSelect((ulong)tkm)) return "❌ Order not found (not a Yetimmm order, already filled or deleted).";   // v2.31: same ownership rule as delete
+            if(!OrderSelect((ulong)tkm)) return "❌ Order not found (already filled or deleted).";
             long ty=OrderGetInteger(ORDER_TYPE);
             if(ty!=ORDER_TYPE_BUY_STOP && ty!=ORDER_TYPE_SELL_STOP) return "❌ Only Buy Stop / Sell Stop orders can be modified.";
             isBuy=(ty==ORDER_TYPE_BUY_STOP);
@@ -6696,8 +6354,8 @@ string BrExec(const string cmd,const string seg)
       else res="✅ Settings updated.";
       if(tradeChanged)
         {
+         g_curRisk=(g_accLoss>1e-9)?NextRiskFor(g_accLoss):g_initRisk;
          g_nextPlaceMs=0;
-
          ResetSyncBackoff();
          CfgPutAll();
          CfgSaveFile();
@@ -6710,94 +6368,12 @@ string BrExec(const string cmd,const string seg)
    return "❌ Unknown command: "+cmd;
   }
 
-//--- v2.32: the command loop of the sync reply, shared by the full sync and the light fast lane (same dedup, same TTL, same executor)
-//--- v2.33: BrHints reads the Worker pace hints of a sync reply (fm = minimum lane interval ms, sm = full-sync seconds, ia = the user is interacting)
-void BrHints(const string resp)
-  {
-   double v=0.0;
-   g_brHintFastMs=(JDbl(resp,"fm",v) && v>0.0)?(ulong)MathMin(5000.0,v):0;
-   g_brHintSyncSec=(JDbl(resp,"sm",v) && v>=1.0)?(int)MathMin(10.0,v):1;
-   g_brHintAct=(StringFind(resp,"\"ia\":true")>=0);
-  }
-
-void BrRunCommands(const string resp,const bool viaLane)
-  {
-   int cpos=StringFind(resp,"\"commands\":");
-   if(cpos<0) { g_brFirst=false; return; }
-   string sub=StringSubstr(resp,cpos);
-   string marker="\"id\":\"";
-   int mlen=StringLen(marker);
-   int p=0;
-   int discarded=0;
-   while(true)
-     {
-      int a=StringFind(sub,marker,p);
-      if(a<0) break;
-      int b=StringFind(sub,marker,a+mlen);
-      string seg=(b<0)?StringSubstr(sub,a):StringSubstr(sub,a,b-a);
-      p=a+mlen;
-      string id=JStr(seg,marker);
-      string cmd=JStr(seg,"\"cmd\":\"");
-      StringToLower(cmd);
-      if(StringLen(id)==0) continue;
-      if(g_brFirst || BrSeen(id))
-        {
-         if(g_brFirst) discarded++;
-         BrAckAdd(id);                  // never execute twice / never execute what piled up while the EA was off
-         continue;
-        }
-      BrRemember(id);
-      double cage=0.0;
-      if(InpCmdTtlSec>0 && JDbl(seg,"age",cage) && cage>(double)InpCmdTtlSec)
-        {
-         //--- v2.23 COMMAND TTL: an old command is EXPIRED - acked, never executed, and the app is told
-         YLog("Mini App Command EXPIRED (age "+DoubleToString(cage,0)+" s > "+IntegerToString(InpCmdTtlSec)+" s): "+cmd);
-         g_brLastId=id; g_brLastOk=false; g_brLastText="Command expired - not executed. Please try again.";
-         BrCmdAdd(id,cmd,"","⌛ EXPIRED (age "+DoubleToString(cage,0)+" s) - not executed",false);
-         BrAckAdd(id);
-         continue;
-        }
-      double ams=0.0;
-      if(JDbl(seg,"ams",ams)) { double lat=ams+(double)g_brRtt/2.0; if(viaLane) PfAdd(g_pfCmdL,g_pfCmdLn,lat); else PfAdd(g_pfCmdF,g_pfCmdFn,lat); }   // v2.33: tap reached the Worker -> command reached the EA
-      string sigNow=cmd+"|"+BrCmdDetail(cmd,seg);
-      if((cmd=="apply" || cmd=="modify" || cmd=="place" || cmd=="delete" || cmd=="settings" || cmd=="start" || cmd=="stop" || cmd=="close" || cmd=="reset" || cmd=="cancel" || cmd=="delpend") && sigNow==g_brSig && GetTickCount64()-g_brSigMs<3000)
-        {
-         YLog("Mini App Command ignored (duplicate within 3 s): "+cmd);
-         BrAckAdd(id);
-         continue;
-        }
-      g_brSig=sigNow; g_brSigMs=GetTickCount64();
-      YLog("Mini App Command Received: "+cmd);
-      string det=BrCmdDetail(cmd,seg);
-      ulong ex0=GetTickCount64();
-      string result=BrExec(cmd,seg);
-      PfAdd(g_pfExec,g_pfExecn,(double)(GetTickCount64()-ex0));     // v2.33: EA -> broker answer for this command
-      YLog("Mini App Command Result: "+result);
-      g_brLastId=id;
-      g_brLastOk=(StringFind(result,"❌")<0);
-      BrCmdAdd(id,cmd,det,result,g_brLastOk);        // v2.14: the command appears in the app's log
-      string one=result;
-      StringReplace(one,"\n"," | ");
-      g_brLastText=(StringLen(one)>160)?StringSubstr(one,0,160):one;
-      BrAckAdd(id);
-      TgQueue("📱 Mini App → "+cmd+"\n"+result);
-      g_brLast=0;                       // sync again on the next timer tick: ack + fresh state
-     }
-   if(g_brFirst && discarded>0) YLog("Mini App bridge: "+IntegerToString(discarded)+" queued command(s) discarded on startup (not executed).");
-   g_brFirst=false;
-  }
-
 void BridgeSync()
   {
    if(!InpBrEnable || MQLInfoInteger(MQL_TESTER)) return;
    if(StringLen(g_brUrl)<12 || StringLen(BrKeyEff())<8) return;
-   { string lo=g_brUrl; StringToLower(lo); if(StringFind(lo,"https://")!=0) return; }   // v2.31: never send the EA secret over plain http
-   int syncGap=g_evNow?MathMax(1,InpBrPollSec):MathMax(MathMax(1,InpBrPollSec),g_brHintSyncSec);   // v2.33: the Worker may ask for a slower full sync (no app open / Cloudflare budget tight, <= 5 s); a waiting notification bypasses it
-   if(TimeLocal()-g_brLast<syncGap) return;
-   if(GetTickCount64()<g_brNetBackoffUntil) return;       // v2.31: backing off after a failed / slow sync
+   if(TimeLocal()-g_brLast<MathMax(1,InpBrPollSec)) return;
    g_brLast=TimeLocal();
-   g_evNow=false;
-   g_brFullMs=GetTickCount64();
 
    if(!g_brCvLoaded) { g_brCv=(int)StringToInteger(CfgGet("brcv","0")); g_brCvLoaded=true; }
    if(!g_brPairLoaded) { g_brPairNeed=(CfgGet("brpaired","0")!="1"); g_brPairLoaded=true; }
@@ -6827,15 +6403,11 @@ void BridgeSync()
    string pairCode=g_brPair;
    StringTrimLeft(pairCode); StringTrimRight(pairCode);
    if(g_brPairNeed && StringLen(pairCode)>0) hdr+="X-EA-Pair: "+pairCode+"\r\n";   // sent ONLY until the Worker confirmed the pairing (and again if it ever asks for it)
-   g_brNetThisTick=true;
-   ulong rq0=GetTickCount64();
-   int code=WebRequest("POST",url,hdr,(calSending?4000:2000),data,res,rh);
-   BrRttNote(GetTickCount64()-rq0);   // v2.31: 2 s (was 3 s); 4 s only while the big calendar table is being uploaded
+   int code=WebRequest("POST",url,hdr,NetTimeout(),data,res,rh);
    if(code==-1)
      {
       int e=GetLastError();
       g_brOk=false;
-      BrNetFail();
       if(TimeLocal()-g_brErrLog>=60)
         {
          g_brErrLog=TimeLocal();
@@ -6852,17 +6424,16 @@ void BridgeSync()
    if(code!=200 || StringFind(resp,"\"ok\":true")<0)
      {
       g_brOk=false;
-      BrNetFail();
       string werr=JStr(resp,"\"error\":\"");
       if(werr=="secret" || werr=="pair_required") g_brPairNeed=true;       // the Worker does not know this EA's secret: present the pairing code on the next sync
       if(TimeLocal()-g_brErrLog>=60)
         {
          g_brErrLog=TimeLocal();
-         if(werr=="pair_required")     YLog("Mini App bridge: this MT5 account is NOT PAIRED yet - run `npm run setup` (or set InpBrPairCode to the Worker secret PAIR_CODE).");
-         else if(werr=="pair_bad")     YLog("Mini App bridge: pairing code REJECTED - the pairing code must equal the Worker secret PAIR_CODE (Yetimmm.cfg / InpBrPairCode).");
+         if(werr=="pair_required")     YLog("Mini App bridge: this MT5 account is NOT PAIRED yet - run `npm run setup` (or set InpBrPairCode to the Worker secret PAIR_CODE (or the app password if PAIR_CODE is not set).");
+         else if(werr=="pair_bad")     YLog("Mini App bridge: pairing code REJECTED - the pairing code must equal the Worker secret PAIR_CODE (or APP_PASSWORD when PAIR_CODE is not set).");
          else if(werr=="pair_locked")  YLog("Mini App bridge: too many wrong pairing codes - pairing is locked for a few minutes.");
-         else if(werr=="secret")       YLog(StringLen(pairCode)>0?"Mini App bridge: account not paired yet, or bound to another EA install - sending the pairing code (InpBrPairCode / Yetimmm.cfg).":"Mini App bridge: account not paired yet, or bound to another EA install (or the EA settings file was lost) - run `npm run setup` or set InpBrPairCode to pair.");
-         else if(werr=="pair_not_configured") YLog("Mini App bridge: HTTP 503 pair_not_configured - the Worker has no PAIR_CODE. Run `npm run setup` (it stores PAIR_CODE as a Worker secret) or: npx wrangler secret put PAIR_CODE  (value must equal the pair= line of Yetimmm.cfg / InpBrPairCode).");
+         else if(werr=="secret")       YLog(StringLen(pairCode)>0?"Mini App bridge: this account is bound to another EA install - re-pairing with InpBrPairCode.":"Mini App bridge: this account is bound to another EA install (or the EA settings file was lost) - set InpBrPairCode to re-pair.");
+         else if(werr=="pair_not_configured") YLog("Mini App bridge: HTTP 503 pair_not_configured - the Worker has no PAIR_CODE. Deploy worker/wrangler.toml (it now carries PAIR_CODE) or run: npx wrangler secret put PAIR_CODE  (value must equal InpBrPairCode).");
          else if(werr=="not_configured")    YLog("Mini App bridge: HTTP 503 not_configured - the Worker has no APP_PASSWORD secret (npx wrangler secret put APP_PASSWORD).");
          else if(werr!="")                  YLog("Mini App bridge: HTTP "+IntegerToString(code)+" - Worker answered '"+werr+"'.");
          else if(code==404)                 YLog("Mini App bridge: HTTP 404 - Worker URL is wrong (check the Worker URL: "+UrlOrigin(g_brUrl)+").");
@@ -6872,10 +6443,6 @@ void BridgeSync()
      }
    if(!g_brOk) YLog("Mini App bridge: connected.");
    g_brOk=true;
-   BrNetOk();
-   g_brFastOn=(StringFind(resp,"\"fast\":true")>=0);   // v2.32: an app is open -> light fast lane
-   BrHints(resp);                       // v2.33: pace hints
-   BrUrlPin();                          // v2.31: the Worker that answered is now the pinned one
    //--- v2.21 pairing: the Worker mints the EA secret (CSPRNG) when the pairing code is accepted; store it and stop sending the code
    string mintedSecret=JStr(resp,"\"es\":\"");
    if(StringLen(mintedSecret)>=32)
@@ -6950,60 +6517,85 @@ void BridgeSync()
         }
      }
 
-   BrRunCommands(resp,false);
+   int cpos=StringFind(resp,"\"commands\":");
+   if(cpos<0) { g_brFirst=false; return; }
+   string sub=StringSubstr(resp,cpos);
+   string marker="\"id\":\"";
+   int mlen=StringLen(marker);
+   int p=0;
+   int discarded=0;
+   while(true)
+     {
+      int a=StringFind(sub,marker,p);
+      if(a<0) break;
+      int b=StringFind(sub,marker,a+mlen);
+      string seg=(b<0)?StringSubstr(sub,a):StringSubstr(sub,a,b-a);
+      p=a+mlen;
+      string id=JStr(seg,marker);
+      string cmd=JStr(seg,"\"cmd\":\"");
+      StringToLower(cmd);
+      if(StringLen(id)==0) continue;
+      if(g_brFirst || BrSeen(id))
+        {
+         if(g_brFirst) discarded++;
+         BrAckAdd(id);                  // never execute twice / never execute what piled up while the EA was off
+         continue;
+        }
+      BrRemember(id);
+      double cage=0.0;
+      if(InpCmdTtlSec>0 && JDbl(seg,"age",cage) && cage>(double)InpCmdTtlSec)
+        {
+         //--- v2.23 COMMAND TTL: an old command is EXPIRED - acked, never executed, and the app is told
+         YLog("Mini App Command EXPIRED (age "+DoubleToString(cage,0)+" s > "+IntegerToString(InpCmdTtlSec)+" s): "+cmd);
+         g_brLastId=id; g_brLastOk=false; g_brLastText="Command expired - not executed. Please try again.";
+         BrCmdAdd(id,cmd,"","⌛ EXPIRED (age "+DoubleToString(cage,0)+" s) - not executed",false);
+         BrAckAdd(id);
+         continue;
+        }
+      string sigNow=cmd+"|"+BrCmdDetail(cmd,seg);
+      if((cmd=="apply" || cmd=="modify" || cmd=="place" || cmd=="delete" || cmd=="settings" || cmd=="start" || cmd=="stop" || cmd=="close" || cmd=="reset" || cmd=="cancel" || cmd=="delpend") && sigNow==g_brSig && GetTickCount64()-g_brSigMs<3000)
+        {
+         YLog("Mini App Command ignored (duplicate within 3 s): "+cmd);
+         BrAckAdd(id);
+         continue;
+        }
+      g_brSig=sigNow; g_brSigMs=GetTickCount64();
+      YLog("Mini App Command Received: "+cmd);
+      string det=BrCmdDetail(cmd,seg);
+      string result=BrExec(cmd,seg);
+      YLog("Mini App Command Result: "+result);
+      g_brLastId=id;
+      g_brLastOk=(StringFind(result,"❌")<0);
+      BrCmdAdd(id,cmd,det,result,g_brLastOk);        // v2.14: the command appears in the app's log
+      string one=result;
+      StringReplace(one,"\n"," | ");
+      g_brLastText=(StringLen(one)>160)?StringSubstr(one,0,160):one;
+      BrAckAdd(id);
+      TgQueue("📱 Mini App → "+cmd+"\n"+result);
+      g_brLast=0;                       // sync again on the next timer tick: ack + fresh state
+     }
+   if(g_brFirst && discarded>0) YLog("Mini App bridge: "+IntegerToString(discarded)+" queued command(s) discarded on startup (not executed).");
+   g_brFirst=false;
   }
 
 //--- v2.27: zero-typing setup. `npm run setup` writes Common\Files\Yetimmm.cfg (url=..., pair=...). Inputs, if filled, win.
-//--- v2.31 URL SAFETY: (1) the Worker URL must be https:// (the EA secret and the pairing code travel in the headers); (2) PINNING: once this account synced with a Worker, a URL that
-//--- comes from the shared Common\\Files\\Yetimmm.cfg (any program on this PC can edit it) is ignored if it points anywhere else: otherwise a changed cfg could send the EA secret to a
-//--- foreign server and let it return trade commands. A URL typed into the EA input InpBrUrl is the owner's explicit choice: it wins and becomes the new pin.
-void BrUrlGuard(const bool fromCfg)
-  {
-   if(StringLen(g_brUrl)==0) return;
-   string low=g_brUrl;
-   StringToLower(low);
-   if(StringFind(low,"https://")!=0)
-     {
-      YLog("Mini App bridge: URL REFUSED - the Worker URL must start with https:// (secret + pairing code would travel in clear text). Fix InpBrUrl / Yetimmm.cfg.");
-      g_brUrl="";
-      return;
-     }
-   string pin=CfgGet("brhost","");
-   string org=UrlOrigin(g_brUrl);
-   StringToLower(org);
-   if(fromCfg && StringLen(pin)>0 && pin!=org)
-     {
-      YLog("Mini App bridge: URL REFUSED - Yetimmm.cfg points to "+org+" but this account is paired with "+pin+". If you moved the Worker on purpose, type the new URL into the input InpBrUrl (it re-pins).");
-      g_brUrl="";
-     }
-  }
-
-void BrUrlPin()
-  {
-   string org=UrlOrigin(g_brUrl);
-   StringToLower(org);
-   if(StringLen(org)>8 && CfgGet("brhost","")!=org) { CfgSet("brhost",org); CfgSaveFile(); }
-  }
-
 void LoadAutoConfig()
   {
    g_brUrl=InpBrUrl; g_brPair=InpBrPairCode;
    StringTrimLeft(g_brUrl); StringTrimRight(g_brUrl); StringTrimLeft(g_brPair); StringTrimRight(g_brPair);
-   if(StringLen(g_brUrl)>=12 && StringLen(g_brPair)>0) { BrUrlGuard(false); return; }
-   bool urlFromCfg=false;
+   if(StringLen(g_brUrl)>=12 && StringLen(g_brPair)>0) return;
    int h=FileOpen("Yetimmm.cfg",FILE_READ|FILE_TXT|FILE_ANSI|FILE_COMMON);
-   if(h==INVALID_HANDLE) { if(StringLen(g_brUrl)<12) YLog("Mini App bridge: Yetimmm.cfg not found in the Common Files folder - run `npm run setup` (or fill InpBrUrl / InpBrPairCode)."); BrUrlGuard(false); return; }
+   if(h==INVALID_HANDLE) { if(StringLen(g_brUrl)<12) YLog("Mini App bridge: Yetimmm.cfg not found in the Common Files folder - run `npm run setup` (or fill InpBrUrl / InpBrPairCode)."); return; }
    while(!FileIsEnding(h))
      {
       string ln=FileReadString(h); StringTrimLeft(ln); StringTrimRight(ln);
       int eq=StringFind(ln,"="); if(eq<1) continue;
       string k=StringSubstr(ln,0,eq), v=StringSubstr(ln,eq+1);
       StringTrimLeft(v); StringTrimRight(v); StringToLower(k);
-      if(k=="url"  && StringLen(g_brUrl)<12)  { g_brUrl=v; urlFromCfg=true; }
+      if(k=="url"  && StringLen(g_brUrl)<12)  g_brUrl=v;
       if(k=="pair" && StringLen(g_brPair)==0) g_brPair=v;
      }
    FileClose(h);
-   BrUrlGuard(urlFromCfg);
    YLog("Mini App bridge: configuration loaded automatically (Yetimmm.cfg).");
   }
 
@@ -7179,12 +6771,14 @@ int OnInit()
    g_magic=InpMagic;
    g_instId=StringFormat("%I64d-%I64d-%d",(long)TimeLocal(),(long)ChartID(),(int)(GetTickCount64()%100000));
    g_dupSince=0;
-   if(!IsGoldSymbol(g_sym))
+   string up=g_sym;
+   StringToUpper(up);
+   if(StringFind(up,"XAUUSD")<0)
      {
-      Alert("Yetimmm works on gold only (XAUUSD / GOLD, any broker suffix). Current symbol: ",g_sym);
+      Alert("Yetimmm works on XAUUSD only. Current symbol: ",g_sym);
       return INIT_FAILED;
      }
-   if(InpRiskReward<=0.0 || InpTargetProfit<0.0 || InpInitialRisk<=0.0 || InpRiskGrowthPct<0.0 || InpNetTolerance<0.0 || InpMaxDeviation<0 || InpWarnSpread<0 || InpProtectCloseSec<0)
+   if(InpRiskReward<=0.0 || InpTargetProfit<0.0 || InpInitialRisk<=0.0 || InpMaxDeviation<0 || InpWarnSpread<0 || InpProtectCloseSec<0)
      {
       Alert("Yetimmm: invalid inputs (Initial Risk and Risk/Reward must be > 0; Target, Deviation and Spread must be >= 0).");
       return INIT_PARAMETERS_INCORRECT;
@@ -7207,6 +6801,9 @@ int OnInit()
    while(g_lotDigits<8 && MathAbs(st*MathPow(10,g_lotDigits)-MathRound(st*MathPow(10,g_lotDigits)))>1e-9) g_lotDigits++;
 
    g_contract=SymbolInfoDouble(g_sym,SYMBOL_TRADE_CONTRACT_SIZE);
+   g_mscale=DetectMoneyScale();
+   if(g_mscale>1.0)
+      Print("[Yetimmm] CENT SUPPORT: account currency "+AccCcyRaw()+" - every money figure is in "+AccCcy()+" (1 "+AccCcy()+" = "+DoubleToString(g_mscale,0)+" "+AccCcyRaw()+"). Risk / Target are entered in "+AccCcy()+" exactly like a standard account.");
    CfgInit();                          // runtime configuration: inputs + values saved from the panel
    g_uiTgEn=g_tgEn; g_uiTgNot=g_tgNot; g_uiTgCtl=g_tgCtl;
 
@@ -7214,11 +6811,9 @@ int OnInit()
    g_trade.SetDeviationInPoints(g_maxDev);
    g_trade.SetTypeFillingBySymbol(g_sym);
    g_trade.SetAsyncMode(false);
-   RefreshBrokerSpec();                // v2.32: the first reading is also the baseline for change detection
    MathSrand((int)GetTickCount());
 
    YLog("EA Started | "+g_sym+" | magic "+IntegerToString(g_magic));
-   if(InpExecSelfTest) ExecSelfTest();   // v2.34: pure checks only, nothing is sent
    g_netting=IsNettingAccount();
    if(g_netting)
      {
@@ -7271,7 +6866,7 @@ int OnInit()
    ChartSetInteger(0,CHART_SHOW_TRADE_LEVELS,true);   // real pending-order / SL / TP levels are drawn by MT5 itself
    CreatePanel();
    BrCmdLoad();
-   EventSetMillisecondTimer(100);   // v2.32: fast path every 100 ms (fast lane), slow path once per second
+   EventSetMillisecondTimer(200);   // v2.13: fast path every 200 ms (Telegram), slow path once per second
    SyncAll();
    UpdatePanel();
    TgQueue("✅ Yetimmm Started\nStatus: "+RunStatus()+"\nState: "+StateText()+"\nBuy Stop: "+PX(g_buyLevel)+"\nSell Stop: "+PX(g_sellLevel)+"\nRisk: $"+D2(g_curRisk)+
@@ -7299,87 +6894,23 @@ void OnDeinit(const int reason)
    YLog("EA stopped (reason "+IntegerToString(reason)+")."+((wasOwner||(g_inited && !g_halt))?" State saved.":" (this copy never owned the instance lock - nothing saved)."));
   }
 
-//--- v2.32 BROKER BINDING: every property that depends on the broker is re-read once per second (digits, point, tick size, contract size, volume step, filling mode) and the account / server
-//--- is watched. Whatever broker or account the terminal is connected to is the one the card, the lot calculation and every order use - nothing is frozen at attach time.
-string g_specSig="";
-void RefreshBrokerSpec()
-  {
-   if(StringLen(g_sym)==0) return;
-   if(!TerminalInfoInteger(TERMINAL_CONNECTED)) return;           // not connected: keep the last known specification
-   SymbolSelect(g_sym,true);
-   int    dg=(int)SymbolInfoInteger(g_sym,SYMBOL_DIGITS);
-   double pt=SymbolInfoDouble(g_sym,SYMBOL_POINT);
-   if(pt<=0.0) return;                                            // symbol data not loaded yet
-   double tk=SymbolInfoDouble(g_sym,SYMBOL_TRADE_TICK_SIZE); if(tk<=0.0) tk=pt;
-   double ct=SymbolInfoDouble(g_sym,SYMBOL_TRADE_CONTRACT_SIZE);
-   double st=SymbolInfoDouble(g_sym,SYMBOL_VOLUME_STEP);
-   long   fm=SymbolInfoInteger(g_sym,SYMBOL_FILLING_MODE);
-   string sig=IntegerToString((long)AccountInfoInteger(ACCOUNT_LOGIN))+"|"+AccountInfoString(ACCOUNT_SERVER)+"|"+IntegerToString(dg)+"|"+DoubleToString(pt,10)+"|"+DoubleToString(tk,10)+"|"+
-              DoubleToString(ct,4)+"|"+DoubleToString(st,8)+"|"+IntegerToString((int)fm);
-   if(sig==g_specSig) return;
-   bool first=(StringLen(g_specSig)==0);
-   g_specSig=sig;
-   g_digits=dg; g_point=pt; g_tick=tk;
-   if(ct>0.0) g_contract=ct;
-   if(st>0.0)
-     {
-      g_lotDigits=0;
-      while(g_lotDigits<8 && MathAbs(st*MathPow(10,g_lotDigits)-MathRound(st*MathPow(10,g_lotDigits)))>1e-9) g_lotDigits++;
-     }
-   g_trade.SetTypeFillingBySymbol(g_sym);                          // the order filling policy follows THIS broker's symbol
-   if(!first)
-     {
-      YLog("BROKER / ACCOUNT SPEC CHANGED -> re-read: "+AccountInfoString(ACCOUNT_SERVER)+" | "+g_sym+" | digits "+IntegerToString(dg)+" | tick "+DoubleToString(tk,dg)+" | contract "+DoubleToString(ct,2)+" | volume step "+DoubleToString(st,g_lotDigits)+" | filling mask "+IntegerToString((int)fm));
-      g_dirty=true;
-     }
-  }
-
-//--- v2.32 TURBO: momentum detector + "hot" state. EA code is single-threaded: a WebRequest in progress blocks OnTick for up to 2 s,
-//--- so while the price is moving fast or sits near an entry level NO network call is started (see NetDeferForEntry).
-ulong  g_hotUntil=0;
-double g_mpx[16]; ulong g_mms[16]; int g_mi=0; int g_mn=0;
-void TurboFeed(const MqlTick &tk,const ulong now)
-  {
-   if(!InpTurbo || tk.bid<=0.0 || tk.ask<=0.0) return;
-   double mid=(tk.bid+tk.ask)*0.5;
-   g_mpx[g_mi]=mid; g_mms[g_mi]=now; g_mi=(g_mi+1)%16; if(g_mn<16) g_mn++;
-   double lo=mid,hi=mid;
-   for(int i=0;i<g_mn;i++)
-     {
-      if(now-g_mms[i]>(ulong)MathMax(100,InpTurboMomMs)) continue;
-      if(g_mpx[i]<lo) lo=g_mpx[i];
-      if(g_mpx[i]>hi) hi=g_mpx[i];
-     }
-   if((hi-lo)>=(double)MathMax(1,InpTurboMomPts)*g_point) g_hotUntil=now+(ulong)MathMax(500,InpTurboHotMs);
-  }
-
-//--- true while the market is near an entry level / trigger (a spike can start any moment) or the hot state is on
-bool TurboHot(const ulong now)
-  {
-   if(!InpTurbo) return false;
-   if(now<g_hotUntil) return true;
-   if(g_state!=YT_ARMED && g_state!=YT_WAITING_REENTRY) return false;
-   MqlTick t;
-   if(!SymbolInfoTick(g_sym,t) || t.bid<=0.0 || t.ask<=0.0) return false;
-   double nr=(double)MathMax(1,InpTurboNearPts)*g_point;
-   if(g_buyLevel>0.0 && MathAbs(t.ask-g_buyLevel)<=nr) return true;
-   if(g_sellLevel>0.0 && MathAbs(t.bid-g_sellLevel)<=nr) return true;
-   return false;
-  }
-
 void OnTick()
   {
    if(g_halt) return;
    ulong now=GetTickCount64();
-   if(InpTurbo)
-     {
-      MqlTick tt;
-      if(SymbolInfoTick(g_sym,tt)) TurboFeed(tt,now);
-     }
-   const ulong gateMs=(InpTurbo?20:100);
+   //--- v2.30: ONE tick read per event; fast-market tracking (silences the network) and FAST CATCH of a crossed level run FIRST, before any throttle
+   {
+    MqlTick t0;
+    if(SymbolInfoTick(g_sym,t0) && t0.ask>0.0 && t0.bid>0.0)
+      {
+       HotTrack(t0,now);
+       if(CatchTick(t0,now)) return;
+      }
+   }
    //--- v2.17: SMART WAIT - one comparison per tick against the cached trigger price; the synchroniser is woken the very tick the market allows the order
+   //--- v2.30: throttle 100 ms -> 20 ms (a comparison only; the heavy synchroniser still runs at most every 20 ms, and only while a trigger is crossed)
    bool crossed=false;
-   if((g_trig[0]>0.0 || g_trig[1]>0.0) && now-g_lastSyncMs>=gateMs)
+   if((g_trig[0]>0.0 || g_trig[1]>0.0) && now-g_lastSyncMs>=20)
      {
       MqlTick tk;
       if(SymbolInfoTick(g_sym,tk))
@@ -7397,8 +6928,8 @@ void OnTick()
            }
         }
      }
-   if(!crossed && now-g_lastSyncMs>=(ulong)(InpTurbo?20:50) && VirtualWake()) crossed=true;   // v2.22: virtual entry reacts on the tick the price crosses
-   if(crossed || g_dirty || now-g_lastSyncMs>=(ulong)(InpTurbo?150:300))
+   if(!crossed && now-g_lastSyncMs>=20 && VirtualWake()) crossed=true;   // v2.22: virtual entry reacts on the tick the price crosses
+   if(crossed || g_dirty || now-g_lastSyncMs>=300)
      {
       g_dirty=false;
       SyncAll();
@@ -7429,160 +6960,33 @@ void OnTradeTransaction(const MqlTradeTransaction &trans,const MqlTradeRequest &
    SyncAll();
   }
 
-//--- v2.31: no network round-trip while an entry trigger was reached less than 1.5 s ago (never more than 3 consecutive seconds, so the bridge cannot starve)
-bool NetDeferForEntry()
-  {
-   if(MQLInfoInteger(MQL_TESTER)) return false;
-   ulong now=GetTickCount64();
-   bool hot=((g_trigMs[0]>0 && now-g_trigMs[0]<1500) || (g_trigMs[1]>0 && now-g_trigMs[1]<1500));
-   if(!hot && TurboHot(now)) hot=true;                       // v2.31 TURBO: also while the price is near a level or moving fast
-   if(!hot) { g_netDefers=0; return false; }
-   if(g_netDefers>=(InpTurbo?4:3)) { g_netDefers=0; return false; }
-   g_netDefers++;
-   return true;
-  }
-
-//--- v2.32 side-effect-free version of the "hot" test (NetDeferForEntry counts its calls, this one does not)
-bool NetHotNow()
-  {
-   if(MQLInfoInteger(MQL_TESTER)) return false;
-   ulong now=GetTickCount64();
-   if((g_trigMs[0]>0 && now-g_trigMs[0]<1500) || (g_trigMs[1]>0 && now-g_trigMs[1]<1500)) return true;
-   return TurboHot(now);
-  }
-
-//--- v2.32 FAST LANE. While an app is open (the Worker says "fast"), a tiny request (live broker tick + acks) runs between the full 1 s syncs and brings back any waiting command, so
-//--- the card follows the broker within ~0.3 s and a command from the app is executed ~0.3 s after the tap instead of waiting for the next full sync.
-//--- The trading thread keeps priority: near an entry level / in a fast market the lane slows to InpBrHotMs, and its pace is never faster than 3x the measured round trip.
-//--- v2.33: where is the market relative to the order engine? 0 = cool (far from every entry level), 1 = warm (within 3x InpTurboNearPts of a level),
-//--- 2 = hot (a trigger was just reached / momentum / near a level in Turbo / an order is being placed). The lane's allowed blocking share follows the zone.
-int LaneZone()
-  {
-   if(NetHotNow()) return 2;
-   if(g_sync[0]==YS_CREATING || g_sync[1]==YS_CREATING) return 2;
-   if(g_state!=YT_ARMED && g_state!=YT_WAITING_REENTRY) return 0;
-   MqlTick t;
-   if(!SymbolInfoTick(g_sym,t) || t.bid<=0.0 || t.ask<=0.0) return 1;
-   double wr=3.0*(double)MathMax(1,InpTurboNearPts)*g_point;
-   if(g_buyLevel>0.0 && MathAbs(t.ask-g_buyLevel)<=wr) return 1;
-   if(g_sellLevel>0.0 && MathAbs(t.bid-g_sellLevel)<=wr) return 1;
-   return 0;
-  }
-
-//--- v2.33 FAST LANE GOVERNOR. WebRequest is synchronous: every lane request blocks the single EA thread for its round trip. The lane is therefore bounded by a DUTY RULE:
-//---   interval >= round trip x 100 / duty%   (duty = InpBrMaxDutyPct far from a level, a third of it near a level, 3 % when hot)
-//--- plus the Worker's pace hint (activity tier x Cloudflare budget), a rolling 10 s measurement of the real blocked share, an adaptive timeout (2x round trip + 200 ms, max 1 s / 0.6 s hot)
-//--- and a CIRCUIT BREAKER (one request > InpBrLaneMaxMs suspends the lane). The full 1 s sync is untouched and always carries commands, so the lane is only ever an accelerator.
-void BridgeLite()
-  {
-   if(!g_brFastOn || InpBrFastMs<=0 || !InpBrEnable || MQLInfoInteger(MQL_TESTER)) return;
-   if(!g_brOk || g_brFirst || g_brPairNeed || g_dupSince>0 || g_halt) return;
-   if(StringLen(g_brUrl)<12) return;
-   { string lo=g_brUrl; StringToLower(lo); if(StringFind(lo,"https://")!=0) return; }
-   string sec=BrKeyEff();
-   if(StringLen(sec)<16) return;
-   ulong now=GetTickCount64();
-   if(now<g_brNetBackoffUntil || now<g_laneOffUntil) return;
-   ulong iv=(ulong)MathMax(150,MathMin(2000,InpBrFastMs));
-   if(g_brHintFastMs>iv) iv=g_brHintFastMs;
-   int zone=LaneZone();
-   g_laneZone=zone;
-   double cool=(double)MathMax(3,MathMin(30,InpBrMaxDutyPct));
-   double duty=(zone==0)?cool:((zone==1)?MathMax(3.0,cool/3.0):3.0);
-   ulong dv=(ulong)(100.0*(double)g_brRtt/duty);
-   if(dv>iv) iv=dv;
-   if(zone==2) { ulong hm=(ulong)MathMax(500,InpBrHotMs); if(hm>iv) iv=hm; }
-   if(!g_brHintAct && g_laneSame>=10) iv*=(ulong)(1+MathMin(4,g_laneSame/10));      // unchanged price and nobody interacting (closed market): stretch
-   if(iv>3000) iv=3000;
-   if(now-g_brLiteMs<iv || now-g_brFullMs<iv/2) return;
-   if(DutyPct()>duty) return;                                                        // the measured blocked share is already above the allowance
-   MqlTick t;
-   if(!SymbolInfoTick(g_sym,t) || t.bid<=0.0 || t.ask<=0.0) return;
-   bool same=(t.bid==g_laneLastBid && t.ask==g_laneLastAsk && ArraySize(g_brAck)==0);
-   g_laneSame=same?g_laneSame+1:0;
-   g_laneLastBid=t.bid; g_laneLastAsk=t.ask;
-   g_brLiteMs=now;
-   g_laneN++;
-   string body="{\"login\":\""+IntegerToString((long)AccountInfoInteger(ACCOUNT_LOGIN))+"\",\"srv\":\""+JEsc(AccountInfoString(ACCOUNT_SERVER))+"\",\"inst\":\""+g_instId+"\",\"lite\":true,\"px\":{\"p\":"+JNumSafe(t.bid,g_digits)+",\"a\":"+JNumSafe(t.ask,g_digits)+"},\"ack\":[";
-   for(int i=0;i<ArraySize(g_brAck);i++) body+=(i>0?",":"")+"\""+g_brAck[i]+"\"";
-   body+="]}";
-   string url=g_brUrl;
-   while(StringLen(url)>0 && StringSubstr(url,StringLen(url)-1,1)=="/") url=StringSubstr(url,0,StringLen(url)-1);
-   url+="/api/ea/sync";
-   char data[],res[];
-   string rh;
-   int n=StringToCharArray(body,data,0,WHOLE_ARRAY,CP_UTF8);
-   if(n>0) ArrayResize(data,n-1);
-   ResetLastError();
-   string hdr="Content-Type: application/json\r\nX-EA-Secret: "+sec+"\r\n";
-   int rr=(int)MathMin((ulong)3000,g_brRtt);
-   int cap=(zone==2)?600:1000;
-   int to=(g_brRtt==0)?800:MathMax(350,MathMin(cap,rr*2+200));
-   ulong rq0=GetTickCount64();
-   int code=WebRequest("POST",url,hdr,to,data,res,rh);
-   ulong el=GetTickCount64()-rq0;
-   BrRttNote(el);
-   DutyNote(el);
-   PfAdd(g_pfRtt,g_pfRttn,(double)el);
-   if(el>(ulong)MathMax(300,InpBrLaneMaxMs))                                         // CIRCUIT BREAKER
-     {
-      int sp=MathMax(5,MathMin(600,InpBrLaneSuspendSec));
-      g_laneOffUntil=GetTickCount64()+(ulong)sp*1000;
-      g_laneSusp++;
-      if(TimeLocal()-g_brLaneLog>=60) { g_brLaneLog=TimeLocal(); YLog("Fast lane SUSPENDED for "+IntegerToString(sp)+" s: one request blocked the thread for "+UL(el)+" ms (limit "+IntegerToString(MathMax(300,InpBrLaneMaxMs))+" ms). The full sync keeps running."); }
-     }
-   if(code==-1) { BrNetFail(); return; }
-   string resp=CharArrayToString(res,0,WHOLE_ARRAY,CP_UTF8);
-   if(code!=200 || StringFind(resp,"\"ok\":true")<0)
-     {
-      BrNetFail();
-      string werr=JStr(resp,"\"error\":\"");
-      if(werr=="secret" || werr=="pair_required") g_brPairNeed=true;      // the full sync logs and handles it
-      return;
-     }
-   BrNetOk();
-   if(StringFind(resp,"\"dupInst\":true")>=0) return;                      // the full sync handles the second-copy protection
-   ArrayResize(g_brAck,0);                                                // the acks in this request were delivered
-   g_brFastOn=(StringFind(resp,"\"fast\":true")>=0);
-   BrHints(resp);
-   BrRunCommands(resp,true);
-  }
-
 int g_timerCount=0;
 void OnTimer()
   {
    InstBeat();
    if(g_halt) return;
+   //--- v2.30: the catch also runs from the timer (a level can be crossed right after a closure while no tick arrives)
+   CatchTimer();
+   //--- v2.30: decided ONCE per timer event; a hot market keeps every WebRequest out (it would blind the EA for its whole timeout)
+   const bool netOk=NetAllowed();
    //--- FAST PATH (every timer event): receive -> execute -> reply to Telegram commands
-   TgPoll();
-   BridgeLite();                       // v2.32: price + waiting commands between the full 1 s syncs while an app is open
+   if(netOk) TgPoll();
    //--- SLOW PATH (once per second): monitors, sync, bridge, queue flush, panel
    ulong nowMs=GetTickCount64();
    if(nowMs-g_slowMs<1000) return;
    g_slowMs=nowMs;
    g_timerCount++;
    MonitorConnection();
-   RefreshBrokerSpec();                // v2.32: broker / account / symbol specification follows the connected broker
-   if(g_cplAt==0 || g_timerCount%300==0) RefreshCommission();    // v2.30: before any history-dependent work of this tick
+   g_dirty=false;
    SyncAll();
    StopCleanupTick();
    if(g_timerCount%30==0 && g_connected) RecoverHistory();
+   if(g_timerCount%120==0) RiskScaleAdvisory();    // v2.30: Risk/Target can be changed from the Mini App at any time
    if(g_timerCount%600==0) SeqAuditRun();          // v2.29: every 10 min, alert only
-   if(g_timerCount%5==0)
-     {
-      string psg=PlanSig();                                        // v2.30: the 80-trade plan file follows the levels / spec / costs
-      if(psg!=g_planSig) { g_planSig=psg; BuildPlan(false,true); }
-     }
    MonitorSpread();
    BrWaitTrack();                    // v2.17: waiting Mini App commands -> activated / superseded / cancelled
-   //--- v2.31: at most ONE blocking network phase per second in the normal case: the bridge sync; Telegram notifications follow on the other seconds (every 3rd second at the latest)
-   //--- and nothing blocks for 1.5 s after a price reached an entry trigger (the order is being placed).
-   if(!NetDeferForEntry())
-     {
-      g_brNetThisTick=false;
-      BridgeSync();
-      if(!g_brNetThisTick || g_timerCount%3==0) TgFlush();
-     }
+   if(netOk) BridgeSync();
+   if(netOk) TgFlush();
    UpdatePanel();
   }
 //+------------------------------------------------------------------+
