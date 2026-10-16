@@ -1,3 +1,27 @@
+## v4.22.0 — final audit patch (no trading-logic change)
+**Removed (dead / unsafe):** client-side Telegram sender in `index.html` (a bot token could be placed in a public page) and its Bus hooks; the disabled `postMessage` command channel and `CONFIG.origins` / `CONFIG.telegram`; `rollback/Yetimmm.v2.34.mq5` (an old EA that could be compiled by mistake); EA functions `PlacementOk`, `CheckModifiable`, `TgAddId`, `VirtualInside`, input `InpTgPollSec`, globals `g_edBuy/g_edSell/g_edRisk/g_edHave/g_tgLastPoll/g_tgLastOk`; the `deploy.mjs` step that DELETED a strong `PAIR_CODE` secret in favour of a plain variable in the repo.
+**Hidden defaults removed:** the app no longer assumes currency `USD`, contract size `100` or a `$` suffix when the EA did not report them (shows nothing / "—"); the Worker order-alert tolerance has no fixed `0.30` fallback and no `XAUUSD` symbol fallback; stale docs claiming `PAIR_CODE` falls back to `APP_PASSWORD` or is pre-filled `123123` were corrected (wrangler.toml, worker.js).
+**Deploy now refuses** when `PAIR_CODE` is a plain `[vars]` entry or when the `BOT_TOKEN` / `APP_PASSWORD` / `PAIR_CODE` secrets are missing.
+Tests: 163 pass. **The EA was not compiled here: F7 in MetaEditor, then Demo, are mandatory.**
+
+## v4.22.0 (EA 2.36) — دفتر التعويض بالصافي الفعلي + سقف دولاري وحد خسارة يومي
+**المنهج:** مطابقة التقرير (PDF) مع مسار التنفيذ الفعلي في `ProcessClosedPosition` / `RiskCompute`؛ لا تغيير في شروط الدخول أو الإشارات أو الفلاتر أو SL/TP أو معادلة `Risk=(L+P)/R`.
+**ما أُغلق:**
+1. **الإغلاق اليدوي/الخارجي/Stop Out/Protection/الصفقة المرفوضة بالانحراف** صار يدخل الدفتر بصافي نتيجته (ربح+عمولة+سواب) عبر `LedgerApplyNet`: الخسارة ترفع L، والربح يسدّد L (لا يهبط تحت صفر)، وعند سداد كامل L تُعدّ الدورة منتهية وتعود المخاطرة الأساسية. مفتاح السياسة `InpCountManualResults` (افتراضي true؛ false = السلوك القديم).
+2. **TP القديم/المتداخل** (`keepState`) صار يخصم صافيه من الدين الحيّ دون لمس الحالة والمستويات (كان يُتجاهل مالياً).
+3. **`InpMaxRiskUSD`**: سقف دولاري للمخاطرة في الصفقة، يُحكم على اللوت النهائي بعد التقريب (WAITING_RISKCAP).
+4. **`InpMaxDailyLoss`**: حد خسارة يومي = صافي اليوم المحقق (يوم السيرفر، محفوظ في GlobalVariables `DLD/DLN` مع علامة `DLDL` لمنع العدّ المزدوج) + خسارة اللوت النهائي عند SL (WAITING_DAYLOSS). الصفقات المفتوحة لا تُمس.
+5. نص `WAITING_DAYLOSS` في الـ Mini App، و`EA_PROTOCOL=2.36`.
+**القيم الافتراضية الجديدة للسقفين = 0 (معطّل)؛ التغيير الوحيد في السلوك الافتراضي هو البند 1-2 (سياسة الدفتر).**
+اختبارات: `tests/ledger-policy.test.mjs` (24). **غير مُترجم ولا مُختبر على MT5: F7 ثم Strategy Tester ثم Demo إلزامية.**
+
+## v4.21.0 (EA 2.35) — تدقيق جنائي لنظام التعويض: سقوف المخاطرة تُحكم على اللوت النهائي
+**المنهج:** فحص ثابت للكود الفعلي (ProcessClosedPosition / RiskCompute / NextRiskFor / TryPlace) وإعادة بناء أرقام تقرير الإصلاح حسابياً. لم يتوفر سجل وسيط ولا حالة حساب حقيقية، فلم يُعدَّل أي شيء مبني على تخمين.
+**أُثبت من الكود وأُصلح:** `InpMaxRiskPctBal` و`InpMaxAccLoss` كانا يُفحصان قبل حساب اللوت على المخاطرة *المطلوبة* (`g_curRisk`)، بينما التقريب للأعلى في التعويض (`InpRecoveryRoundUp`) قد يجعل المخاطرة الفعلية أكبر (مثال التقرير: مطلوب 1.61 ← لوت 0.17 ← خسارة 1.70). الآن يُفحص السقفان على اللوت النهائي داخل `RiskCompute` ويتحوّل الرفض إلى `WAITING_RISKCAP` / `WAITING_ACCLOSSCAP` (ليس خطأً قاتلاً). السقفان 0 = معطّل افتراضياً فلا يتغير السلوك الافتراضي.
+**لم يتغيّر:** معادلة التعويض، التقريب، SL/TP، الاستراتيجية، تسجيل الإغلاق. `worker.js`: رقم `EA_PROTOCOL` فقط.
+**ثغرات موثّقة دون تعديل (قرار المالك):** إغلاق يدوي/خارجي لا يدخل دفتر التعويض بأي اتجاه؛ TP قديم/متداخل (`keepState`) لا يخصم من الدين؛ التقريب للأعلى يخالف عبارة «STRICT لا تتجاوز المخاطرة» في docs/CURRENT_BEHAVIOR.md؛ معاينة التطبيق تقرّب للأسفل فقط (لا round-up ولا عمولة). التفاصيل في docs/FORENSIC-AUDIT-EA2.35.md.
+اختبارات جديدة: `tests/final-risk-audit.test.mjs` (14). **غير مُترجم ولا مُختبر على MT5: F7 ثم Demo إلزاميان.**
+
 ## v4.21.0 security audit patch (worker + app, no trading-logic change)
 **Critical / High**
 1. **Bot Token leak to the EA (worker.js sync):** any EA that omitted `evp` received `BOT_TOKEN` in `cfg.tok`. With a guessable `PAIR_CODE` a stranger could pair a rogue EA on a new account number and read the token. The token is now NEVER sent unless `ALLOW_EA_BOT_TOKEN=1` (legacy opt-in).

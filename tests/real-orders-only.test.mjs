@@ -23,7 +23,7 @@ test("TryMarketReverse is the ONLY place that sends a market order, and it is gu
   assert.equal(sends.length, 2, "market sends must stay inside TryMarketReverse (one ternary line)");
   const fn = src.indexOf("bool TryMarketReverse("), guard = src.indexOf("if(YT_REAL_ORDERS_ONLY) return false;", fn);
   assert.ok(fn > 0 && guard > fn && guard < sends[0]);
-  assert.ok(sends[0] > fn && sends[0] < src.indexOf("bool VirtualInside()"));
+  assert.ok(sends[0] > fn && sends[0] < src.indexOf("bool VirtualWake()"));
 });
 test("main pass: no virtual/market branch can run, and the call sites are gated", () => {
   assert.match(src, /if\(!YT_REAL_ORDERS_ONLY && g_state==YT_WAITING_REENTRY[^\n]*TryMarketReverse\(\)\) return;/);

@@ -1,4 +1,4 @@
-# Yetimmm v4.21.0
+# Yetimmm v4.22.0
 
 ## v4.12 — ربط الإكسبرت بالـ Worker (خطأ 4014 و HTTP 503)
 - **4014:** يلزم مرة واحدة تفعيل *Allow WebRequest for listed URL* وإضافة رابط الـ Worker و`https://api.telegram.org` (MT5 لا يسمح للإكسبرت بإضافتها بنفسه). الأسهل: أغلق MT5 ثم شغّل `tools/allow-urls.bat` (يقرأ الرابط من `InpBrUrl` ويعدّل `common.ini` لكل النسخ مع نسخة احتياطية). أو يدوياً: Tools ▸ Options ▸ Expert Advisors.
@@ -23,7 +23,7 @@ yetimmm/
 │   ├── wrangler.toml
 │   └── .dev.vars.example
 ├── ea/Yetimmm.mq5
-├── tests/                اختبارات: 49 اختباراً للـ Worker + 13 لمحرك المخاطرة + 15 لخطة التعويض (مرجع حسابي لما يطبّقه الـ EA)
+├── tests/                اختبارات: 49 اختباراً للـ Worker + 114 لمحرك المخاطرة وخطة التعويض وسياسة الدفتر وأنواع الحسابات ومطابقة المواصفات (المجموع 163)
 ├── scripts/check.mjs     فحص سريع للحزمة كلها
 ├── CHANGELOG.md
 └── package.json
@@ -79,7 +79,7 @@ npm run deploy
 ## التطوير والتحقق
 ```bash
 npm run check    # فحص صياغة JS + ملفات الواجهة + wrangler + بنية الـ EA
-npm test         # 45 اختباراً للـ Worker + 13 لمحرك المخاطرة + 15 لخطة التعويض (دخول، قفل، جلسات منزلقة، ربط الـ EA، أوامر، إشعارات، تقويم لكل وسيط، ودورة تنبيهات الأوردر الكاملة 4138/4137)
+npm test         # 163 اختباراً (دخول، قفل، جلسات منزلقة، ربط الـ EA، أوامر، إشعارات، تقويم لكل وسيط، ودورة تنبيهات الأوردر الكاملة 4138/4137)
 npm run dev      # تشغيل محلي (انسخ worker/.dev.vars.example إلى worker/.dev.vars)
 ```
 

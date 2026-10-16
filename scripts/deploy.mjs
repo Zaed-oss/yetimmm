@@ -1,7 +1,6 @@
 // One-command Worker release:  npm run deploy
 //   1) npm run check + npm test (stops on failure)
-//   2) if PAIR_CODE is a [vars] entry in wrangler.toml AND a secret with the same name exists in Cloudflare,
-//      deletes that secret (a secret and a var with one name conflict and the deploy would fail)
+//   2) refuses to deploy if PAIR_CODE sits in wrangler.toml as a plain variable, or if BOT_TOKEN / APP_PASSWORD / PAIR_CODE secrets are missing
 //   3) wrangler deploy
 //   4) GET <worker>/ and verifies pairConfigured:true (the cause of HTTP 503 pair_not_configured)
 // Needs Cloudflare auth in the terminal: `npx wrangler login` once, or env CLOUDFLARE_API_TOKEN (+ CLOUDFLARE_ACCOUNT_ID).
@@ -32,23 +31,16 @@ if (!skipTests) {
   }
 }
 
-// 2) var-vs-secret conflict
+// 2) secrets: PAIR_CODE must be a Cloudflare SECRET, never a plain [vars] entry (wrangler.toml is committed to git and the code can bind any MT5 account)
 const toml = readFileSync(join(root, cfg), "utf8");
-const varPair = /^\s*PAIR_CODE\s*=\s*"([^"]+)"/m.exec(toml);
-if (varPair) {
-  log("PAIR_CODE is set in wrangler.toml [vars]; checking for a conflicting Cloudflare secret...");
+if (/^\s*PAIR_CODE\s*=/m.test(toml)) die("PAIR_CODE is set as a plain variable in worker/wrangler.toml. Remove that line and store it as a secret: npx wrangler secret put PAIR_CODE (or run npm run setup).");
+if (!dry) {
   const ls = run(npx, ["wrangler", "secret", "list", "--config", cfg, "--format", "json"], { capture: true });
-  if (!dry) {
-    if (ls.status !== 0) die("could not list secrets (not logged in?). Run `npx wrangler login` or set CLOUDFLARE_API_TOKEN.\n" + (ls.stderr || ""));
-    let names = [];
-    try { names = JSON.parse(ls.stdout.slice(ls.stdout.indexOf("["))).map((x) => x.name); } catch { log("could not parse the secret list; continuing"); }
-    if (names.includes("PAIR_CODE")) {
-      log("a secret named PAIR_CODE exists -> deleting it so the [vars] value (" + varPair[1].length + " chars) takes over");
-      const del = run(npx, ["wrangler", "secret", "delete", "PAIR_CODE", "--config", cfg], { capture: true, input: "y\n" });
-      if (del.status !== 0) die("could not delete the PAIR_CODE secret:\n" + (del.stderr || del.stdout));
-    }
-    for (const need of ["BOT_TOKEN", "APP_PASSWORD"]) if (names.length && !names.includes(need)) log("WARNING: required secret " + need + " is missing -> npx wrangler secret put " + need);
-  }
+  if (ls.status !== 0) die("could not list secrets (not logged in?). Run `npx wrangler login` or set CLOUDFLARE_API_TOKEN.\n" + (ls.stderr || ""));
+  let names = null;
+  try { names = JSON.parse(ls.stdout.slice(ls.stdout.indexOf("["))).map((x) => x.name); } catch { die("could not parse the secret list - refusing to deploy blind"); }
+  const miss = ["BOT_TOKEN", "APP_PASSWORD", "PAIR_CODE"].filter((k) => !names.includes(k));
+  if (miss.length) die("required secret(s) missing: " + miss.join(", ") + " -> npx wrangler secret put <NAME> (PAIR_CODE: 8+ chars, strong, different from APP_PASSWORD)");
 }
 
 // 3) deploy

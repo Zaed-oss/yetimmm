@@ -4,7 +4,7 @@
 //|  MetaTrader 5 | Telegram control | State recovery | Trade log    |
 //+------------------------------------------------------------------+
 #property copyright "Yetimmm"
-#property version   "2.34"
+#property version   "2.36"
 #property description "Yetimmm | XAUUSD | Two-level Stop Buy / Stop Sell switch + risk sequence | Telegram integration"
 
 #include <Trade\Trade.mqh>
@@ -160,7 +160,7 @@ enum ENUM_YT_RISKPOL
    YT_RISK_CLAMP_MIN=1   // use the broker minimum volume and SAY SO: Requested Risk / Effective Risk are both shown and logged
   };
 
-#define YT_VER "2.34"
+#define YT_VER "2.36"
 #define YT_REAL_ORDERS_ONLY true   // v2.33: the EA NEVER opens a trade at market by its own decision. Every entry is a REAL Buy Stop / Sell Stop order on the server, created only from the levels the user sent (Telegram / Mini App). Virtual entry, Fast Catch and Market Reversal are disabled.
 #define YT_DUP_HALT_SEC 30     // v2.29: the Worker keeps reporting another live copy for this long -> this copy halts
 #define YT_VANISH_WAIT_SEC 90  // v2.29: a vanished position keeps the SAFE state (no orders, sequence untouched) and the history is re-read every 5 s for this long
@@ -203,6 +203,9 @@ input double InpMaxAccLoss     = 0.0;     // v2.34 Max ACCUMULATED loss allowed 
 input double InpMinMarginLevel = 0.0;     // v2.34 Minimum Margin Level (%) required to place NEW orders. 0 = off. Below it NEW orders wait (WAITING_MARGINLVL); only checked while the account really uses margin
 input bool   InpCostAware      = true;    // v2.34 COST-AWARE LOT: the lot also covers the round-trip commission so the NET profit at TP (not the gross one) repays the accumulated loss + the Recovery Target
 input double InpCommPerLot     = 0.0;     // v2.34 Round-trip commission per 1.00 lot ($, main units). 0 = AUTO (learned from the last closed trade; 0 until the first trade closes). Used only when Cost-Aware is ON
+input double InpMaxRiskUSD      = 0.0;     // v2.36 Max risk ($, main units) of ONE trade, judged on the FINAL (rounded) lot at the SL. 0 = off. Above it NEW orders wait (WAITING_RISKCAP); the lot is never forced
+input double InpMaxDailyLoss    = 0.0;     // v2.36 Daily loss limit ($, main units): today's realized net loss (server day) + the loss at SL of the FINAL lot may not exceed it. 0 = off. Above it NEW orders wait (WAITING_DAYLOSS) until the next server day; open trades are never touched
+input bool   InpCountManualResults = true; // v2.36 LEDGER POLICY: the NET result (profit+commission+swap) of EVERY closed position of this EA (manual / mobile / web close, stop-out, protection close, rejected fill, stale TP) enters the recovery ledger. false = old behaviour (only SL / TP / extra-position closes count)
 input bool   InpOneCyclePerDay = false;   // v2.34 After a cycle ends with a TP (net result reached) no NEW cycle starts until the next server day (WAITING_NEXTDAY). Reset / New Cycle from the Mini App overrides it
 
 input group "=== Execution ==="
@@ -243,7 +246,6 @@ input group "=== Telegram ==="
 input bool   InpTgEnable       = true;    // Enable Telegram
 input bool   InpTgNotify       = true;    // Telegram Notifications
 input bool   InpTgControl      = true;    // Telegram Control Enabled
-input int    InpTgPollSec      = 2;       // (deprecated - replaced by Telegram fast polling below)
 input bool   InpTgViaWorker    = true;    // v2.23: notifications go EA -> Worker (unique event id) -> Telegram. The Bot Token is NEVER sent to / stored in MT5 and the EA never polls Telegram
 input bool   InpTgMenu         = false;   // v2.25: attach the START/STOP/CANCEL/STATUS... inline keyboard to every bot message. Default OFF (clean messages). Typing /menu always shows it on demand; every /command and callback keeps working
 input bool   InpTgAutoHeal     = true;    // Self-heal: single poller per token, auto-clear webhook on 409, auto-pause polling if another instance owns the token
@@ -411,10 +413,6 @@ int           g_page=0;
 bool          g_uiTgEn=false;
 bool          g_uiTgNot=false;
 bool          g_uiTgCtl=false;
-string        g_edBuy="";
-string        g_edSell="";
-string        g_edRisk="";
-bool          g_edHave=false;
 double        g_frzBid=0.0,g_frzAsk=0.0;   // v2.19: price frozen at the moment the bot was stopped
 long          g_frzTs=0;
 string        g_brSig="";                  // v2.19: duplicate-command guard
@@ -455,8 +453,6 @@ int           g_tg409=0;           // consecutive 409 conflicts
 datetime      g_tgWhTry=0;         // last deleteWebhook attempt
 datetime      g_tgPausedUntil=0;   // polling paused (another instance owns the token) - notifications keep working  // ms tick: pause polling after a failed getUpdates
 bool          g_tgOk=false;
-datetime      g_tgLastOk=0;
-datetime      g_tgLastPoll=0;
 ulong         g_tgLastPollMs=0;    // v2.13: millisecond polling gate
 ulong         g_slowMs=0;          // v2.13: gate of the 1-second slow cycle
 datetime      g_tgLastErrLog=0;
@@ -1019,6 +1015,21 @@ double SizingPerLot(const double perLot)
 //--- server day number + 1 (0 is reserved for "none")
 long DayKeyNow() { return (long)(TimeCurrent()/86400)+1; }
 
+//--- v2.36 DAILY REALIZED NET (main units). Persisted (GlobalVariables DLD = day key, DLN = net of that day) so a restart cannot lose it.
+//--- It is fed ONCE per closed position from ProcessClosedPosition (that function is already idempotent per position / closing deal).
+double DayNetToday()
+  {
+   if((long)GV("DLD",0.0)!=DayKeyNow()) return 0.0;
+   return GV("DLN",0.0);
+  }
+void DayNetAdd(const double net)
+  {
+   long dk=DayKeyNow();
+   double cur=((long)GV("DLD",0.0)==dk)?GV("DLN",0.0):0.0;
+   GS("DLD",(double)dk);
+   GS("DLN",cur+net);
+  }
+
 //+------------------------------------------------------------------+
 //| v2.23 BROKER / RISK ENGINE                                       |
 //| BrokerSpec (live) -> RiskCompute -> (OrderCheck) -> OrderSend.   |
@@ -1146,6 +1157,44 @@ bool RiskCompute(const double risk,const bool buy,const double entry,const doubl
          return false;
         }
      }
+   //--- v2.35 FINAL-SIZE CAPS: the safety caps are judged on the risk of the FINAL (rounded) lot, not on the requested risk.
+   //--- Recovery round-up (InpRecoveryRoundUp) or CLAMP_TO_MIN can make lot*perLot exceed the requested risk, and RecoveryGuardBlocks()
+   //--- only sees the request (g_curRisk). Both caps are 0 = OFF by default, so default behaviour is unchanged.
+   if(InpMaxRiskPctBal>0.0)
+     {
+      double balF=AcM(AccountInfoDouble(ACCOUNT_BALANCE));
+      double capF=(balF>0.0)?balF*InpMaxRiskPctBal/100.0:0.0;
+      if(lot*perLot>capF+1e-9)
+        {
+         r.code="RISK_ABOVE_RISKCAP";
+         r.text="Final lot "+DoubleToString(lot,g_lotDigits)+" risks "+D2(lot*perLot)+" "+ccy+" at the SL, above "+DoubleToString(InpMaxRiskPctBal,2)+"% of the balance ("+D2(capF)+" "+ccy+"). WAITING_RISKCAP: no order is sent.";
+         return false;
+        }
+     }
+   if(InpMaxAccLoss>0.0 && g_accLoss>1e-9 && g_accLoss+lot*perLot>InpMaxAccLoss+1e-9)
+     {
+      r.code="RISK_ABOVE_ACCCAP";
+      r.text="Final lot "+DoubleToString(lot,g_lotDigits)+": accumulated loss "+D2(g_accLoss)+" + loss at SL "+D2(lot*perLot)+" "+ccy+" would exceed the cap "+D2(InpMaxAccLoss)+" "+ccy+". WAITING_ACCLOSSCAP: no order is sent.";
+      return false;
+     }
+   //--- v2.36 FINAL-SIZE CAPS (absolute $ per trade, daily loss): same discipline - judged on the risk of the FINAL lot
+   if(InpMaxRiskUSD>0.0 && lot*perLot>InpMaxRiskUSD+1e-9)
+     {
+      r.code="RISK_ABOVE_RISKCAP";
+      r.text="Final lot "+DoubleToString(lot,g_lotDigits)+" risks "+D2(lot*perLot)+" "+ccy+" at the SL, above the per-trade cap "+D2(InpMaxRiskUSD)+" "+ccy+". WAITING_RISKCAP: no order is sent (the lot is NOT forced, the target is NOT widened).";
+      return false;
+     }
+   if(InpMaxDailyLoss>0.0)
+     {
+      double dn=DayNetToday();
+      double dayLoss=(dn<0.0)?-dn:0.0;
+      if(dayLoss+lot*perLot>InpMaxDailyLoss+1e-9)
+        {
+         r.code="RISK_ABOVE_DAYLOSS";
+         r.text="Daily loss limit: today's realized loss "+D2(dayLoss)+" + loss at SL of the final lot "+D2(lot*perLot)+" "+ccy+" would exceed "+D2(InpMaxDailyLoss)+" "+ccy+". WAITING_DAYLOSS until the next server day.";
+         return false;
+        }
+     }
    r.vol=lot;
    r.effective=lot*perLot;
    double margin=0.0;
@@ -1172,6 +1221,9 @@ string WaitCodeOf(const string rc)
   {
    if(rc=="RISK_BELOW_MIN_VOLUME" || rc=="RISK_ABOVE_MAX_VOLUME" || rc=="RISK_ABOVE_VOLUME_LIMIT") return "WAITING_VOLUME";
    if(rc=="RISK_NO_MARGIN") return "WAITING_MARGIN";
+   if(rc=="RISK_ABOVE_RISKCAP") return "WAITING_RISKCAP";       // v2.35: cap judged on the FINAL lot
+   if(rc=="RISK_ABOVE_ACCCAP") return "WAITING_ACCLOSSCAP";     // v2.35
+   if(rc=="RISK_ABOVE_DAYLOSS") return "WAITING_DAYLOSS";        // v2.36
    if(rc=="RISK_NO_SPEC") return "WAITING_BROKER";
    return "";
   }
@@ -1212,6 +1264,24 @@ bool RecoveryGuardBlocks(string &why,string &code)
         {
          code="WAITING_RISKCAP";
          why="WAITING_RISKCAP: the next planned risk "+D2(g_curRisk)+" "+AccCcy()+" is above "+DoubleToString(InpMaxRiskPctBal,2)+"% of the balance ("+D2(cap)+" "+AccCcy()+"). New orders are paused - start a New Cycle, raise the cap or add funds.";
+         return true;
+        }
+     }
+   //--- v2.36: absolute per-trade cap and daily loss limit on the REQUESTED risk (early, cheap). RiskCompute re-checks them on the FINAL lot.
+   if(InpMaxRiskUSD>0.0 && g_curRisk>InpMaxRiskUSD+1e-9)
+     {
+      code="WAITING_RISKCAP";
+      why="WAITING_RISKCAP: the next planned risk "+D2(g_curRisk)+" "+AccCcy()+" is above the per-trade cap "+D2(InpMaxRiskUSD)+" "+AccCcy()+". New orders are paused - start a New Cycle or raise the cap.";
+      return true;
+     }
+   if(InpMaxDailyLoss>0.0)
+     {
+      double dn=DayNetToday();
+      double dl=(dn<0.0)?-dn:0.0;
+      if(dl+g_curRisk>InpMaxDailyLoss+1e-9)
+        {
+         code="WAITING_DAYLOSS";
+         why="WAITING_DAYLOSS: today's realized loss "+D2(dl)+" + next risk "+D2(g_curRisk)+" would exceed the daily limit "+D2(InpMaxDailyLoss)+" "+AccCcy()+". New orders resume on the next server day; open trades are untouched.";
          return true;
         }
      }
@@ -1408,7 +1478,7 @@ bool CalcLot(const double risk,const bool buy,const double entry,double &lot,dou
    return CalcLotSL(risk,buy,entry,SLPrice(buy,entry),lot,estLoss,err);
   }
 
-//--- PRE-FLIGHT of a MARKET order against the REAL prices (the same discipline PlacementOk applies to pending orders):
+//--- PRE-FLIGHT of a MARKET order against the REAL prices (the same discipline PlacementState applies to pending orders):
 //--- trading allowed for the direction, SL and TP present, on the correct side of the market, outside the broker Stops Level
 bool MarketPreflight(const bool buy,const double sl,const double tp,string &why)
   {
@@ -1836,12 +1906,6 @@ int PlacementState(const bool buy,const double price,string &why)
    return 0;
   }
 
-//--- can a stop order of this side sit at this price right now? (symbol rules + broker minimum distance)
-bool PlacementOk(const bool buy,const double price,string &why)
-  {
-   return PlacementState(buy,price,why)==0;
-  }
-
 void BrWaitActivated(const bool buy,const double level,const ulong ticket,const ulong latMs=0);   // v2.17 (defined with the Mini App command log)
 
 //--- v2.17: distance (broker minimum + learned safety buffer) between the market and a waiting level, and the resulting TRIGGER price
@@ -1875,23 +1939,6 @@ bool FrozenNow(const bool buy,const double orderPrice)
    MqlTick t;
    if(!SymbolInfoTick(g_sym,t)) return false;
    return buy?(orderPrice-t.ask<=fz+1e-9):(t.bid-orderPrice<=fz+1e-9);
-  }
-
-//--- APPLY pre-check: when a live order has to be MODIFIED, the new price must be acceptable right now
-string CheckModifiable(const double buy,const double sell)
-  {
-   for(int k=0;k<2;k++)
-     {
-      bool b=(k==0);
-      double nl=b?buy:sell;
-      ulong tk; double ap;
-      if(!SideActual(b,tk,ap)) continue;        // no live order on this side: it is simply created
-      if(PriceEq(ap,nl)) continue;              // price unchanged
-      string why;
-      if(PlacementState(b,nl,why)==2) return SideName(b)+" "+PX(nl)+" cannot be applied now: "+why;   // v2.16: a level that only waits for the market is accepted
-      if(FrozenNow(b,ap)) return SideName(b)+" cannot be modified now: the order is inside the Freeze Level.";
-     }
-   return "";
   }
 
 //--- APPLY pre-check = broker rules BEFORE anything is sent: a request that cannot become a real order is rejected with the reason
@@ -2511,18 +2558,6 @@ bool TgAuthorized(const long from)
    return false;
   }
 
-void TgAddId(const long id)
-  {
-   if(id==0) return;
-   for(int i=0;i<ArraySize(g_tgIds);i++) if(g_tgIds[i]==id) return;
-   if(ArraySize(g_tgIds)>=50) return;                       // hard cap: a public bot must not grow the list without limit
-   g_tgPub+=(StringLen(g_tgPub)>0?",":"")+IntegerToString(id);
-   CfgSet("tgpub",g_tgPub);
-   CfgSaveFile();
-   ParseIds();
-   YLog("Telegram: chat registered automatically (id "+IntegerToString(id)+").");
-  }
-
 string UrlEnc(const string s)
   {
    char b[];
@@ -2701,7 +2736,6 @@ bool TgCall(const string method,const string body,string &resp)
       return false;
      }
    g_tgOk=true;
-   g_tgLastOk=TimeLocal();
    return true;
   }
 
@@ -3269,6 +3303,44 @@ void RegisterLivePositions()
 //+------------------------------------------------------------------+
 //| Closed position processing (SL / TP / other)                     |
 //+------------------------------------------------------------------+
+//--- v2.36 LEDGER: ONE rule for every closed result that is not a plain SL step: the NET money result (profit + commission + swap) moves the
+//--- accumulated loss L. net < 0 -> L grows; net > 0 -> L is repaid. L is never negative. When L is fully repaid the cycle is COMPLETE (cycle net =
+//--- net - L_before is reported against the target) and the risk goes back to the initial risk; otherwise the REMAINING debt sizes the next risk.
+//--- It uses the live g_accLoss, so it is order-independent (an old event cannot erase a newer loss). Returns a short text for the logs.
+string LedgerApplyNet(const double net,const string why)
+  {
+   double before=g_accLoss;
+   string t;
+   if(net<-1e-9)
+     {
+      g_accLoss+=-net;
+      g_curRisk=NextRiskFor(g_accLoss);
+      t=why+" net "+D2(net)+" added to the ledger: Acc.Loss "+D2(before)+" -> "+D2(g_accLoss)+" | next risk "+D2(g_curRisk);
+     }
+   else if(net>1e-9 && before>1e-9)
+     {
+      if(net>=before-1e-6)
+        {
+         double cycNet=net-before;
+         bool met=(cycNet>=g_target*0.98-1e-9);
+         t=why+" net "+D2(net)+" repaid the whole Acc.Loss "+D2(before)+" | CYCLE NET "+D2(cycNet)+" vs target "+D2(g_target)+" | "+(met?"TARGET MET":"BELOW TARGET by "+D2(g_target-cycNet));
+         LogOrder("CYCLE_COMPLETE",-1,0.0,0.0,0,0,t);
+         if(!met) RaiseAlert("CYCSHORTL"+IntegerToString((int)g_tradeNo),t,false,true);
+         ResetRisk();
+         GS("CYCDAY",(double)DayKeyNow());
+        }
+      else
+        {
+         g_accLoss=before-net;
+         g_curRisk=NextRiskFor(g_accLoss);
+         t=why+" net "+D2(net)+" repaid PART of the Acc.Loss: "+D2(before)+" -> "+D2(g_accLoss)+" | next risk "+D2(g_curRisk);
+        }
+     }
+   else t=why+" net "+D2(net)+" - ledger unchanged (Acc.Loss "+D2(before)+")";
+   YLog("LEDGER: "+t);
+   return t;
+  }
+
 bool ProcessClosedPosition(const ulong pid)
   {
    if(IsLoggedPos(pid)) { ClearPosGV(pid); return true; }
@@ -3383,6 +3455,8 @@ bool ProcessClosedPosition(const ulong pid)
    //--- Netting: a position that absorbed foreign volume has a P/L that is NOT purely this bot's.
    //--- It is logged, but it never feeds the risk sequence (no accumulated loss, no risk step, no TP reset).
    bool tainted=(g_netting && (foreignIn || PGV(pid,"TAINT",0.0)>0.5));
+   //--- v2.36: today's realized NET (for the daily loss limit). Once per closing deal (DLDL marker); never for a netting-tainted position.
+   if(!tainted && (ulong)GV("DLDL",0.0)!=dealOut) { DayNetAdd(net); GS("DLDL",(double)dealOut); }
    if(g_netting && foreignIn && PGV(pid,"TAINT",0.0)<=0.5)
       YLog("Netting: position "+UL(pid)+" absorbed foreign volume (found in its history) - logged, but NOT counted in the risk sequence / statistics.");
 
@@ -3409,6 +3483,7 @@ bool ProcessClosedPosition(const ulong pid)
       YLog("Closing deal "+UL(dealOut)+" was already applied before a restart - only its log line is written (loss NOT counted twice).");
      }
    string nextInfo="";
+   string ledNote="";                                           // v2.36: ledger effect of a non-SL/TP result
    string cycTxt="";                                            // v2.34: cycle summary (TP that ends a cycle)
    double nextLot=0,nextEst=0; string lerr="";
    if(!bookkeeping)
@@ -3421,6 +3496,10 @@ bool ProcessClosedPosition(const ulong pid)
          g_curRisk=NextRiskFor(g_accLoss);
          YLog("Extra position loss "+D2(net)+" added to the accumulated loss -> Acc.Loss "+D2(g_accLoss)+" | next risk "+D2(g_curRisk));
         }
+      else if(isExtra && net>0.0 && InpCountManualResults) ledNote=LedgerApplyNet(net,"Extra position");
+      //--- v2.36 POLICY (report section 7): a result is judged by its NET money, never by the close reason alone. Manual / mobile / web closes,
+      //--- stop-outs, protection closes and rejected fills enter the ledger. InpCountManualResults=false restores the old behaviour.
+      if(InpCountManualResults && !tainted && !isSL && !isTP && !isExtra) ledNote=LedgerApplyNet(net,rs);
       if(tainted)
         {
          if(others==0) { g_mode=YM_NONE; g_state=YT_IDLE; g_lastSLSide=0; }
@@ -3456,9 +3535,10 @@ bool ProcessClosedPosition(const ulong pid)
         }
       else if(isTP && keepState)
         {
-         //--- v2.29: an OLD TP that arrives after a newer event: resetting now would erase the newer loss. Nothing is reset; the user is told.
-         YLog("Old/overlapping TP event (Trade #"+TNo(tno)+", net "+D2(net)+"): sequence NOT reset (Seq "+IntegerToString(g_seq)+", Acc.Loss "+D2(g_accLoss)+"). Verify and use Reset / New Cycle only if the losses are really repaid.");
-         RaiseAlert("STALETP"+IntegerToString((int)tno),"An older TP (Trade #"+TNo(tno)+", net "+D2(net)+") was processed after a newer event. The risk sequence was NOT reset (Seq "+IntegerToString(g_seq)+", Acc.Loss "+D2(g_accLoss)+"). Check the Trades log.",true,true);
+         //--- v2.36: an OLD TP that arrives after a newer event: its NET result is still real money. It repays the live debt (never below zero);
+         //--- the state, mode and levels stay exactly as the newer event set them (nothing else is touched).
+         ledNote=LedgerApplyNet(net,"Old/overlapping TP (Trade #"+TNo(tno)+")");
+         RaiseAlert("STALETP"+IntegerToString((int)tno),"An older TP (Trade #"+TNo(tno)+", net "+D2(net)+") was processed after a newer event. Its net result was applied to the ledger: Acc.Loss "+D2(g_accLoss)+", Seq "+IntegerToString(g_seq)+". State and levels untouched.",true,true);
         }
       else if(isTP)
         {
@@ -3567,7 +3647,7 @@ bool ProcessClosedPosition(const ulong pid)
      }
    else if(isDev)
      {
-      YLog("Execution rejected (Max Deviation) Trade #"+TNo(tno)+" net "+D2(net)+" | risk sequence unchanged, orders re-armed at the original levels");
+      YLog("Execution rejected (Max Deviation) Trade #"+TNo(tno)+" net "+D2(net)+" | "+(ledNote!=""?"net result applied to the ledger, ":"risk sequence unchanged, ")+"orders re-armed at the original levels");
       TgQueue("🚫 EXECUTION REJECTED (Max Deviation)\nTrade #: "+TNo(tno)+"\nType: "+(buy?"BUY":"SELL")+"\nEntry: "+PX(entryPrice)+"\nExit: "+PX(exitPrice)+"\nNet P/L: "+Money(net)+
               (bookkeeping?"":"\nRisk sequence unchanged. Orders re-armed at the original levels after a short cooldown."));
      }
@@ -3576,13 +3656,14 @@ bool ProcessClosedPosition(const ulong pid)
       YLog("Position closed ("+rs+") Trade #"+TNo(tno)+" net "+D2(net)+(tainted?" | NETTING-TAINTED: not counted in the risk sequence / statistics":""));
       TgQueue("⚪ POSITION CLOSED ("+rs+")\nTrade #: "+TNo(tno)+"\nType: "+(buy?"BUY":"SELL")+"\nEntry: "+PX(entryPrice)+"\nExit: "+PX(exitPrice)+"\nNet P/L: "+Money(net)+
               (tainted?"\n⚠️ Netting: external volume was merged into this position. Its result is NOT counted in the risk sequence or statistics.":"")+
-              (bookkeeping?"":(isExtra?"\nExtra position (one-position rule). Loss added to the accumulated loss: $"+D2(g_accLoss)+" | Next Risk: $"+D2(g_curRisk)
+              (bookkeeping?"":(isExtra?"\nExtra position (one-position rule). Ledger: Acc.Loss $"+D2(g_accLoss)+" | Next Risk: $"+D2(g_curRisk)
                                       +(g_state==YT_IDLE?"\nWaiting for levels (/set BUY SELL) or START.":""):
-                                 (g_state==YT_IDLE?"\nRisk sequence unchanged. Waiting for levels (/set BUY SELL).":"\nRisk sequence unchanged."))));
+                                 (ledNote!=""?"\nLedger: Acc.Loss $"+D2(g_accLoss)+" | Next Risk: $"+D2(g_curRisk)+(g_state==YT_IDLE?"\nWaiting for levels (/set BUY SELL) or START.":""):
+                                 (g_state==YT_IDLE?"\nRisk sequence unchanged. Waiting for levels (/set BUY SELL).":"\nRisk sequence unchanged.")))));
       if(!bookkeeping && others==0 && g_state==YT_IDLE)
         {
          if(tainted) RaiseAlert("NETTAINT","Netting-contaminated position closed ("+rs+"). Its result was NOT added to the risk sequence. Check the account, then enter new levels to continue.",true,true);
-         else        RaiseAlert("EXTCLOSE","Position closed outside SL/TP ("+rs+"). Sequence kept (Seq "+IntegerToString(g_seq)+", Acc.Loss "+D2(g_accLoss)+"). Press START to re-arm the saved levels, or enter new levels.",true,true);
+         else        RaiseAlert("EXTCLOSE","Position closed outside SL/TP ("+rs+"). Its net result was applied to the ledger (Seq "+IntegerToString(g_seq)+", Acc.Loss "+D2(g_accLoss)+"). Press START to re-arm the saved levels, or enter new levels.",true,true);
         }
      }
    return true;
@@ -3884,7 +3965,7 @@ bool TryPlace(const bool buy,const double level)
       return false;
      }
    ClearAlert("RPGUARDWAITING_SEQCAP"); ClearAlert("RPGUARDWAITING_RISKCAP");
-   ClearAlert("RPGUARDWAITING_ACCLOSSCAP"); ClearAlert("RPGUARDWAITING_MARGINLVL"); ClearAlert("RPGUARDWAITING_NEXTDAY");
+   ClearAlert("RPGUARDWAITING_ACCLOSSCAP"); ClearAlert("RPGUARDWAITING_MARGINLVL"); ClearAlert("RPGUARDWAITING_NEXTDAY"); ClearAlert("RPGUARDWAITING_DAYLOSS");
    if(!CalcLot(g_curRisk,buy,level,lot,est,err)) { HandleLotError(err); SetSync(buy,YS_WAITING,err); return false; }
    g_blockReason="";
    g_wcode="";
@@ -4215,13 +4296,6 @@ bool TryMarketReverse(const int force=0,const bool catchMode=false)   // v2.33: 
 //| at the opposite level. Both levels are always honoured, so there  |
 //| is no zone gate, no Stops-Level window and no lone order.         |
 //+------------------------------------------------------------------+
-bool VirtualInside()
-  {
-   MqlTick tk;
-   if(!SymbolInfoTick(g_sym,tk) || tk.ask<=0.0 || tk.bid<=0.0 || g_buyLevel<=g_sellLevel) return false;
-   return (tk.bid>g_sellLevel && tk.ask<g_buyLevel);
-  }
-
 bool VirtualWake()
   {
    if(YT_REAL_ORDERS_ONLY || InpEntryMode!=ENTRY_VIRTUAL) return false;
@@ -6339,6 +6413,7 @@ string RkJson()
       else if(r.code=="RISK_ABOVE_MAX_VOLUME") st="ABOVE_MAX";
       else if(r.code=="RISK_ABOVE_VOLUME_LIMIT") st="ABOVE_LIMIT";
       else if(r.code=="RISK_NO_MARGIN") st="NO_MARGIN";
+      else if(r.code=="RISK_ABOVE_RISKCAP" || r.code=="RISK_ABOVE_ACCCAP" || r.code=="RISK_ABOVE_DAYLOSS") st="ABOVE_CAP";   // v2.35
       else st="NO_SPEC";
      }
    else if(r.clamped) st="CLAMPED";

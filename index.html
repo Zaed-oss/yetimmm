@@ -306,9 +306,7 @@ const CONFIG={
   mode:"live",
   sessionStore:"local",                        // "local" = stay signed in across launches (default) | "session" = token lives only until the app is closed (safer if XSS ever happens; you sign in again each launch)
   staleSec:20,                                 // FALLBACK only: the server reports the real timeout (eaStaleSec in /state) so Worker and app can never disagree
-  api:{baseUrl:"https://yetimmm-bridge.sayfhazeem078.workers.dev",pollMs:1000,headers:{}},
-  telegram:{token:"",chatId:"",notify:true},
-  origins:[]                                   // allowed origins for window.postMessage commands
+  api:{baseUrl:"https://yetimmm-bridge.sayfhazeem078.workers.dev",pollMs:1000,headers:{}}
 };
 
 /* ═════════════ 2) I18N — [Arabic, English] ═════════════ */
@@ -434,7 +432,7 @@ const SIM_PROFILES={
 let SIMP="XAU-100-0.01";
 function perLotLoss(bs,d){return bs.tvl>0&&bs.tick>0?d/bs.tick*bs.tvl:d*bs.contract}
 function calcRisk(bs,risk,entry,sl,policy){
-  const d=Math.abs(entry-sl),o={ok:false,status:"NO_SPEC",req:risk,raw:0,vol:0,vmin:bs.vmin,eff:0,minRisk:0,perLot:0,clamped:false,policy:policy==="CLAMP_TO_MIN"?"CLAMP_TO_MIN":"STRICT",ccy:bs.ccy||"USD"};
+  const d=Math.abs(entry-sl),o={ok:false,status:"NO_SPEC",req:risk,raw:0,vol:0,vmin:bs.vmin,eff:0,minRisk:0,perLot:0,clamped:false,policy:policy==="CLAMP_TO_MIN"?"CLAMP_TO_MIN":"STRICT",ccy:bs.ccy||""};
   if(!(d>1e-12)||!(bs.vstep>0)||!(bs.vmin>0))return o;
   const pl=perLotLoss(bs,d);if(!(pl>0))return o;
   o.perLot=pl;o.minRisk=bs.vmin*pl;o.raw=risk/pl;
@@ -448,12 +446,12 @@ function calcRisk(bs,risk,entry,sl,policy){
 }
 /*RISK-CORE-END*/
 const spec=()=>live()?(S.bs||null):SIM_PROFILES[SIMP];
-const ccyL=()=>{const b=spec();return(b&&b.ccy)||(S.acct&&S.acct.cur)||"USD"};
-const cs=()=>ccyL()==="USD"?"$":esc(ccyL())+" ";   /* v4.22: currency code comes from the EA -> escaped */
+const ccyL=()=>{const b=spec();return(b&&b.ccy)||(S.acct&&S.acct.cur)||""};
+const cs=()=>{const c=ccyL();return c===""?"":c==="USD"?"$":esc(c)+" "};   /* v4.22: currency code comes from the EA -> escaped */
 const pd=()=>{const b=spec();return b&&b.digits!=null?b.digits:2};
 const vd=()=>{const b=spec();return b&&b.vdig!=null?b.vdig:2};
 const tickSz=()=>{const b=spec();return b&&b.tick>0?b.tick:.01};
-const CS=()=>{const b=spec();return b&&b.contract>0?b.contract:100};
+const CS=()=>{const b=spec();return b&&b.contract>0?b.contract:0};
 (function(){try{const q=new URLSearchParams(location.search).get("profile");if(q&&SIM_PROFILES[q])SIMP=q}catch(e){}})();
 if(CONFIG.mode!=="live"){try{const r=localStorage.getItem("ytPro");if(r)Object.assign(S,JSON.parse(r))}catch(e){}}else{S.price=0;S.hist=[];S.state="STOPPED"}
 try{UI=JSON.parse(localStorage.getItem("ytUI"))||{}}catch(e){}
@@ -469,14 +467,8 @@ const Bus={h:{},on(e,fn){(this.h[e]=this.h[e]||[]).push(fn)},emit(e,d){(this.h[e
 
 /* ═════════════ 5) TELEGRAM (internal) ═════════════ */
 const TG={wa:null,
-  init(){const w=window.Telegram&&Telegram.WebApp;if(!w)return;this.wa=w;w.ready();w.expand()},
-  send(txt){const c=CONFIG.telegram;if(!c.notify||!c.token||!c.chatId)return;
-    fetch("https://api.telegram.org/bot"+c.token+"/sendMessage",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({chat_id:c.chatId,text:txt,parse_mode:"HTML"})}).catch(()=>{})}
+  init(){const w=window.Telegram&&Telegram.WebApp;if(!w)return;this.wa=w;w.ready();w.expand()}
 };
-Bus.on("start",()=>TG.send("🟢 <b>Yetimmm</b> started"));
-Bus.on("stop",()=>TG.send("🔴 <b>Yetimmm</b> stopped"));
-Bus.on("open",p=>TG.send(`📌 <b>${p.side}</b> #${p.no}\nEntry ${f(p.entry)} · SL ${f(p.sl)} · TP ${f(p.tp)}\nLot ${f(p.lot)} · Risk $${f(p.risk)}`));
-Bus.on("close",h=>TG.send(`${h.pnl>=0?"✅":"❌"} #${h.no} ${h.side} ${h.reason}\n${f(h.entry)} → ${f(h.exit)} · <b>${sg(h.pnl)}$</b>`));
 
 /* ═════════════ 6) BRIDGE (live mode: bot / MT5 backend) ═════════════ */
 const SES=(()=>{const st=()=>{try{return CONFIG.sessionStore==="session"?sessionStorage:localStorage}catch(e){return null}},ls=()=>{try{return localStorage}catch(e){return null}};
@@ -738,8 +730,8 @@ function renderStop(){
 function cancelAll(){ask(t("q_can"),t("q_canB"),t("canB"),()=>run("cancel"))}
 let ACP={};
 function acctCard(k){
-  const a=S.acct||{},c=a.cur||"USD",lg=a.login||SES.l||"",off=live()&&link()!=="ok",n=v=>(v==null||isNaN(v))?"—":f(v);
-  const cells=[["bal",t("aBal"),S.acct?n(a.bal):"—",""],["eq",t("aEq"),S.acct?n(a.eq):"—",S.acct?cl(a.eq-a.bal):""],["fl",t("aFl"),S.acct?sg(a.fl)+"$":"—",S.acct?cl(a.fl):""],
+  const a=S.acct||{},c=a.cur||"",lg=a.login||SES.l||"",off=live()&&link()!=="ok",n=v=>(v==null||isNaN(v))?"—":f(v);
+  const cells=[["bal",t("aBal"),S.acct?n(a.bal):"—",""],["eq",t("aEq"),S.acct?n(a.eq):"—",S.acct?cl(a.eq-a.bal):""],["fl",t("aFl"),S.acct?sg(a.fl)+(c===""?"":c==="USD"?"$":" "+esc(c)):"—",S.acct?cl(a.fl):""],
     ["mg",t("aMg"),S.acct?n(a.mg):"—",""],["fm",t("aFm"),S.acct?n(a.fm):"—",""],["lev",t("aLev"),S.acct?"1:"+a.lev:"—",""],
     ["ovol",t("aVol"),S.acct?(a.ovol!=null?f(a.ovol)+" "+t("aLot"):"—"):"—",""],["np",t("aNp"),S.acct&&a.np!=null?String(a.np):"—",""],
     ["ml",t("aMl"),S.acct&&a.mg>0&&a.ml!=null?f(a.ml)+"%":"—",""]];
@@ -977,10 +969,6 @@ window.YetimmmAPI={
   setLang:v=>setLang(v==="en"||v===1),
   setTheme
 };
-window.addEventListener("message",e=>{
-  if(!CONFIG.origins.includes(e.origin)||!e.data||!e.data.yetimmm)return;
-  const d=e.data;if(d.cmd)run(d.cmd,d.params||{});if(d.price)YetimmmAPI.setPrice(d.price);
-});
 
 /* ═════════════ 11) INIT ═════════════ */
 let sig=S.state+S.no+S.hist.length;
@@ -1058,7 +1046,7 @@ rk_BELOW_MIN:["المخاطرة المطلوبة {0} أقل من أقل مخاط
 rk_ABOVE_MAX:["الحجم المطلوب يتجاوز الحد الأقصى للوسيط — البوت ينتظر","The required volume exceeds the broker maximum — the bot waits"],rk_ABOVE_LIMIT:["حد الحجم الإجمالي لدى الوسيط (Volume Limit) سيُتجاوز — البوت ينتظر","The broker's Volume Limit would be exceeded — the bot waits"],
 rk_CLAMPED:["استُخدم أقل لوت للوسيط: المخاطرة المطلوبة {0} ← الفعلية {1}","Minimum lot used: requested {0} → effective {1}"],
 w_WAITING_VOLUME:["بانتظار حجم صالح","Waiting for a valid volume"],w_WAITING_MARGIN:["بانتظار هامش كافٍ","Waiting for enough margin"],w_WAITING_SPREAD:["بانتظار انخفاض السبريد","Waiting for the spread to narrow"],w_WAITING_MARKET:["السوق مغلق — بانتظار الافتتاح","Market closed — waiting for the open"],
-w_WAITING_SEQCAP:["بانتظار — بلغت الخسائر المتتالية السقف","Paused — consecutive-loss cap reached"],w_WAITING_RISKCAP:["بانتظار — المخاطرة التالية فوق سقف الرصيد","Paused — next risk is above the balance cap"],w_WAITING_ACCLOSSCAP:["بانتظار — الخسارة التراكمية ستتجاوز السقف","Paused — accumulated loss would exceed the cap"],w_WAITING_MARGINLVL:["بانتظار — مستوى الهامش أقل من الحد الأدنى","Paused — margin level below the minimum"],w_WAITING_NEXTDAY:["اكتملت دورة اليوم — الدورة التالية غدًا","Today's cycle is complete — next cycle tomorrow"],w_WAITING_BROKER:["بانتظار الوسيط","Waiting for the broker"],w_WAITING_PRICE:["بانتظار السعر","Waiting for the price"],w_WAITING_REENTRY:["بانتظار إعادة الدخول","Waiting to re-enter"],
+w_WAITING_SEQCAP:["بانتظار — بلغت الخسائر المتتالية السقف","Paused — consecutive-loss cap reached"],w_WAITING_RISKCAP:["بانتظار — المخاطرة التالية فوق سقف الرصيد","Paused — next risk is above the balance cap"],w_WAITING_ACCLOSSCAP:["بانتظار — الخسارة التراكمية ستتجاوز السقف","Paused — accumulated loss would exceed the cap"],w_WAITING_MARGINLVL:["بانتظار — مستوى الهامش أقل من الحد الأدنى","Paused — margin level below the minimum"],w_WAITING_DAYLOSS:["بانتظار — بلغت الخسارة اليومية الحد المسموح","Paused — daily loss limit reached"],w_WAITING_NEXTDAY:["اكتملت دورة اليوم — الدورة التالية غدًا","Today's cycle is complete — next cycle tomorrow"],w_WAITING_BROKER:["بانتظار الوسيط","Waiting for the broker"],w_WAITING_PRICE:["بانتظار السعر","Waiting for the price"],w_WAITING_REENTRY:["بانتظار إعادة الدخول","Waiting to re-enter"],
 e_pair:["لا يمكن وضع Buy Stop و Sell Stop معاً بهذا العرض. أقل عرض الآن = {0}","A Buy Stop and a Sell Stop cannot exist together at this width. Minimum width now = {0}"],
 pvEA:["يحسب الـ EA اللوت والمخاطرة الفعلية بعد التطبيق","The EA calculates the lot and effective risk after Apply"]});
 Object.assign(D,{vf_t:["التحقق من الاتصال","Connection check"],vf_s:["فحص سريع قبل الدخول التلقائي","Quick check before automatic sign-in"],

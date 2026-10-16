@@ -1,11 +1,11 @@
-// Yetimmm bridge v4.21.0 — ONE bot, ONE link, login by MT5 account number + ONE app password.
+// Yetimmm bridge v4.22.0 — ONE bot, ONE link, login by MT5 account number + ONE app password.
 //   EA  -> POST /api/ea/sync  (headers X-EA-Secret [+ X-EA-Pair while pairing])  body {login, srv, fresh, reset, cv, state, ack}
 //   App -> POST /login        body {login, pw, init}                -> {ok, sess}
 //   App -> POST /verify       headers X-Login + X-Session, body {init} -> {ok, hard, checks:{session,account,telegram,bot}}
 //   App -> GET  /state        headers X-Login + X-Session
 //   App -> POST /command      headers X-Login + X-Session
 //   App -> POST /logout       headers X-Login + X-Session
-// Secrets (wrangler secret put): BOT_TOKEN, APP_PASSWORD, PAIR_CODE (EA <-> account pairing; falls back to APP_PASSWORD)
+// Secrets (wrangler secret put): BOT_TOKEN, APP_PASSWORD, PAIR_CODE (EA <-> account pairing: MANDATORY, strong, different from APP_PASSWORD; no fallback)
 // Each MT5 account gets its own isolated hub (Durable Object "acc-<login>").
 // The EA's MT5 trading password is NEVER requested or stored.
 
@@ -17,7 +17,7 @@
 //    • SESSION_EPOCH bumped -> everybody is signed out instantly (panic button)
 // ═════════════════════════════════════════════════════════════════════════
 import { Notify } from "./news.js";
-export const VERSION = "4.21.0", EA_PROTOCOL = "2.34";   // v4.8: the ONE place the release number lives (package.json / README / CHANGELOG / EA must match: npm run check enforces it)
+export const VERSION = "4.22.0", EA_PROTOCOL = "2.36";   // v4.8: the ONE place the release number lives (package.json / README / CHANGELOG / EA must match: npm run check enforces it)
 export { Notify };
 
 const CONFIG = {
@@ -315,8 +315,8 @@ export class Hub {
   // v4.6: every authenticated request slides the session (persisted at most once per SESSION_TOUCH_SEC so /state polling never hammers storage)
   async touch(a, s) { const now = Date.now(); if (now - s.t > this.c.touchMs) { s.t = now; await this.ctx.storage.put("acc", a); } }
   // v4.6: order-match tolerance comes from the SYMBOL (tick size / point / Max Deviation reported by the EA), never from a % of price.
-  // Fallback 0.30 only for an EA older than v2.21 that does not report them yet.
-  tolOf(st) { const tick = Number(st.tick) || 0, pt = Number(st.pt) || tick, dev = Number(st.maxDev) || 0, t = Math.max(tick * 3, dev * pt); return t > 0 ? t : 0.3; }
+  // No fixed fallback: an EA that does not report tick/point/maxDev (older than v2.21) gets tolerance 0 = exact price match only.
+  tolOf(st) { const tick = Number(st.tick) || 0, pt = Number(st.pt) || tick, dev = Number(st.maxDev) || 0; return Math.max(tick * 3, dev * pt); }
   async fetch(req) {
     const p = new URL(req.url).pathname;
     const b = await req.json().catch(() => ({}));
@@ -381,7 +381,7 @@ export class Hub {
     else if (key[0] === "w") { const q = (st.waits || []).find((x) => x.side === key.slice(1)); if (q) src = { side: q.side, price: Number(q.level) }; }
     if (!src) return json({ ok: false, error: "order_gone" }, 404);
     const now = Date.now(), rec = old || { id: crypto.randomUUID().replace(/-/g, "").slice(0, 16), user_id: uid, account_id: String(a.login || ""), type: "order", event_id: key, created_at: now };
-    Object.assign(rec, src, { enabled: true, kind: "activated", status: "armed", updated_at: now, sym: st.sym || "XAUUSD", hseen: (st.hist || []).slice(0, 8).map((h) => this.hsig(h)), pos0: st.pos ? st.pos.entry + "|" + st.pos.no : "" });
+    Object.assign(rec, src, { enabled: true, kind: "activated", status: "armed", updated_at: now, sym: String(st.sym || ""), hseen: (st.hist || []).slice(0, 8).map((h) => this.hsig(h)), pos0: st.pos ? st.pos.entry + "|" + st.pos.no : "" });
     delete rec.fired_at; o[sk] = rec; this.miss = {}; await this.ctx.storage.put(sk, rec);
     return json({ ok: true });
   }
@@ -437,12 +437,12 @@ export class Hub {
     if (secret.length < 16) return json({ ok: false, error: "secret" }, 401);
     const sh = await sha("yt-ea|" + secret), now0 = Date.now();
     const matched = a.eaSecretH ? safeEq(a.eaSecretH, sh) : (a.eaSecret ? safeEq(a.eaSecret, secret) : false);
-    // v4.6 PAIRING (replaces "first EA wins"): an account is bound only by an EA that proves the pairing code (Worker secret PAIR_CODE, or APP_PASSWORD when unset).
+    // v4.6 PAIRING (replaces "first EA wins"): an account is bound only by an EA that proves the pairing code (Worker PAIR_CODE; mandatory, never the app password).
     // A valid code makes the SERVER mint the EA secret (CSPRNG) and hand it over once (es); afterwards the secret alone authenticates. Already-bound v4.5 accounts keep working
     // and are upgraded the first time the EA presents the code. A stranger who syncs first can no longer take the account: without the code he is refused (403).
     let ok = matched, issued = "", paired = false, dirty = false;
     const pair = String(m.pair || "");
-    if (pair && !matched && (!this.c.pairKey || pairWeak(this.c.pairKey))) return json({ ok: false, error: "pair_not_configured", weak: !!this.c.pairKey }, 503);   // v4.22: a weak PAIR_CODE (e.g. 123123) is refused like a missing one   // v4.8: no PAIR_CODE secret = pairing refused (never falls back to the app password)
+    if (pair && !matched && (!this.c.pairKey || pairWeak(this.c.pairKey))) return json({ ok: false, error: "pair_not_configured", weak: !!this.c.pairKey }, 503);   // v4.22: a weak PAIR_CODE (e.g. 123123) is refused like a missing one
     if (pair) {
       // v4.22 SECURITY: per-account lock restored (the per-IP gate in the entry point covers rotating account numbers). Wrong codes count; a lock refuses even a correct code until it expires.
       a.pf = a.pf || { n: 0, until: 0 };

@@ -130,6 +130,21 @@ for (const need of ["double SizingPerLot(", "double CommPerLotEff()", "void Plan
 eaSrc.indexOf("PlanCheck(buy,level,lot);") > 0 && eaSrc.indexOf("PlanCheck(buy,level,lot);") < eaSrc.indexOf("g_trade.BuyStop(lot,level") ? ok("EA verifies the financial plan BEFORE sending the order") : fail("PlanCheck does not precede the order send");
 for (const w of ["WAITING_ACCLOSSCAP", "WAITING_MARGINLVL", "WAITING_NEXTDAY"]) html.includes("w_" + w) ? ok("Mini App has a text for " + w) : fail("Mini App has no text for " + w);
 
+// 12) v2.36 ledger policy + final-lot caps lints
+for (const need of ["string LedgerApplyNet(", "InpCountManualResults", "InpMaxRiskUSD", "InpMaxDailyLoss", "WAITING_DAYLOSS", "RISK_ABOVE_DAYLOSS", "void DayNetAdd("])
+  eaSrc.includes(need) ? ok("EA v2.36 has " + need) : fail("EA v2.36 is missing " + need);
+html.includes("w_WAITING_DAYLOSS") ? ok("Mini App has a text for WAITING_DAYLOSS") : fail("Mini App has no text for WAITING_DAYLOSS");
+
+// 13) final audit: nothing hidden / dead may come back
+const tomlSrc = readFileSync(join(root, "worker", "wrangler.toml"), "utf8");
+/^\s*PAIR_CODE\s*=/m.test(tomlSrc) ? fail("wrangler.toml holds PAIR_CODE as a plain variable (must be a secret)") : ok("PAIR_CODE is not stored in wrangler.toml");
+!/api\.telegram\.org\/bot/.test(html) ? ok("Mini App has no client-side Telegram sender (no bot token in a public page)") : fail("Mini App sends Telegram messages from the browser");
+!/addEventListener\("message"/.test(html) ? ok("Mini App has no postMessage command channel") : fail("Mini App has a postMessage command channel");
+!/\|\|\s*"USD"/.test(html) ? ok("Mini App assumes no default currency") : fail("Mini App falls back to a default currency");
+!/b\.contract>0\?b\.contract:100/.test(html) ? ok("Mini App assumes no default contract size") : fail("Mini App falls back to contract size 100");
+for (const dead of ["bool PlacementOk(", "string CheckModifiable(", "void TgAddId(", "bool VirtualInside(", "InpTgPollSec"])
+  !eaSrc.includes(dead) ? ok("EA dead code stays removed: " + dead) : fail("EA dead code is back: " + dead);
+
 console.log(bad ? "\n" + bad + " problem(s)" : "\nAll checks passed");
 
 console.log("\nNOTE: these checks verify STRUCTURE and known audit regressions only. They do NOT prove that the EA compiles (press F7 in MetaEditor)\nnor that the trading strategy is correct (run the Strategy Tester / a demo account). `npm test` covers the Worker, not the EA.");
