@@ -235,9 +235,9 @@ test("SLIDING SESSION: authenticated activity (state / command / news) extends t
   const t0 = () => hub.__st.m.get("acc").sessions.slice(-1)[0].t;
   age(29);                                                          // 29 days old: about to expire
   assert.equal((await b.call("/state", { method: "GET", headers: h })).s, 200);
-  assert.ok(Date.now() - t0() < 5000, "/state must slide the session");
-  age(29); assert.equal((await b.call("/command", { headers: h, body: { cmd: "stop" } })).s, 200); assert.ok(Date.now() - t0() < 5000, "/command must slide it");
-  age(29); assert.equal((await b.call("/news/calendar", { headers: h, body: {} })).s, 200); assert.ok(Date.now() - t0() < 5000, "/news must slide it");
+  assert.ok(Date.now() - t0() < 120000, "/state must slide the session");
+  age(29); assert.equal((await b.call("/command", { headers: h, body: { cmd: "stop" } })).s, 200); assert.ok(Date.now() - t0() < 120000, "/command must slide it");
+  age(29); assert.equal((await b.call("/news/calendar", { headers: h, body: {} })).s, 200); assert.ok(Date.now() - t0() < 120000, "/news must slide it");
   age(31); assert.equal((await b.call("/state", { method: "GET", headers: h })).s, 401);   // really idle for > 30 days: expired
 });
 

@@ -1,4 +1,4 @@
-// Yetimmm bridge v4.22.0 — ONE bot, ONE link, login by MT5 account number + ONE app password.
+// Yetimmm bridge v4.30.0 — ONE bot, ONE link, login by MT5 account number + ONE app password.
 //   EA  -> POST /api/ea/sync  (headers X-EA-Secret [+ X-EA-Pair while pairing])  body {login, srv, fresh, reset, cv, state, ack}
 //   App -> POST /login        body {login, pw, init}                -> {ok, sess}
 //   App -> POST /verify       headers X-Login + X-Session, body {init} -> {ok, hard, checks:{session,account,telegram,bot}}
@@ -17,7 +17,7 @@
 //    • SESSION_EPOCH bumped -> everybody is signed out instantly (panic button)
 // ═════════════════════════════════════════════════════════════════════════
 import { Notify } from "./news.js";
-export const VERSION = "4.22.0", EA_PROTOCOL = "2.36";   // v4.8: the ONE place the release number lives (package.json / README / CHANGELOG / EA must match: npm run check enforces it)
+export const VERSION = "4.30.0", EA_PROTOCOL = "2.44";   // v4.8: the ONE place the release number lives (package.json / README / CHANGELOG / EA must match: npm run check enforces it)
 export { Notify };
 
 const CONFIG = {
@@ -138,6 +138,8 @@ function publicOf(st) {
   if (typeof o.sym === "string") o.sym = cleanTxt(o.sym, 20);
   delete o.cmds;                                   // EA command log (Apply / Waiting / Superseded / failed ...) = internal, never a trade
   const m = classify(o.msg); o.msg = m.text; if (m.cat === "tech") o.msgCat = "tech";
+  if (o.rec && typeof o.rec === "object") o.rec = { hold: !!o.rec.hold, why: classify(o.rec.why).text };   // v4.30: REQUIRED_RECOVERY reaches the app (sanitised like every other EA text)
+  else delete o.rec;
   if (o.lastCmd && typeof o.lastCmd === "object") { const c = classify(o.lastCmd.text); o.lastCmd = { id: o.lastCmd.id, ok: !!o.lastCmd.ok, text: c.text, cat: c.cat, rid: c.cat === "tech" ? rid(o.lastCmd.id) : undefined }; }
   for (const k of ["waits", "orders"]) if (Array.isArray(o[k])) o[k] = o[k].map((x) => { if (!x || typeof x !== "object") return x; const y = { ...x }; for (const f of ["why", "note", "text", "msg", "err", "reason"]) if (typeof y[f] === "string") y[f] = classify(y[f]).text; return y; });
   return o;
@@ -306,7 +308,7 @@ export default {
   },
 };
 
-const CMD_MAX = { buy: 1e7, sell: 1e7, price: 1e7, risk: 1e7, target: 1e9, rr: 100, ticket: 9007199254740991 };
+const CMD_MAX = { buy: 1e7, sell: 1e7, price: 1e7, risk: 1e7, target: 1e9, rr: 100, confirm: 1, ticket: 9007199254740991 };
 export class Hub {
   constructor(ctx, env) { this.ctx = ctx; this.env = env || {}; this.c = cfg(env || {}); this.st = null; this.ts = 0; this.oa = null; this.miss = {}; this.hxSig = ""; this.wkc = null; this.dseen = new Set(); }
   age() { return this.ts ? (Date.now() - this.ts) / 1000 : null; }
@@ -477,7 +479,7 @@ export class Hub {
         if (!cur || cur.id !== inst || tn - cur.t > 5000) await this.ctx.storage.put("inst", { id: inst, t: tn });
       } else return json({ ok: true, dupInst: true, commands: [], staleSec: this.c.staleSec });
     }
-    if (body.state && typeof body.state === "object") { this.st = body.state; this.ts = Date.now(); try { await this.watch(a); } catch (e) { /* alerts must never break the EA sync */ } try { await this.archive(body.state, a); await this.diagFrom(body.state); } catch (e) { /* the internal archive / diagnostics must never break the EA sync */ } }
+    if (body.state && typeof body.state === "object") { this.st = body.state; this.ts = Date.now(); try { await this.watch(a); } catch (e) { /* alerts must never break the EA sync */ } try { await this.archive(body.state, a); await this.diagFrom(body.state); } catch (e) { /* the internal archive / diagnostics must never break the EA sync */ } try { await this.cmdResults(body.state); } catch (e) { /* the command-result ledger must never break the EA sync */ } }
     let evack = [];
     if (Array.isArray(body.ev) && body.ev.length) { try { evack = await this.events(body.ev, a, String(m.login || "")); } catch (e) { /* notifications must never break the EA sync */ } }
     let calNeed = false;
@@ -486,7 +488,16 @@ export class Hub {
     const ack = Array.isArray(body.ack) ? body.ack : [];
     const now = Date.now();
     const next = q.filter((x) => !ack.includes(x.c.id) && now - x.t < 120000);
-    if (next.length !== q.length) await this.ctx.storage.put("cmds", next);
+    if (next.length !== q.length) {
+      // v4.29: nothing leaves the queue silently - delivered (acked by the EA) or EXPIRED (never taken within 120 s) is written to the status ledger
+      const notes = [];
+      for (const x of q) {
+        if (ack.includes(x.c.id)) notes.push([x.c.id, x.c.cmd, "delivered", "taken by the EA"]);
+        else if (now - x.t >= 120000) notes.push([x.c.id, x.c.cmd, "expired", "not taken by the EA within 120 s (EA offline / restarting) - NOT executed, send it again"]);
+      }
+      await this.ctx.storage.put("cmds", next);
+      await this.cmdNote(notes);
+    }
     const out = { ok: true, commands: next.map((x) => ({ ...x.c, age: Math.max(0, Math.round((now - x.t) / 1000)) })), staleSec: this.c.staleSec };   // v4.8: age lets the EA expire stale commands
     if (evack.length) out.evack = evack;
     if (issued) out.es = issued;
@@ -613,7 +624,36 @@ export class Hub {
     pub.hist = [...wk].sort((x, y) => y.ts - x.ts);
     pub.stats = weekStats(wk);
     pub.week = { from: win.from, to: win.to, tzo: Number(a.tzo) || 0 };
+    pub.cmdStatus = ((await this.ctx.storage.get("cmdst")) || []).slice(-20);   // v4.29: visible status of every command (queued / delivered / expired / rejected)
     return json({ ...pub, eaAge: ag, eaOnline: this.botUp(), eaStaleSec: this.c.staleSec, oalerts: oal });
+  }
+  // v4.29: persistent command status ledger (last 60): queued -> delivered | expired | rejected. The EA's own result (executed / failed) comes from its command log.
+  async cmdNote(list) {
+    if (!list || !list.length) return;
+    const led = (await this.ctx.storage.get("cmdst")) || [], now = Date.now();
+    for (const [id, cmd, st, why] of list) {
+      const i = led.findIndex((x) => x.id === id);
+      if (i >= 0) { led[i].st = st; led[i].why = why; led[i].u = now; }
+      else led.push({ id, cmd: String(cmd), st, why, t: now, u: now });
+    }
+    await this.ctx.storage.put("cmdst", led.slice(-60));
+  }
+  // v4.30: the EXECUTION RESULT of every command, keyed by its id and stored in the persistent status ledger (not only "the last command"). Source: the EA's own command log
+  // (it keeps every command with its id, ok/fail and wait state). Only commands this Worker issued are touched; a result is never invented: no EA entry = no result.
+  async cmdResults(st) {
+    const src = (st && st.lastCmd ? [st.lastCmd] : []).concat(Array.isArray(st && st.cmds) ? st.cmds : []);   // the detailed command log comes last, so it wins over the short lastCmd text
+    if (!src.length) return;
+    const led = (await this.ctx.storage.get("cmdst")) || [], now = Date.now();
+    let ch = false;
+    for (const x of src) {
+      if (!x || x.id == null) continue;
+      const row = led.find((r) => r.id === String(x.id));
+      if (!row || row.st === "expired" || row.st === "rejected") continue;
+      const res = x.st === "fail" || x.ok === false ? "failed" : x.st === "wait" ? "waiting" : "executed", rt = classify(x.text).text.slice(0, 140);
+      if (row.res !== res || row.rtext !== rt) { row.res = res; row.rtext = rt; row.ru = now; ch = true; }
+      if (row.st === "queued") { row.st = "delivered"; row.why = "taken by the EA"; row.u = now; ch = true; }   // the EA answered, so it has certainly taken it
+    }
+    if (ch) await this.ctx.storage.put("cmdst", led.slice(-60));
   }
   async command(m) {
     const a = await this.S();
@@ -629,11 +669,12 @@ export class Hub {
       if (st0.pos || /^(BUY|SELL)_ACTIVE$/.test(String(st0.state || ""))) return json({ error: "busy", why: "position" }, 409);
       if (q1.length) return json({ error: "busy", why: "pending" }, 409);
       const id1 = crypto.randomUUID().replace(/-/g, "").slice(0, 16), id2 = crypto.randomUUID().replace(/-/g, "").slice(0, 16);
-      await this.ctx.storage.put("cmds", [{ t: now1, c: { id: id1, cmd: "stop" } }, { t: now1, c: { id: id2, cmd: "reset" } }]);
+      await this.ctx.storage.put("cmds", [{ t: now1, c: { id: id1, cmd: "stop" } }, { t: now1, c: { id: id2, cmd: "reset", confirm: 1 } }]);
+      await this.cmdNote([[id1, "stop", "queued", "new cycle step 1"], [id2, "reset", "queued", "new cycle step 2 (confirmed)"]]);
       return json({ ok: true, id: id2, orders: Array.isArray(st0.orders) ? st0.orders.length : 0 });
     }
     const c = { id: crypto.randomUUID().replace(/-/g, "").slice(0, 16), cmd: String(b.cmd) };   // id first: the EA parser relies on it
-    for (const k of ["buy", "sell", "risk", "target", "rr", "ticket", "price"]) {
+    for (const k of ["buy", "sell", "risk", "target", "rr", "ticket", "price", "confirm"]) {
       if (b[k] === undefined || b[k] === null || b[k] === "") continue;
       const n = Number(b[k]), mx = CMD_MAX[k];
       if (!Number.isFinite(n) || n < 0 || n > mx) return json({ error: "bad number: " + k }, 400);   // v4.22: no negative / absurd values reach the EA
@@ -648,9 +689,14 @@ export class Hub {
     if ((b.cmd === "delete" || b.cmd === "modify") && !(c.ticket > 0) && !c.side) return json({ error: "ticket or side required" }, 400);
     if ((b.cmd === "modify" || b.cmd === "place") && !(c.price > 0)) return json({ error: "price required" }, 400);
     if (b.cmd === "place" && !c.side) return json({ error: "side required" }, 400);
-    const q = (await this.ctx.storage.get("cmds")) || [];
-    q.push({ t: Date.now(), c });
-    await this.ctx.storage.put("cmds", q.slice(-20));
+    const nowQ = Date.now(), q = ((await this.ctx.storage.get("cmds")) || []).filter((x) => nowQ - x.t < 120000);
+    if (q.length >= 20) {                                   // v4.29: a full queue REFUSES the new command visibly; it never drops an older one silently
+      await this.cmdNote([[c.id, c.cmd, "rejected", "command queue full (20 waiting) - NOT queued, try again shortly"]]);
+      return json({ error: "queue_full", why: "queue_full" }, 429);
+    }
+    q.push({ t: nowQ, c });
+    await this.ctx.storage.put("cmds", q);
+    await this.cmdNote([[c.id, c.cmd, "queued", "waiting for the EA"]]);
     return json({ ok: true, id: c.id });
   }
 }

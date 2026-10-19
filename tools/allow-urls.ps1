@@ -7,8 +7,8 @@
                    allow-urls.ps1 -CloseMt5            (closes MT5 for you)
                    allow-urls.ps1 -DataFolder "D:\MT5\Data"   (portable / custom data folder)
 
- The Worker URL is read from the InpBrUrl default in ..\ea\Yetimmm.mq5, so changing the
- Worker there is enough; -Url overrides it. A backup of common.ini is always made.
+ The Worker URL is read from ..\ea\Yetimmm.cfg (written by `npm run setup`), then from a non-empty
+ InpBrUrl default in ..\ea\Yetimmm.mq5 if one was set; -Url overrides both. A backup of common.ini is always made.
 #>
 param(
   [string[]]$Url,

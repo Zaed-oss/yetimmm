@@ -110,7 +110,7 @@ test("EA 2.34: the financial check runs BEFORE the order is sent, and re-entry r
   assert.ok(ea.includes('LogOrder("REARM_BLOCKED"'));
 });
 test("EA 2.34: the cycle result is the net of the whole cycle and is logged / sent", () => {
-  assert.match(ea, /double cycNet=net-g_accLoss;/);
+  assert.ok(ea.includes("g_cycNet=NormalizeDouble(before+net,8);"));     // v2.38: the cycle net is a running sum of EVERY booked result
   assert.ok(ea.includes('LogOrder("CYCLE_COMPLETE"'));
   assert.ok(ea.includes('GS("CYCDAY",(double)DayKeyNow());'));
   assert.ok(ea.includes('GS("CYCDAY",0.0);'));
@@ -120,8 +120,8 @@ test("EA 2.34: per-trade verification table (report section 10) is written with 
   for (const col of ["Trade;Risk;LossBefore;NeededNetProfit;Lot;LossAtSL;NetAtTP;CumLossIfSL;MarginRequired;MarginFree;BalanceNeeded;Status"]) assert.ok(ea.includes(col));
   assert.equal((ea.match(/WritePlanTable\("/g) || []).length >= 2, true);
 });
-test("EA 2.36: version is consistent and the one-position / opposite-order rules of the report are still present", () => {
-  assert.match(ea, /#property version\s+"2\.36"/); assert.match(ea, /#define YT_VER "2\.36"/);
+test("EA 2.44: version is consistent and the one-position / opposite-order rules of the report are still present", () => {
+  assert.match(ea, /#property version\s+"2\.44"/); assert.match(ea, /#define YT_VER "2\.44"/);
   assert.ok(ea.includes("Opposite Order Deleted"));                       // opposite pending order removed when one side fills
   assert.ok(ea.includes("void EnforceSinglePosition("));
   assert.ok(ea.includes("bool SideOrderExists("));

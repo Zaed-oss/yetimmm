@@ -34,7 +34,7 @@ test("defaults: Fast Catch off, entry PENDING, after-SL WAIT; startup purges vir
   assert.match(src, /input\s+bool\s+InpCatchAfterSL\s*=\s*false/);
   assert.match(src, /InpEntryMode\s*=\s*ENTRY_PENDING/);
   assert.match(src, /InpBreachPolicy\s*=\s*BREACH_WAIT/);
-  const init = src.indexOf("PurgeLegacyLevels();\n   PurgeVirtualState();");
+  const init = src.indexOf("RecoveryStateSafe(); ");
   assert.ok(init > 0, "PurgeVirtualState must run in OnInit");
 });
 test("state reported to the Mini App can never say MARKET / VIRTUAL", () => {

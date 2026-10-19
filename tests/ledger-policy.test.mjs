@@ -1,5 +1,5 @@
 // v2.36 - acceptance tests for the "smart compensation" report (PDF sections 2-13).
-// Reference model transcribed 1:1 from ea/Yetimmm.mq5 (NextRiskFor, SizingPerLot, RiskCompute, LedgerApplyNet, DayNet*, ProcessClosedPosition)
+// Reference model transcribed 1:1 from ea/Yetimmm.mq5 (NextRiskForNet, SizingPerLot, RiskCompute, CycleBook/CycleTryComplete, DayNet*, ProcessClosedPosition)
 // + structural checks of the REAL EA source. HONEST LIMIT: MQL5 is not executed here (no MetaEditor / terminal / broker data).
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -14,6 +14,8 @@ const near = (a, b, e = 1e-6) => assert.ok(Math.abs(a - b) < e, `${a} !~ ${b}`);
 // ---------- model ----------
 const TARGET = 20, RR = 20, INIT = 1;
 const nextRisk = (L) => (L <= 1e-9 ? INIT : (L + TARGET) / RR);
+// v2.38 NextRiskForNet: the risk is planned from the net the cycle STILL needs (target - cycle net); with a partial profit it never falls below the initial risk
+const nextRiskNet = (net) => { if (Math.abs(net) <= 1e-9) return INIT; const rem = TARGET - net; if (rem <= 1e-9) return INIT; let r = rem / RR; if (net > 0 && r < INIT) r = INIT; return r; };
 function sizeLot({ risk, perLot, comm = 0, vmin = 0.01, vmax = 100, step = 0.01, accLoss = 0, roundUp = true, maxRiskUSD = 0, maxDaily = 0, dayLoss = 0 }) {
   if (!(perLot > 0)) return { ok: false, code: "RISK_NO_SPEC" };
   const perSz = comm > 0 && RR > 1 && perLot - comm / RR > perLot * 0.5 ? perLot - comm / RR : perLot;   // SizingPerLot
@@ -29,15 +31,11 @@ function sizeLot({ risk, perLot, comm = 0, vmin = 0.01, vmax = 100, step = 0.01,
   return { ok: true, lot, lossAtSL, grossTP, netTP, gap: risk * RR - netTP };
 }
 function book({ countManual = true } = {}) {
-  const st = { acc: 0, seq: 0, cur: INIT, seenDeals: new Set(), cycles: [], day: { k: 0, net: 0 } };
-  const apply = (net, why) => {                                       // LedgerApplyNet
-    const before = st.acc;
-    if (net < -1e-9) { st.acc += -net; st.cur = nextRisk(st.acc); return why + ":add"; }
-    if (net > 1e-9 && before > 1e-9) {
-      if (net >= before - 1e-6) { st.cycles.push({ cycNet: net - before, met: net - before >= TARGET * 0.98 - 1e-9 }); st.acc = 0; st.seq = 0; st.cur = INIT; return why + ":cycle"; }
-      st.acc = before - net; st.cur = nextRisk(st.acc); return why + ":part";
-    }
-    return why + ":none";
+  const st = { acc: 0, seq: 0, cur: INIT, cycNet: 0, cycId: 1, state: "IDLE", seenDeals: new Set(), cycles: [], day: { k: 0, net: 0 } };
+  const bookNet = (net) => { st.cycNet = Number((st.cycNet + net).toFixed(8)); st.acc = Math.max(0, -st.cycNet); st.cur = nextRiskNet(st.cycNet); st.state = "ACTIVE"; };   // CycleBook
+  const tryComplete = () => {                                         // CycleTryComplete: the ONE completion rule (strict target, no 98%)
+    if (st.cycNet < TARGET - 1e-6) return false;
+    st.cycles.push({ id: st.cycId, cycNet: st.cycNet, met: true }); st.acc = 0; st.seq = 0; st.cur = INIT; st.cycNet = 0; st.cycId++; st.state = "WAITING_USER"; return true;
   };
   return {
     st,
@@ -46,13 +44,10 @@ function book({ countManual = true } = {}) {
       st.seenDeals.add(deal);
       if (!tainted) { if (st.day.k !== day) st.day = { k: day, net: 0 }; st.day.net += net; }
       if (tainted) return "TAINTED";
-      if (reason === "SL") { if (net < 0) st.acc += -net; st.seq++; st.cur = nextRisk(st.acc); return "SL"; }
-      if (reason === "TP") {
-        if (stale) return apply(net, "staleTP");                       // v2.36
-        if (st.acc > 1e-9 && net < st.acc - 1e-6) { st.acc -= Math.max(net, 0); st.cur = nextRisk(st.acc); return "TP_PART"; }
-        const cyc = net - st.acc; st.cycles.push({ cycNet: cyc, met: cyc >= TARGET * 0.98 - 1e-9 }); st.acc = 0; st.seq = 0; st.cur = INIT; return "TP_CYCLE";
-      }
-      return countManual ? apply(net, reason) : "IGNORED";
+      if (reason === "SL") { bookNet(net); st.seq++; return tryComplete() ? "SL_CYCLE" : "SL"; }
+      if (reason === "TP") { bookNet(net); return tryComplete() ? "TP_CYCLE" : (stale ? "staleTP" : "TP_PART"); }
+      if (!countManual) return "IGNORED";
+      bookNet(net); return tryComplete() ? reason + ":cycle" : reason + ":booked";
     },
   };
 }
@@ -76,13 +71,14 @@ test("6 trade 6 loses: its loss counted ONCE even if the event repeats", () => {
 test("7 partial profit that does not repay the debt: debt reduced, NOT reset", () => {
   const b = nLosses(5); const L = b.st.acc; b.close(100, "TP", 3); near(b.st.acc, L - 3); assert.equal(b.st.cycles.length, 0); near(b.st.cur, nextRisk(L - 3));
 });
-test("8 manual close (v2.36): the NET result enters the ledger - loss and profit", () => {
+test("8 manual close (v2.36/2.38): the NET result enters the CYCLE ledger - loss and profit; repaying the debt does NOT end the cycle", () => {
   const b = book(); b.close(1, "Manual (External)", -0.4); near(b.st.acc, 0.4); near(b.st.cur, 20.4 / 20);
   b.close(2, "Manual (External)", 0.25); near(b.st.acc, 0.15);                  // profit repays
-  b.close(3, "Manual (External)", 5); assert.equal(b.st.acc, 0); near(b.st.cur, 1);   // repaid fully -> cycle complete
+  b.close(3, "Manual (External)", 5); assert.equal(b.st.acc, 0); near(b.st.cycNet, 4.85); assert.equal(b.st.cycles.length, 0);   // debt repaid but cycle net 4.85 < 20: still ACTIVE
+  b.close(4, "Manual (External)", 15.15); assert.equal(b.st.cycles.length, 1); near(b.st.cycles[0].cycNet, 20); near(b.st.cur, 1);    // now the net reached 20 -> complete
 });
 test("8b policy OFF (InpCountManualResults=false) restores the old behaviour", () => { const b = book({ countManual: false }); b.close(1, "Manual (External)", -3); assert.equal(b.st.acc, 0); });
-test("8c manual profit with NO debt does not invent credit (ledger never negative)", () => { const b = book(); b.close(1, "Manual (External)", 7); assert.equal(b.st.acc, 0); near(b.st.cur, 1); });
+test("8c manual profit with NO debt is a real result of the cycle (cycle net +7), never a negative debt", () => { const b = book(); b.close(1, "Manual (External)", 7); assert.equal(b.st.acc, 0); near(b.st.cycNet, 7); near(b.st.cur, 1); assert.equal(b.st.cycles.length, 0); });
 test("9 partial close: the EA waits for the FULL volume before it books the result (source)", () => {
   assert.match(ea, /if\(outVol<inVol-1e-8\) return false;\s*\/\/ not fully closed yet/);
   assert.ok(ea.includes("double net=gross+comm+swap;") || ea.includes("double net=gross+comm+swap"));
@@ -133,7 +129,7 @@ test("18 unable to compute the loss per lot -> no order (RISK_NO_SPEC)", () => {
 // ---------- v2.36 specifics ----------
 test("stale TP (v2.36): repays the LIVE debt, never erases a newer loss, never negative", () => {
   const b = nLosses(3); b.close(50, "TP", 2, { stale: true }); near(b.st.acc, 3.1525 - 2, 1e-4); assert.equal(b.st.cycles.length, 0);
-  b.close(51, "TP", 99, { stale: true }); assert.equal(b.st.acc, 0); near(b.st.cur, 1);
+  b.close(51, "TP", 99, { stale: true }); assert.equal(b.st.acc, 0); near(b.st.cur, 1); assert.equal(b.st.cycles.length, 1);   // 99 - 1.1525 >= 20 -> cycle complete
 });
 test("ledger is order independent for the same set of results (arithmetic)", () => {
   const A = book(), B = book(); [[1, -2], [2, -1.5], [3, 1]].forEach(([d, n]) => A.close(d, "Manual", n)); [[3, 1], [1, -2], [2, -1.5]].forEach(([d, n]) => B.close(d, "Manual", n));
@@ -144,7 +140,7 @@ test("daily net resets on a new server day and ignores netting-tainted positions
   b.close(3, "SL", -1, { day: 2 }); near(b.st.day.net, -1); b.close(4, "Manual", -50, { day: 2, tainted: true }); near(b.st.day.net, -1);
 });
 test("EA source: ledger helper, stale-TP rule and policy input exist; the entry strategy functions were not touched", () => {
-  for (const s of ["string LedgerApplyNet(", "input bool   InpCountManualResults = true;", "void DayNetAdd(", "double DayNetToday()", 'ledNote=LedgerApplyNet(net,"Old/overlapping TP', "ledNote=LedgerApplyNet(net,rs);"])
+  for (const s of ["string CycleBook(", "input bool   InpCountManualResults = true;", "void DayNetAdd(", "double DayNetToday()", 'ledNote=CycleBook(net,"Old/overlapping TP', "ledNote=CycleBook(net,rs);"])
     assert.ok(ea.includes(s), s);
   assert.ok(!ea.includes("Nothing is reset; the user is told."));
 });

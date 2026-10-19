@@ -1,0 +1,74 @@
+input group "=== Trading Levels ==="
+input double InpBuyStop        = 0.0;     // (DEPRECATED v2.27 - IGNORED) orders come ONLY from the Telegram Mini App
+input double InpSellStop       = 0.0;     // (DEPRECATED v2.27 - IGNORED) orders come ONLY from the Telegram Mini App
+input group "=== Risk Management ==="
+input double InpInitialRisk    = 1.0;     // Initial Risk ($) - lot is rounded DOWN to the broker step: real risk <= requested
+input double InpTargetProfit   = 20.0;    // Recovery Target ($) - extra profit the NEXT trade must earn on top of the accumulated loss (sizes the next risk; does NOT stop the EA)
+input double InpRiskReward     = 20.0;    // Risk/Reward (TP = SL distance x this)
+input bool   InpResetRiskOnStart = false; // v2.43 DEFAULT false. Even when true it NEVER clears an open debt: START / levels after STOP keep the cycle ledger. A debt is cleared ONLY by the explicit, confirmed Reset / New Cycle command from the Mini App
+input group "=== Risk / Broker engine (v2.23) ==="
+input ENUM_YT_RISKPOL InpRiskPolicy = YT_RISK_STRICT; // STRICT = never exceed the requested risk (WAITING_VOLUME when the broker minimum lot risks more) | CLAMP_TO_MIN = use the broker minimum lot and report the Effective Risk
+input bool   InpOrderCheck     = true;    // Run OrderCheck (server pre-flight) before every pending OrderSend
+input int    InpMaxSpread      = 0;       // Max Spread to ARM (points, live Ask-Bid). 0 = off. Above it NEW orders wait (WAITING_SPREAD); open trades are never touched
+input double InpMaxRevGap      = 0.0;     // Max Reversal Distance ($, BREACH_MARKET/VIRTUAL only): market entry farther than this from the level is skipped. 0 = off
+input bool   InpTpResetNetOnly = true;    // (DEPRECATED v2.38 - IGNORED) a cycle now ends ONLY when the cycle NET reaches the target; a TP alone never resets it
+input group "=== Recovery Plan Guard (v2.24) ==="
+input int    InpMaxSeqLosses   = 0;       // v2.43 DEFAULT 0 = OFF (the cycle never stops by a loss COUNT; it ends only when the cycle NET reaches the target). Optional cap: when reached, NEW orders wait (WAITING_SEQCAP) and the debt is KEPT; open trades are never touched
+input double InpMaxLot         = 0.0;     // v2.31 Max lot allowed for ONE trade (hard safety cap for recovery sizing). 0 = broker maximum only. Above it NEW orders wait (WAITING_VOLUME) - the lot is never forced beyond it
+input bool   InpRecoveryRoundUp = true;   // v2.31 In a recovery cycle the lot is rounded UP to the broker step so the TP repays ALL accumulated losses + the Recovery Target (otherwise rounding down leaves a small debt)
+input double InpMaxRiskPctBal  = 0.0;     // Max risk of ONE trade as % of the account balance. 0 = off. If the next planned risk is above it, NEW orders wait (WAITING_RISKCAP). Report recommendation: 2-3
+input bool   InpPlanLog        = true;    // Print the exact recovery plan (risk / target / cumulative loss / balance needed) in the Experts log at start AND write the full per-trade table (lot, margin, net at TP) to Yetimmm_<magic>_Plan.csv
+input double InpMaxAccLoss     = 0.0;     // v2.34 Max ACCUMULATED loss allowed in one cycle ($, main units). 0 = off. When (accumulated loss + the next planned risk) would exceed it, NEW orders wait (WAITING_ACCLOSSCAP); open trades are never touched
+input double InpMinMarginLevel = 0.0;     // v2.34 Minimum Margin Level (%) required to place NEW orders. 0 = off. Below it NEW orders wait (WAITING_MARGINLVL); only checked while the account really uses margin
+input bool   InpCostAware      = true;    // v2.34 COST-AWARE LOT: the lot also covers the round-trip commission so the NET profit at TP (not the gross one) repays the accumulated loss + the Recovery Target
+input double InpCommPerLot     = 0.0;     // v2.34 Round-trip commission per 1.00 lot ($, main units). 0 = AUTO (learned from the last closed trade; 0 until the first trade closes). Used only when Cost-Aware is ON
+input double InpMaxRiskUSD      = 0.0;     // v2.36 Max risk ($, main units) of ONE trade, judged on the FINAL (rounded) lot at the SL. 0 = off. Above it NEW orders wait (WAITING_RISKCAP); the lot is never forced
+input double InpMaxDailyLoss    = 0.0;     // v2.36 Daily loss limit ($, main units): today's realized net loss (server day) + the loss at SL of the FINAL lot may not exceed it. 0 = off. Above it NEW orders wait (WAITING_DAYLOSS) until the next server day; open trades are never touched
+input bool   InpCountManualResults = true; // v2.36 LEDGER POLICY: the NET result (profit+commission+swap) of EVERY closed position of this EA (manual / mobile / web close, stop-out, protection close, rejected fill, stale TP) enters the recovery ledger. false = old behaviour (only SL / TP / extra-position closes count)
+input bool   InpOneCyclePerDay = false;   // v2.34 After a cycle ends with a TP (net result reached) no NEW cycle starts until the next server day (WAITING_NEXTDAY). Reset / New Cycle from the Mini App overrides it
+input group "=== Execution ==="
+input int    InpMaxDeviation   = 30;      // Max Slippage Check (points) - checked AFTER every fill (stop orders cannot be capped by MT5); a market reversal also sends it as a price guard
+input ENUM_YT_DEV_ACTION InpDevAction = YT_DEV_REJECT; // Action when a fill exceeds the Max Slippage Check
+input int    InpWarnSpread     = 60;      // Spread Alert (points) - ALERT ONLY, trading is never blocked
+input double InpMinLevelGap    = 0.0;     // Minimum gap between Buy/Sell levels ($)
+input ENUM_YT_ENTRY InpEntryMode = ENTRY_PENDING; // v2.23 DEFAULT = PENDING (real Buy Stop + Sell Stop on the server = the strategy). VIRTUAL = stored zone + tick trigger + market execution (advanced, opt-in)
+input bool   InpZoneGate     = true;    // v2.18 ZONE GATE: when BOTH Buy Stop and Sell Stop are missing, place them TOGETHER only when the price is inside the zone (no lone order in a trending market)
+input ENUM_YT_BREACH InpBreachPolicy = BREACH_WAIT; // After an SL: WAIT (DEFAULT v2.23: pending pair re-armed, WAITING_REENTRY until both Stops are placeable - Market Reversal OFF) or MARKET (advanced: opens the opposite side at market; a different strategy with a different SL distance)
+input bool   InpPriceFallback  = true;    // v2.28 DEFAULT = ON: classify SL/TP by exit price ONLY when the deal reason is unknown (never for manual / stop-out / EA closes). Prevents a broker SL with slippage from being labelled "Other" (which used to stop the sequence)
+input bool   InpPreArmReverse   = true;    // v2.37 STOP-AND-REVERSE: while a position is open the OPPOSITE Stop order (at the SL level) stays a REAL pending order sized for the next recovery step, so the broker opens the reverse trade on the very tick the SL is touched. HEDGING accounts only (Netting = automatically off). false = old behaviour (re-armed after the SL)
+input bool   InpCombinedMargin  = true;    // Place a missing Buy Stop / Sell Stop pair only when the margin of BOTH missing orders is available (off = each order is checked alone)
+input int    InpProtectCloseSec = 20;     // Position WITHOUT SL/TP: emergency-close after N seconds of failed protection. TRADING DECISION: 20 = "never stay unprotected" (a transient connection problem can close the trade at a loss larger than the planned risk); 0 = never force-close (alert + retry only; the position may stay unprotected)
+input group "=== Fast Execution (v2.30) ==="
+input bool   InpFastCatch      = false;   // v2.33 DISABLED (ignored: real orders only). v2.30 FAST CATCH: a level that the price has ALREADY crossed while no pending order of that side is on the server is entered AT MARKET on that very tick (SL = opposite level, lot sized from the real entry, risk unchanged)
+input bool   InpCatchAfterSL   = false;   // (ignored, v2.33) FAST CATCH also right after a Stop Loss (WAITING_REENTRY). false = only when the price was seen INSIDE the zone first
+input double InpCatchMaxGap    = 0.0;     // FAST CATCH: skip the market entry when the price is farther than this ($) beyond the level. 0 = no limit (the lot shrinks with the distance, risk stays)
+input int    InpCatchDeviation = 300;     // FAST CATCH: max slippage (points) sent with the market order AND tolerated after the fill (a fast market needs a wide window or the broker re-quotes / rejects)
+input int    InpFastMovePts    = 80;      // A price range of at least this many points inside 1 second = FAST MARKET: no network calls (Telegram / Mini App) so every tick is processed. 0 = off
+input double InpHotZone        = 1.5;     // No network calls while the price is within this distance ($) of a level (or outside the zone) - WebRequest blocks the EA and ticks are lost. 0 = off
+input int    InpHotHoldSec     = 3;       // Seconds the network stays silent after a fast move
+input int    InpNetMaxDeferSec = 20;      // Network is never silent longer than this: one call is allowed every N seconds even in a hot market
+input double InpMoneyScale     = 0.0;     // v2.30 CENT SUPPORT: account-currency units per 1 main unit. 0 = AUTO (USC/EUC/GBC/AUC... = 100), 1 = off, 100 = force (e.g. a cent account that reports "USD"). With it, EVERY money figure (Risk, Target, losses, balance, margin, panel, Telegram, Mini App) is in MAIN units ($), so a cent account runs the SAME system as a standard one (Risk 1 / Target 20) with its smaller lot sizes
+input int    InpNetTimeoutMs   = 2000;    // WebRequest timeout (ms, 500..5000) - was 3000; it is the longest time the EA can be blind
+input group "=== Manual changes in MT5 ==="
+input ENUM_YT_EXT  InpExtPolicy  = YT_EXT_ADOPT;   // Order moved in MT5 (ADOPT = MT5 sets ENTRY only; SL/TP re-derived)
+input ENUM_YT_MISS InpMissPolicy = YT_MISS_HOLD;   // Pending order deleted manually in MT5
+input ENUM_YT_SEQ  InpSeqPolicy  = YT_SEQ_APPLY_NOW; // Levels changed during a sequence
+input group "=== System ==="
+input long   InpMagic          = 20260101; // Magic Number (changing it while Yetimmm orders/positions of the old Magic exist blocks the start)
+input bool   InpIgnoreOrphans  = false;    // Start even if orders/positions of ANOTHER Magic carry the "Yetimmm" comment (second instance / deliberate)
+input bool   InpShowPanel      = true;     // Show Yetimmm panel
+input group "=== Telegram ==="
+input bool   InpTgEnable       = true;    // Enable Telegram
+input bool   InpTgNotify       = true;    // Telegram Notifications
+input bool   InpTgControl      = true;    // Telegram Control Enabled
+input bool   InpTgViaWorker    = true;    // v2.23: notifications go EA -> Worker (unique event id) -> Telegram. The Bot Token is NEVER sent to / stored in MT5 and the EA never polls Telegram
+input bool   InpTgMenu         = false;   // v2.25: attach the START/STOP/CANCEL/STATUS... inline keyboard to every bot message. Default OFF (clean messages). Typing /menu always shows it on demand; every /command and callback keeps working
+input bool   InpTgAutoHeal     = true;    // Self-heal: single poller per token, auto-clear webhook on 409, auto-pause polling if another instance owns the token
+input int    InpTgPollMs       = 1000;     // Telegram fast polling interval (ms, 100..2000). Lower = faster commands but more HTTP calls
+input group "=== Mini App Bridge (Cloudflare Worker) ==="
+input bool   InpBrEnable       = true;    // Enable Mini App bridge
+input string InpBrUrl      = "";      // Worker URL. LEAVE EMPTY (v2.27): read automatically from Common\Files\Yetimmm.cfg written by `npm run setup`. Fill only to override.
+input string InpBrPairCode   = "";      // Pairing code. LEAVE EMPTY (v2.27): read automatically from Common\Files\Yetimmm.cfg written by `npm run setup`. Fill only to override.
+input bool   InpBrResetPw    = false;   // Set TRUE once (then back to FALSE) to sign every device out of this account (a normal EA restart does NOT sign anyone out since v4.1)
+input int    InpCmdTtlSec      = 30;      // v2.23: a Mini App command older than this when it reaches the EA is EXPIRED (acked, never executed)
+input int    InpBrPollSec      = 1;       // Bridge sync interval (sec) - v2.22: 1 s (was 3) so the Mini App price follows the broker closely

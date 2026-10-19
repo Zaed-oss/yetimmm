@@ -27,7 +27,7 @@ new_sqlite_classes = ["Notify"]
 # ── Secrets (never put these in this file) ──────────────────────────────
 #   wrangler secret put BOT_TOKEN      REQUIRED  Telegram bot token (also used to verify Telegram identity)
 #   wrangler secret put APP_PASSWORD   REQUIRED  the app password. Login is refused until it exists.
-#   wrangler secret put PAIR_CODE      REQUIRED  EA <-> account PAIRING code: at least 8 chars, strong, different from APP_PASSWORD (weak values such as 123123 are refused). `npm run setup` generates it and writes the same value to Yetimmm.cfg for the EA. No fallback exists.
+#   wrangler secret put PAIR_CODE      REQUIRED  EA <-> account PAIRING code: at least 8 chars, strong, different from APP_PASSWORD (weak values such as 123123 are refused). `npm run setup` generates it and writes the same value to Yetimmm.cfg for the EA. No fallback unless the legacy opt-in ALLOW_PAIR_FALLBACK="1" is set (NOT recommended).
 #   wrangler secret put ADMIN_KEY     optional  enables GET /admin/diag (internal diagnostics: raw EA command log, technical failures, archive summary). Unset = the endpoint does not exist. Never shown in the Mini App.
 #   wrangler secret put TE_KEY         optional  Trading Economics key (only used when no EA is online)
 #
@@ -49,3 +49,7 @@ ALLOWED_ORIGIN = "https://zaed-oss.github.io"
 # MT5_FEED       = "1"        # "0" = ignore the MT5 calendar and use only the external feeds
 # NEWS_PROVIDER  = "auto"     # auto | ff | te
 # MARKET_TZ      = "UTC"      # fallback platform time zone (the EA reports the real broker offset itself)
+# OWNER_TG       = "123456789"  # Telegram numeric id(s) (comma separated) that sign in WITHOUT a password (identity is proven by Telegram initData)
+# FAIL_WINDOW_SEC = "600"     # wrong attempts older than this are forgotten
+# PAIR_LOCKOUT   = "1"        # "0" turns off the wrong-pairing-code throttle (NOT recommended: allows brute force of PAIR_CODE)
+# ALLOW_EA_BOT_TOKEN = "0"    # "1" = legacy opt-in that sends BOT_TOKEN to the EA (NOT recommended: a rogue paired EA could read it)

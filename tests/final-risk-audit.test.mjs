@@ -83,22 +83,21 @@ test("v2.35 EA source: both final-size checks exist inside RiskCompute, are mapp
   assert.ok(body.indexOf("RISK_ABOVE_RISKCAP") < body.indexOf("r.vol=lot;"), "cap must be checked BEFORE the lot is accepted");
   assert.match(ea, /rc=="RISK_ABOVE_RISKCAP"\) return "WAITING_RISKCAP"/);
   assert.match(ea, /rc=="RISK_ABOVE_ACCCAP"\) return "WAITING_ACCLOSSCAP"/);
-  assert.match(ea, /#define YT_VER "2\.36"/);
+  assert.match(ea, /#define YT_VER "2\.44"/);
 });
 
 // ---- ledger rules transcribed from ProcessClosedPosition (idempotent, net-only TP reset) ----
 function ledger({ target = 20, rr = 20, init = 1, netOnly = true } = {}) {
-  const st = { acc: 0, seq: 0, cur: init, seen: new Set(), cycles: [] };
+  const st = { acc: 0, seq: 0, cur: init, cycNet: 0, seen: new Set(), cycles: [] };
+  const bookNet = (net) => { st.cycNet += net; st.acc = Math.max(0, -st.cycNet); st.cur = nextRisk(st.acc, init, target, rr); };   // v2.38 CycleBook (credit side ignored by this older model)
+  const done = () => { if (st.cycNet >= target - 1e-6) { st.cycles.push(st.cycNet); st.acc = 0; st.seq = 0; st.cur = init; st.cycNet = 0; return true; } return false; };
   return {
     st,
     close(dealId, reason, net) {
       if (st.seen.has(dealId)) return "DUP_IGNORED";            // IsLoggedDeal / IsLoggedPos
       st.seen.add(dealId);
-      if (reason === "SL") { if (net < 0) st.acc += -net; st.seq++; st.cur = nextRisk(st.acc, init, target, rr); return "SL"; }
-      if (reason === "TP") {
-        if (netOnly && st.acc > 1e-9 && net < st.acc - 1e-6) { st.acc = st.acc - Math.max(net, 0); st.cur = nextRisk(st.acc, init, target, rr); return "TP_PARTIAL"; }
-        st.cycles.push(net - st.acc); st.acc = 0; st.seq = 0; st.cur = init; return "TP_RESET";
-      }
+      if (reason === "SL") { bookNet(net); st.seq++; return done() ? "SL_RESET" : "SL"; }
+      if (reason === "TP") { bookNet(net); return done() ? "TP_RESET" : "TP_PARTIAL"; }     // v2.38: a TP ends the cycle ONLY when the cycle net reached the target
       return "NOT_COUNTED";
     }
   };
@@ -121,12 +120,12 @@ test("ledger test 5: a TP event repeated twice does not credit twice", () => {
   L.close("t", "TP", 34); assert.equal(L.close("t", "TP", 34), "DUP_IGNORED");
   assert.equal(L.st.cycles.length, 1);
 });
-test("documented GAP (not changed, owner decision): a manual / external close is NOT counted in either direction, so account P/L and accumulated loss can legitimately differ", () => {
+test("model of InpCountManualResults=false (policy OFF): a manual / external close is NOT counted in either direction, so account P/L and accumulated loss can legitimately differ", () => {
   const L = ledger(); L.close("a", "SL", -12.22);
   assert.equal(L.close("m", "Manual (External)", +7.6), "NOT_COUNTED");
   near(L.st.acc, 12.22);   // account is +7.6 richer, the debt is unchanged -> exactly the kind of 12.22 vs 4.62 gap seen in the screenshot
   assert.ok(/bool isSL=\(rs=="SL" && !tainted && !markedExtra\)/.test(ea) && /if\(isExtra && net<0\.0\)/.test(ea));
 });
-test("v2.36 CLOSED the old gap: an OLD/overlapping TP (keepState) now repays the live debt through LedgerApplyNet", () => {
-  assert.match(ea, /else if\(isTP && keepState\)\s*\{[^}]*LedgerApplyNet\(net,"Old\/overlapping TP/s);
+test("v2.36 CLOSED the old gap: an OLD/overlapping TP (keepState) now books its net in the cycle ledger through CycleBook", () => {
+  assert.match(ea, /else if\(isTP && keepState\)\s*\{[^}]*CycleBook\(net,"Old\/overlapping TP/s);
 });

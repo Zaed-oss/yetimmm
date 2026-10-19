@@ -1,5 +1,5 @@
 // Quick health check of the whole package:  npm run check
-import { readFileSync, readdirSync, statSync } from "node:fs";
+import { readFileSync, readdirSync, statSync, existsSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -74,6 +74,10 @@ eaVer && eaVer === defVer ? ok("EA #property version == YT_VER (" + eaVer + ")")
 const pkgVer = JSON.parse(read("package.json")).version;
 read("CHANGELOG.md").includes("## v" + pkgVer) ? ok("CHANGELOG has an entry for v" + pkgVer) : fail("CHANGELOG has no entry for package version " + pkgVer);
 new RegExp("bridge v" + pkgVer.replace(/\./g, "\\.")).test(wk.slice(0, 80)) ? ok("worker.js header version = v" + pkgVer) : fail("worker.js header comment is not v" + pkgVer);
+for (const [f, re] of [["TERMINAL.md", /^# Terminal \/ agent instructions \(Yetimmm v([\d.]+)/], ["docs/CURRENT_BEHAVIOR.md", /^# .*?v([\d.]+) \/ EA/]]) {
+  const m = read(f).split("\n")[0].match(re), want = pkgVer.split(".").slice(0, re.source.includes("agent") ? 2 : 3).join(".");
+  m && m[1] === want ? ok(f + " title version = " + m[1]) : fail(f + " title version (" + (m ? m[1] : "none") + ") != " + want);
+}
 const csp = (html.match(/Content-Security-Policy"\s+content="([^"]+)"/) || [])[1] || "";
 const apiHost = (html.match(/baseUrl:\s*"(https:\/\/[^"\/]+)/) || [])[1];
 csp && apiHost && csp.includes("connect-src") && csp.split("connect-src")[1].split(";")[0].includes(apiHost) ? ok("index.html CSP allows connect-src only to the Worker (+ Telegram)") : fail("index.html CSP missing or connect-src does not list the Worker URL");
@@ -86,7 +90,7 @@ csp && apiHost && csp.includes("connect-src") && csp.split("connect-src")[1].spl
 /ctx\.storage\.delete\([^)]*hx/.test(wk) ? fail("Worker deletes archived trades") : ok("Worker never deletes archived trades");
 const techOf = (src) => (src.match(/(?:TECH_RE|TECH)\s*=\s*(\/.*\/i)/) || [])[1];
 techOf(wk) && techOf(wk) === techOf(html) ? ok("technical-text rule is identical in Worker and Mini App") : fail("technical-text rule differs between Worker and Mini App");
-/function logRows\(\)\{[^]*?S\.cmds/.test(html.split("/* lifecycle of a command")[0]) ? fail("Mini App history reads the command log (S.cmds)") : ok("Mini App history shows trades only (no command log)");
+/function logRows\(\)\{[^]*?S\.cmds/.test(html.split("/* ═════════════ 7) TRADING RULES")[0]) ? fail("Mini App history reads the command log (S.cmds)") : ok("Mini App history shows trades only (no command log)");
 /"newcycle"/.test(wk) && /newCycleUI/.test(html) ? ok("guarded cycle reset exists (Worker + Mini App)") : fail("guarded cycle reset missing");
 /admin\/diag/.test(html) ? fail("Mini App references the admin diagnostics endpoint") : ok("Mini App never calls /admin/diag");
 
@@ -97,8 +101,10 @@ wV === pkgV ? ok("worker VERSION == package.json (" + pkgV + ")") : fail("worker
 wP && wP === eaVer ? ok("worker EA_PROTOCOL == EA version (" + wP + ")") : fail("worker EA_PROTOCOL " + wP + " != EA version " + eaVer);
 new RegExp("^# Yetimmm v" + pkgV.replace(/\./g, "\\.")).test(readme) ? ok("README title = v" + pkgV) : fail("README title is not v" + pkgV);
 chg.split("\n").find((l) => l.startsWith("## v")).includes("v" + pkgV) ? ok("CHANGELOG top entry = v" + pkgV) : fail("CHANGELOG top entry is not v" + pkgV);
-const tests = (read("tests/worker.test.mjs").match(/^test\(/gm) || []).length;
-new RegExp("(^|\\D)" + tests + "\\s+(اختبار|tests)").test(readme) ? ok("README test count matches (" + tests + " Worker tests)") : fail("README test count != " + tests);
+{
+  const lock = JSON.parse(read("package-lock.json"));
+  (lock.version === pkgV && lock.packages?.[""]?.version === pkgV) ? ok("package-lock.json version == package.json (" + pkgV + ")") : fail("package-lock.json version (" + lock.version + ") != package.json " + pkgV + " -> run: npm install --package-lock-only");
+}
 const uiNoLive = html.replace(/\/\*RISK-CORE-BEGIN\*\/[\s\S]*?\/\*RISK-CORE-END\*\//, "");
 !/\bconst\s+C\s*=\s*100\b|\bSTEP\s*=\s*\.01|\bVMIN\s*=|\bVMAX\s*=/.test(uiNoLive) ? ok("Mini App: no hard-coded contract / step / min / max (BrokerSpec or an explicit simulation profile)") : fail("Mini App still hard-codes C / STEP / VMIN / VMAX");
 !/toFixed\(2\)/.test(uiNoLive.slice(uiNoLive.indexOf("function fillMkt"), uiNoLive.indexOf("function applyLevels"))) ? ok("Mini App: level filling is tick-aware (no toFixed(2))") : fail("Mini App fillMkt still uses toFixed(2)");
@@ -131,7 +137,7 @@ eaSrc.indexOf("PlanCheck(buy,level,lot);") > 0 && eaSrc.indexOf("PlanCheck(buy,l
 for (const w of ["WAITING_ACCLOSSCAP", "WAITING_MARGINLVL", "WAITING_NEXTDAY"]) html.includes("w_" + w) ? ok("Mini App has a text for " + w) : fail("Mini App has no text for " + w);
 
 // 12) v2.36 ledger policy + final-lot caps lints
-for (const need of ["string LedgerApplyNet(", "InpCountManualResults", "InpMaxRiskUSD", "InpMaxDailyLoss", "WAITING_DAYLOSS", "RISK_ABOVE_DAYLOSS", "void DayNetAdd("])
+for (const need of ["string CycleBook(", "InpCountManualResults", "InpMaxRiskUSD", "InpMaxDailyLoss", "WAITING_DAYLOSS", "RISK_ABOVE_DAYLOSS", "void DayNetAdd("])
   eaSrc.includes(need) ? ok("EA v2.36 has " + need) : fail("EA v2.36 is missing " + need);
 html.includes("w_WAITING_DAYLOSS") ? ok("Mini App has a text for WAITING_DAYLOSS") : fail("Mini App has no text for WAITING_DAYLOSS");
 
@@ -144,6 +150,49 @@ const tomlSrc = readFileSync(join(root, "worker", "wrangler.toml"), "utf8");
 !/b\.contract>0\?b\.contract:100/.test(html) ? ok("Mini App assumes no default contract size") : fail("Mini App falls back to contract size 100");
 for (const dead of ["bool PlacementOk(", "string CheckModifiable(", "void TgAddId(", "bool VirtualInside(", "InpTgPollSec"])
   !eaSrc.includes(dead) ? ok("EA dead code stays removed: " + dead) : fail("EA dead code is back: " + dead);
+
+// 14) v2.37 stop-and-reverse lints
+for (const need of ["input bool   InpPreArmReverse   = true;", "void ReverseArmPass(", "int ReverseArmDecision(", "bool ReverseSwitchInProgress(", "bool PosSLCrossed(", "if(g_revSwap) return;", "g_revOffPid"])
+  eaSrc.includes(need) ? ok("EA v2.37 has " + need) : fail("EA v2.37 is missing " + need);
+(eaSrc.match(/g_trade\.(Buy|Sell)\(/g) || []).length === 2 ? ok("EA still sends no market order outside TryMarketReverse") : fail("EA has a new market-order send");
+existsSync(join(root, "docs", "STOP-AND-REVERSE.md")) ? ok("docs/STOP-AND-REVERSE.md present") : fail("docs/STOP-AND-REVERSE.md missing");
+
+// 16) v2.39 order-error lints
+for (const need of ["int ClassifyRetcode(", "string RetClassName(", "#define YR_UNCERT", "UncOpen(buy,level,lot,", "send RTT", "TRADE_TRANSACTION_ORDER_DELETE"])
+  eaSrc.includes(need) ? ok("EA v2.39 has " + need) : fail("EA v2.39 is missing " + need);
+existsSync(new URL("../docs/ORDER-ERRORS-2.39.md", import.meta.url)) ? ok("docs/ORDER-ERRORS-2.39.md present") : fail("docs/ORDER-ERRORS-2.39.md missing");
+// 15) v2.38 cycle-ledger lints: ONE completion rule, strict target, no premature reset
+for (const need of ["bool CycleTryComplete(", "void CycleFinishLedger(", "void CycleCompletionTick()", "bool CycleMet(", "double NextRiskForNet(", "enum ENUM_YT_CYCLE", 'PSet(pid,"CY"'])
+  eaSrc.includes(need) ? ok("EA v2.38 has " + need) : fail("EA v2.38 is missing " + need);
+!eaSrc.includes("LedgerApplyNet") ? ok("EA has no premature-reset ledger function") : fail("EA still contains LedgerApplyNet");
+!/g_target\s*\*\s*0\.98/.test(eaSrc) ? ok("EA has no 98% target tolerance") : fail("EA still has a 98% target tolerance");
+
+
+// 17) v2.40 pending-request ledger / arm timeline lints
+for (const need of ["struct SUncReq", "int UncProbe(", "bool UncVerify(", "bool UncBlocks(", "void UncLoad(", "UNCERTAIN_ABSENT", "UNCERTAIN_RESTORED", "UNCERTAIN_LATE_RESULT", "void ArmFill(", "void ArmTouchWatch(", "bool TransDealSeen(", "void StartupAudit(", "DELETE_SKIPPED_TRIGGERED", "COVERAGE_AT_CLOSE"])
+  eaSrc.includes(need) ? ok("EA v2.40 has " + need) : fail("EA v2.40 is missing " + need);
+existsSync(new URL("../docs/TECH-GAPS-2.40.md", import.meta.url)) ? ok("docs/TECH-GAPS-2.40.md present") : fail("docs/TECH-GAPS-2.40.md missing");
+
+// 18) v4.28.0 test-count truth: the REAL run of the suite is compared with every documented number (never a number typed here)
+{
+  const tc = await import("./test-count.mjs");
+  const writeDocs = process.argv.includes("--write-docs");
+  if (process.env.YT_CHECK_SKIP_TESTS === "1") console.log("  skip test-count check (YT_CHECK_SKIP_TESTS=1)");
+  else {
+    const counts = tc.runSuite();
+    const { all, worker, engine } = counts;
+    console.log("  info real run: " + all.tests + " tests = " + worker.tests + " Worker + " + engine.tests + " engine | pass " + all.pass + " fail " + all.fail + " skipped " + all.skipped);
+    for (const [f, v] of Object.entries(counts.per)) console.log("  info   " + f.padEnd(34) + String(v.tests).padStart(4) + " tests" + (v.fail ? "  (" + v.fail + " FAILED)" : ""));
+    counts.broken.length || all.fail > 0 ? fail("the suite does not pass: " + (counts.broken.concat(Object.entries(counts.per).filter(([, v]) => v.fail > 0).map(([f]) => f))).join(", ")) : ok("the whole suite passes (" + all.pass + "/" + all.tests + ")");
+    const staticTotal = readdirSync(join(root, "tests")).filter((x) => x.endsWith(".test.mjs")).reduce((n, f) => n + (read("tests/" + f).match(/^\s*(?:test|it)\(/gm) || []).length, 0);
+    staticTotal === all.tests ? ok("test declarations in the files == tests executed (" + staticTotal + ")") : console.log("  warn  " + staticTotal + " declarations vs " + all.tests + " executed (generated tests?) - the executed number is the one documented");
+    if (writeDocs) { const ch = tc.rewriteDocs(counts); console.log("  info rewrote the numbers in: " + (ch.join(", ") || "(nothing - already correct)")); }
+    const docs = tc.loadLivingDocs();
+    const bad2 = [...tc.findMismatches(docs, counts), ...tc.changelogClaims(read("CHANGELOG.md"), counts)];
+    bad2.length ? bad2.forEach((m) => fail(m.path + (m.line ? ":" + m.line : "") + " documents " + m.n + " but the real run says " + m.expected + (m.text ? "  [" + m.text + "]" : ""))) : ok("every documented test count matches the real run (" + Object.keys(docs).filter((k) => docs[k] != null).join(", ") + " + CHANGELOG top entry)");
+    /(^|\D)\d+\s+اختباراً للـ Worker/.test(read("README.md")) && /\d+\s+لمحرك/.test(read("README.md")) ? ok("README states the Worker / engine split") : fail("README no longer states the Worker / engine split");
+  }
+}
 
 console.log(bad ? "\n" + bad + " problem(s)" : "\nAll checks passed");
 

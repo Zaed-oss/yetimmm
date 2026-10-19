@@ -78,7 +78,8 @@ test("guard: risk-% cap blocks only when the next risk exceeds the share of the 
   assert.equal(guard({ seq: 0, accLoss: 0, curRisk: 1, balance: 0, maxPct: 2 }), "WAITING_RISKCAP");     // no balance -> never arm
 });
 test("EA v2.24 contains the exact recurrence, the guard, both inputs, both wait codes and both hooks", () => {
-  assert.match(ea, /return\s*\(L\+g_target\)\/g_rr;/);
+  assert.match(ea, /double rem=g_target-net;[\s\S]*double r=rem\/g_rr;/);   // v2.38: (L+target)/RR for a debt, planned from the net still needed
+  assert.match(ea, /double NextRiskFor\(const double L\) \{ return NextRiskForNet\(-L\); \}/);
   for (const need of ["bool RecoveryGuardBlocks(", "void PrintRecoveryPlan(", "input int    InpMaxSeqLosses", "input double InpMaxRiskPctBal", "WAITING_SEQCAP", "WAITING_RISKCAP"]) assert.ok(ea.includes(need), need);
   assert.equal((ea.match(/RecoveryGuardBlocks\(rgw,rgc\)/g) || []).length, 2);
 });

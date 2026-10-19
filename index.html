@@ -358,14 +358,14 @@ noLink:["لا يمكن إرسال الأوامر — البوت غير متصل"
 r_STOP:["إيقاف يدوي","Manual stop"],r_CANCEL:["إلغاء","Cancel"],r_EXT:["إغلاق خارجي","External close"],r_SO:["Stop Out","Stop Out"],r_DEV:["رفض الانزلاق","Slippage reject"],r_EXTRA:["إغلاق صفقة زائدة","Extra position closed"],r_PROT:["إغلاق حماية","Protection close"],r_OTH:["أخرى","Other"],
 back:["رجوع","Back"],q_open:["توجد صفقة مفتوحة","A trade is open"],q_openB:["سيتم إغلاق الصفقة ({0} $) ثم إيقاف البوت.","The trade ({0} $) will be closed, then the bot stops."],q_openY:["إغلاق وإيقاف","Close & stop"],
 q_close:["إغلاق الصفقة","Close trade"],q_closeB:["الربح/الخسارة الحالية: {0} $. لن يعيد البوت إنشاء الأوامر تلقائياً بعد الإغلاق اليدوي.","Current P/L: {0} $. The bot won't recreate orders automatically after a manual close."],
-q_reset:["إعادة ضبط تسلسل المخاطرة","Reset risk sequence"],q_resetB:["تُصفَّر الخسائر المتراكمة وتعود المخاطرة إلى ${0}","Accumulated losses are cleared and risk returns to ${0}"],q_resetY:["إعادة ضبط","Reset"],q2T:["تأكيد نهائي","Final confirmation"],q_stop:["إيقاف التداول","Stop trading"],q_stopB:["يوقف البوت ويحذف الأوامر المعلّقة. لا يُصفّر الخسائر المتراكمة ({0} $).","Stops the bot and deletes pending orders. It does not clear the accumulated loss ({0} $)."],q_stopY:["إيقاف","Stop"],q2_stop:["هل أنت متأكد من إيقاف البوت الآن؟{0}","Are you sure you want to stop the bot now?{0}"],q2_stopR:[" تنبيه: بدء التشغيل بعد الإيقاف يصفّر الخسائر المتراكمة حسب إعداد الـ EA."," Note: starting again after a stop clears the accumulated loss (EA setting)."],q2_open:["تأكيد أخير: تُغلق الصفقة بسعر السوق الآن ثم يتوقف البوت.{0}","Last check: the trade is closed at market now, then the bot stops.{0}"],q2_close:["تأكيد أخير: تُغلق الصفقة بسعر السوق الآن. لا يتوقف البوت ولا تُحذف الأوامر ولا تُصفَّر الخسائر.","Last check: the trade is closed at market now. The bot is not stopped, no orders are deleted and losses are not cleared."],q_resetB2:["يُصفَّر التسلسل (Seq {1}) والخسارة التراكمية {2} $ وتعود المخاطرة إلى ${0}.","The sequence (Seq {1}) and the accumulated loss {2} $ are cleared and risk returns to ${0}."],q2_reset:["تأكيد أخير: لا يمكن التراجع. هذا ليس إيقافاً ولا إغلاقاً للصفقة.","Last check: this cannot be undone. It is not a stop and it does not close a trade."],
+q_reset:["إعادة ضبط تسلسل المخاطرة","Reset risk sequence"],q_resetB:["تُصفَّر الخسائر المتراكمة وتعود المخاطرة إلى ${0}","Accumulated losses are cleared and risk returns to ${0}"],q_resetY:["إعادة ضبط","Reset"],q2T:["تأكيد نهائي","Final confirmation"],q_stop:["إيقاف التداول","Stop trading"],q_stopB:["يوقف البوت ويحذف الأوامر المعلّقة. لا يُصفّر الخسائر المتراكمة ({0} $).","Stops the bot and deletes pending orders. It does not clear the accumulated loss ({0} $)."],q_stopY:["إيقاف","Stop"],q2_stop:["هل أنت متأكد من إيقاف البوت الآن؟{0}","Are you sure you want to stop the bot now?{0}"],q2_stopR:[" ملاحظة: بدء التشغيل بعد الإيقاف لا يصفّر الخسائر المتراكمة؛ التصفير فقط بإعادة الضبط المؤكدة."," Note: starting again after a stop does NOT clear the accumulated loss; only the confirmed Reset does."],q2_open:["تأكيد أخير: تُغلق الصفقة بسعر السوق الآن ثم يتوقف البوت.{0}","Last check: the trade is closed at market now, then the bot stops.{0}"],q2_close:["تأكيد أخير: تُغلق الصفقة بسعر السوق الآن. لا يتوقف البوت ولا تُحذف الأوامر ولا تُصفَّر الخسائر.","Last check: the trade is closed at market now. The bot is not stopped, no orders are deleted and losses are not cleared."],q_resetB2:["يُصفَّر التسلسل (Seq {1}) والخسارة التراكمية {2} $ وتعود المخاطرة إلى ${0}.","The sequence (Seq {1}) and the accumulated loss {2} $ are cleared and risk returns to ${0}."],q2_reset:["تأكيد أخير: لا يمكن التراجع. هذا ليس إيقافاً ولا إغلاقاً للصفقة.","Last check: this cannot be undone. It is not a stop and it does not close a trade."],
 ordsT:["الأوامر المعلقة الفعلية","Live pending orders"],oB:["Buy Stop","Buy Stop"],oS:["Sell Stop","Sell Stop"],delB:["حذف الأمر","Delete order"],
 q_del:["حذف الأمر المعلق","Delete pending order"],
 q_delB:["سيتم حذف {0} عند {1} (تذكرة #{2}) من MT5 فوراً، ويكمل البوت بالأمر الآخر فقط.","{0} at {1} (ticket #{2}) will be deleted from MT5 now; the bot continues with the other order only."],
 q_delB1:["سيتم حذف {0} عند {1} (تذكرة #{2}) من MT5 فوراً، وهو آخر أمر معلق فيتوقف البوت عن وضع أوامر جديدة.","{0} at {1} (ticket #{2}) will be deleted from MT5 now; it is the last pending order, so the bot stops placing orders."],
 q_delY:["حذف","Delete"],
 c_start:["تشغيل البوت","Start bot"],c_stop:["إيقاف البوت","Stop bot"],c_close:["إغلاق الصفقة","Close trade"],c_apply:["تطبيق الأوامر","Apply orders"],c_settings:["حفظ الإعدادات","Save settings"],c_reset:["إعادة ضبط المخاطرة","Reset risk"],c_delete:["حذف أمر معلق","Delete pending order"],
-cmdW:["أمر","Command"],cmdSent:["بانتظار تأكيد البوت…","Waiting for the bot…"],cmdLost:["لم يصل تأكيد من البوت","No confirmation from the bot"],cmdOk:["تم التنفيذ","Executed"],cmdFail:["فشل","Failed"],fillM:["تعبئة أسعار صالحة من السوق","Fill valid levels from market"],fillE:["لا يوجد سعر حي من البوت","No live price from the bot"],mkB:["Buy Stop {0} تحت السعر الحالي (Ask {1}): يُقبل ويبقى بالانتظار، ويُوضع تلقائياً عندما يهبط Ask إلى {2} أو أقل","Buy Stop {0} is under the market (Ask {1}): accepted, it waits and is placed automatically when Ask falls to {2} or lower"],mkS:["Sell Stop {0} فوق السعر الحالي (Bid {1}): يُقبل ويبقى بالانتظار، ويُوضع تلقائياً عندما يصعد Bid إلى {2} أو أعلى","Sell Stop {0} is above the market (Bid {1}): accepted, it waits and is placed automatically when Bid rises to {2} or higher"],waitT:["بانتظار السعر","Waiting for price"],oldEA:["الـ EA المحمّل على MT5 نسخة قديمة: يرفض المستويات ولا يدعم الانتظار الذكي. ترجم Yetimmm.mq5 (v2.20) بـ F7 وأعد تحميله على الشارت.","The EA running in MT5 is an old version: it rejects levels and has no smart waiting. Compile Yetimmm.mq5 (v2.20) with F7 and reload it on the chart."],cmdWait:["مقبول · بانتظار السعر","Accepted · waiting for price"],cmdDone:["فُعِّل ","Activated "],cmdSup:["استُبدل","Superseded"],cmdCan:["أُلغي","Cancelled"],
+cmdW:["أمر","Command"],rcvT:["استعادة مطلوبة (REQUIRED_RECOVERY): لا أوامر جديدة","Recovery required (REQUIRED_RECOVERY): no new orders"],rcvB:["البوت لا يرسل أوامر جديدة ولا يحذف شيئاً حتى تُحسم الحالة. أرسل /cancel لإزالة الأوامر المعلّقة أو /stop، أو حدّد المستويات ثم START. الدين المسجّل محفوظ.","The bot sends no new orders and deletes nothing until this is resolved. Send /cancel to remove the pending orders, or /stop, or set levels then START. The booked debt is kept."],csT:["حالة الأوامر","Command status"],cs_queued:["قيد الانتظار: لم يستلمه البوت بعد","Queued: the bot has not taken it yet"],cs_delivered:["استلمه البوت · بانتظار نتيجة التنفيذ","Received by the bot · waiting for the result"],cs_expired:["انتهت المهلة ولم يُنفَّذ (البوت غير متصل). أعد الإرسال","Expired, NOT executed (bot offline). Send it again"],cs_rejected:["رُفض: القائمة ممتلئة ولم يُقبل","Rejected: queue full, not accepted"],cs_done:["نُفِّذ","Executed"],cs_wait:["مقبول · بانتظار السعر","Accepted · waiting for price"],cs_fail:["رفضه البوت / فشل","Refused by the bot / failed"],cs_unk:["استلمه البوت لكن تعذّر تأكيد النتيجة","Received by the bot but the result could not be confirmed"],cmdSent:["بانتظار تأكيد البوت…","Waiting for the bot…"],cmdLost:["لم يصل تأكيد من البوت","No confirmation from the bot"],q_full:["قائمة الأوامر ممتلئة: لم يُقبل الأمر. حاول بعد قليل","The command queue is full: the command was NOT accepted. Try again shortly"],cmdExp:["انتهت صلاحية الأمر ولم يُنفَّذ (البوت غير متصل). أعد إرساله","The command expired and was NOT executed (bot offline). Send it again"],cmdOk:["تم التنفيذ","Executed"],cmdFail:["فشل","Failed"],fillM:["تعبئة أسعار صالحة من السوق","Fill valid levels from market"],fillE:["لا يوجد سعر حي من البوت","No live price from the bot"],mkB:["Buy Stop {0} تحت السعر الحالي (Ask {1}): يُقبل ويبقى بالانتظار، ويُوضع تلقائياً عندما يهبط Ask إلى {2} أو أقل","Buy Stop {0} is under the market (Ask {1}): accepted, it waits and is placed automatically when Ask falls to {2} or lower"],mkS:["Sell Stop {0} فوق السعر الحالي (Bid {1}): يُقبل ويبقى بالانتظار، ويُوضع تلقائياً عندما يصعد Bid إلى {2} أو أعلى","Sell Stop {0} is above the market (Bid {1}): accepted, it waits and is placed automatically when Bid rises to {2} or higher"],waitT:["بانتظار السعر","Waiting for price"],oldEA:["الـ EA المحمّل على MT5 نسخة قديمة: يرفض المستويات ولا يدعم الانتظار الذكي. ترجم Yetimmm.mq5 (v2.20) بـ F7 وأعد تحميله على الشارت.","The EA running in MT5 is an old version: it rejects levels and has no smart waiting. Compile Yetimmm.mq5 (v2.20) with F7 and reload it on the chart."],cmdWait:["مقبول · بانتظار السعر","Accepted · waiting for price"],cmdDone:["فُعِّل ","Activated "],cmdSup:["استُبدل","Superseded"],cmdCan:["أُلغي","Cancelled"],
 wB:["Ask الآن {0} · يُفعَّل عندما يهبط إلى {1} أو أقل · المتبقي {2}","Ask now {0} · activates when it falls to {1} or lower · {2} to go"],wS:["Bid الآن {0} · يُفعَّل عندما يصعد إلى {1} أو أعلى · المتبقي {2}","Bid now {0} · activates when it rises to {1} or higher · {2} to go"],
 fillA:["ضُبطت مستويات حسب السعر الحالي","Levels set from the live price"],ea_wb:["Buy Stop {0} بالانتظار: Ask الآن {1}، يُوضع تلقائياً عندما يهبط إلى {2} أو أقل","Buy Stop {0} waiting: Ask is {1}, placed automatically when it falls to {2} or lower"],ea_ws:["Sell Stop {0} بالانتظار: Bid الآن {1}، يُوضع تلقائياً عندما يصعد إلى {2} أو أعلى","Sell Stop {0} waiting: Bid is {1}, placed automatically when it rises to {2} or higher"],ea_buy:["Buy Stop {0} مرفوض: يجب أن يكون أعلى من Ask ({1})","Buy Stop {0} rejected: must be above Ask ({1})"],ea_sell:["Sell Stop {0} مرفوض: يجب أن يكون أدنى من Bid ({1})","Sell Stop {0} rejected: must be below Bid ({1})"],ea_conn:["لا يوجد اتصال بين MT5 وخادم الوسيط","MT5 has no connection to the broker server"],ea_at:["زر AutoTrading في MT5 متوقف","AutoTrading is disabled in MT5"],
 c_cancel:["إلغاء كل الأوامر المعلقة","Cancel all pending"],c_modify:["تعديل أمر معلق","Modify pending order"],c_place:["إضافة أمر معلق","Add pending order"],
@@ -476,7 +476,6 @@ const SES=(()=>{const st=()=>{try{return CONFIG.sessionStore==="session"?session
   return{get l(){try{return ls().getItem("ytL")||""}catch(e){return""}},get s(){return rd("ytS")},
   set(l,x){try{ls().setItem("ytL",l);if(CONFIG.sessionStore==="session")ls().removeItem("ytS");st().setItem("ytS",x)}catch(e){}},
   clr(){try{ls().removeItem("ytS")}catch(e){}try{sessionStorage.removeItem("ytS")}catch(e){}}}})();
-const KEY=SES.s;
 const live=()=>CONFIG.mode==="live"&&!!CONFIG.api.baseUrl;
 /* ═════ v4.10 · command lifecycle (Ops) ═════
    sent → accepted (EA ack) → VERIFIED (state really changed) | failed | unverified (timeout).
@@ -512,7 +511,7 @@ const Ops={m:new Map(),dids:new Set(),log:[],TO:{delete:15000,_:12000},
     return changed},
   snapshot(){return{open:[...this.m.values()].map(o=>({cmd:o.c,id:o.id,ageMs:Date.now()-o.at})),log:this.log.slice(0,60)}}
 };
-const Bridge={ok:null,auth:false,at:0,init:false,lc:"",mine:new Set(),dirty:false,applyId:null,busy:false,again:false,pend:[],
+const Bridge={ok:null,auth:false,at:0,init:false,lc:"",mine:new Set(),stSeen:new Set(),dirty:false,applyId:null,busy:false,again:false,pend:[],
   async req(path,opt){
     const r=await fetch(CONFIG.api.baseUrl+path,{...opt,headers:{"Content-Type":"application/json","X-Login":SES.l,"X-Session":SES.s,...CONFIG.api.headers}});
     if(r.status===401){let w="";try{w=(await r.clone().json()).why||""}catch(e){}Login.out(false,w==="pw"||w==="revoked"?"e_pw_changed":w==="expired"?"e_expired":w==="acct"?"e_acct":"e_relogin")}
@@ -523,6 +522,7 @@ const Bridge={ok:null,auth:false,at:0,init:false,lc:"",mine:new Set(),dirty:fals
     try{
       const d=await this.req("/state");
       prev=S.price||d.price;Object.assign(S,d);this.pend=this.pend.filter(p=>Date.now()-p.at<900000);this.ok=true;this.auth=false;this.at=Date.now();
+      (Array.isArray(d.cmdStatus)?d.cmdStatus:[]).forEach(x=>{const k=x.id+":"+x.st;if(this.mine.has(x.id)&&(x.st==="expired"||x.st==="rejected")&&!this.stSeen.has(k)){this.stSeen.add(k);toast("❌ "+t(x.st==="expired"?"cmdExp":"q_full"))}});   /* v4.30: an expired / rejected command is always shown, never only inferred from a timeout */
       const lc=d.lastCmd;
       if(!this.init){this.init=true;this.lc=lc?lc.id:"";fillInputs(true)}
       else if(lc&&lc.id!==this.lc){this.lc=lc.id;Ops.ack(lc);if(this.mine.has(lc.id)&&!Ops.dids.has(lc.id))toast(lc.cat==="tech"?"❌ "+t("e_generic"):(lc.ok?"":"❌ ")+trEA(String(lc.text||"").replace(/^[\u274C\u2705\u2139\u26A0\uFE0F\s]+/,"")));if(lc.ok&&lc.id===this.applyId)this.dirty=false}
@@ -548,6 +548,7 @@ const Bridge={ok:null,auth:false,at:0,init:false,lc:"",mine:new Set(),dirty:fals
     }catch(e){
       Ops.end(o,"rejected","http "+(e.status||"network"));render();
       trackCmd(null,c,p,"fail",e.status===503?t("noLink"):t("l_srv"));
+      if(e.status===429){toast("❌ "+t("q_full"));return}      /* v4.29: queue full is an explicit refusal, never a silent drop */
       if(c==="newcycle"&&e.status===409){toast("❌ "+t(e.why==="pending"?"cyc_pnd":"cyc_blk"));return}
       if(e.status===503)toast("❌ "+t("noLink"));
       else{this.ok=false;this.auth=(e.status===401||e.status===403||!SES.s);setMode();render();toast("❌ "+t(this.auth?"l_auth":"l_srv"))}
@@ -567,22 +568,9 @@ function trackCmd(id,c,p,st,msg){
   Bridge.pend.unshift({id:String(id!=null?id:"x"+Date.now()),cmd:c,det:detOf(c,p||{}),at:Date.now(),st:st||"sent",msg:msg||""});
   Bridge.pend=Bridge.pend.slice(0,10);
 }
-const cmdName=c=>D["c_"+c]?t("c_"+c):c;
 /* v4.7: the history list shows REAL closed trades only (current week, unique ids). Commands, waiting / superseded / failed events and technical text are internal diagnostics and never rendered here. */
 function wkRange(){const w=S.week;if(!w)return"";const d=x=>new Date(x*1000).toISOString().slice(5,10);return d(w.from)+" → "+d(w.to)}
 function logRows(){const seen=new Set();return (S.hist||[]).filter(x=>{const k=x.id||(x.no+"-"+x.ts);if(seen.has(k))return false;seen.add(k);return true}).map(x=>({...x,k:"t",ts:x.ts||0})).sort((a,b)=>b.ts-a.ts).slice(0,100)}
-/* lifecycle of a command: sent → ok | wait → done | sup | cancel · fail | lost. A waiting row follows the live market until the bot activates it. */
-const CMDST={wait:["gd","clock","cmdWait"],done:["up","bolt","cmdDone"],sup:["gd","refresh","cmdSup"],cancel:["gd","xc","cmdCan"],ok:["up","check","cmdOk"],fail:["dn","alert","cmdFail"],lost:["gd","clock","cmdLost"],sent:["gd","clock","cmdSent"]};
-function waitLive(x){
-  const W=S.waits||[],out=[];
-  [["BUY",x.wb],["SELL",x.ws]].forEach(([sd,lv])=>{if(!(lv>0))return;const w=W.find(q=>q.side===sd&&Math.abs(q.level-lv)<1e-6);if(w&&!w.placing)out.push(t(sd==="BUY"?"wB":"wS",f(w.now),f(w.trig),f(w.dist)))});
-  return out.join("\n")}
-function cmdRow(x){
-  const st=x.st,m=CMDST[st]||CMDST.sent,cls=m[0],ico=(x.cmd==="delete"&&st==="ok")?"trash":m[1],lbl=t(m[2]);
-  const lv=st==="wait"?waitLive(x):"";
-  const sub=[x.det,lv||x.text].filter(Boolean).map(esc).join(st==="wait"||st==="done"||st==="sup"||st==="cancel"?"\n":" · ");
-  return `<div class="hi"><div class="hl2"><i class="hs ${cls}${st==="wait"?" wt":""}">${ic(ico)}</i><div><b>${t("cmdW")} · ${esc(cmdName(x.cmd))}</b>${sub?`<small class="num" style="white-space:pre-line">${sub}</small>`:""}<small class="hc">${esc(x.tm||"")}</small></div></div><span class="cmdst ${cls}">${lbl}</span></div>`;
-}
 
 /* ═════════════ 7) TRADING RULES + ENGINE (sim mode) ═════════════ */
 const rkText=r=>r.status==="BELOW_MIN"?t("rk_BELOW_MIN",cs()+f(r.req),cs()+f(r.minRisk),fv(r.vmin)):r.status==="ABOVE_MAX"?t("rk_ABOVE_MAX"):r.status==="ABOVE_LIMIT"?t("rk_ABOVE_LIMIT"):r.status==="CLAMPED"?t("rk_CLAMPED",cs()+f(r.req),cs()+f(r.eff)):"";
@@ -695,30 +683,14 @@ const stDot={STOPPED:"gd",IDLE:"gd",TP_RESET:"gd",ARMED:"up",BUY_ACTIVE:"up",SEL
 function start(){const e=vLevels(S.buy,S.sell)||(live()?"":placeErr(S.buy,S.sell))||(live()?"":lotFor(S.risk,S.buy,S.sell).e);if(e)return toast(t("t_startF",e));window.YT&&YT.pend();run("start")}
 function stop(){const rs=S.rstStart?t("q2_stopR"):"";S.pos?ask2(t("q_open"),t("q_openB",sg(floating())),t("q_openY"),t("q2_open",rs),t("q_openY"),()=>run("stop")):ask2(t("q_stop"),t("q_stopB",f(S.acc||0)),t("q_stopY"),t("q2_stop",rs),t("q_stopY"),()=>run("stop"))}
 function closePos(){ask2(t("q_close"),t("q_closeB",sg(floating())),t("q_close"),t("q2_close"),t("q_close"),()=>run("close"))}
-function delOrder(tk){
-  const L=S.orders||[],o=L.find(x=>x.ticket==tk);if(!o)return;
-  const b=isB(o.side);
-  ask(t("q_del"),t(L.length<2?"q_delB1":"q_delB",t(b?"oB":"oS"),f(o.price),tk),t("q_delY"),()=>run("delete",{ticket:tk,side:b?"BUY":"SELL",price:o.price}));
-}
 function pairSides(){const R={BUY:null,SELL:null};(S.orders||[]).forEach(o=>{R[isB(o.side)?"BUY":"SELL"]={px:o.price}});(S.waits||[]).forEach(w=>{if(!R[w.side])R[w.side]={px:w.level}});if(S.mode==="BOTH"){if(!R.BUY&&S.buy>0)R.BUY={px:S.buy};if(!R.SELL&&S.sell>0)R.SELL={px:S.sell}}return R}
-const pairOn=()=>{const P=pairSides();return !!(P.BUY&&P.SELL)};
-const pairBusy=()=>Ops.m.has("cancel")||Ops.m.has("apply");
-function delPair(){ask(t("q_delBoth"),t("q_delBothB"),t("delBoth"),()=>run("cancel"))}
 function modPair(){const P=pairSides();if(!(P.BUY&&P.SELL))return;
   $("sheet").innerHTML=`<b>${t("mpT")}</b><small style="display:block;margin:12px 0 4px">${t("oB")}</small><input class="inp" id="pxb" type="number" step="any" inputmode="decimal" value="${P.BUY.px}"><small style="display:block;margin:12px 0 4px">${t("oS")}</small><input class="inp" id="pxs" type="number" step="any" inputmode="decimal" value="${P.SELL.px}" style="margin-bottom:12px"><div class="btns"><button class="btn" id="no">${t("back")}</button><button class="btn pri" id="yes">${t("okB")}</button></div>`;
   $("no").onclick=shut;
   $("yes").onclick=()=>{const b=num($("pxb").value),s2=num($("pxs").value),e=vLevels(b,s2);if(e)return toast("⚠ "+e);shut();if(b===P.BUY.px&&s2===P.SELL.px)return;run("apply",{buy:b,sell:s2})};
   $("ov").classList.add("show")}
-function pairCard(dis){const bz=pairBusy(),P=pairSides();
-  const row=(sd)=>{const b=sd==="BUY",o=(S.orders||[]).find(x=>(isB(x.side)?"BUY":"SELL")===sd),w=(S.waits||[]).find(x=>x.side===sd);
-    if(o)return `<div class="hi${bz?" busy":""}"><div class="hl2"><i class="hs ${b?"up":"dn"}">${ic(b?"up":"dn")}</i><div><b>${t(b?"oB":"oS")} · <span class="num">${f(o.price)}</span></b><small class="num">#${o.ticket} · ${f(o.lot)} ${t("lots")} · SL ${f(o.sl)} · TP ${f(o.tp)}</small></div></div><span style="display:flex;gap:6px">${window.YTN?YTN.obell("t"+o.ticket,dis):""}</span></div>`;
-    return `<div class="hi${bz?" busy":""}"><div class="hl2"><i class="hs gd">${ic("clock")}</i><div><b>${t(b?"oB":"oS")} · <span class="num">${f(w.level)}</span></b><small class="num">${w.placing?t("plc"):t(b?"wB":"wS",f(w.now),f(w.trig),f(w.dist))}</small></div></div><span style="display:flex;gap:6px">${window.YTN?YTN.obell("w"+w.side,dis):""}</span></div>`};
-  return `<div class="card"><h3><span class="hl">${ic("bolt")}${t("pdT")}</span></h3>${row("BUY")}${row("SELL")}${bz?`<small class="opw"><i class="spn2"></i>${t("op_ing")}</small>`:""}<div class="btns" style="margin-top:10px"><button class="btn" onclick="modPair()"${dis||(bz?" disabled":"")}>${ic("edit")}${t("editBoth")}</button><button class="btn dg" onclick="delPair()"${dis||(bz?" disabled":"")}>${ic("trash")}${t("delBoth")}</button></div></div>`}
 function priceSheet(ti,def,fn){$("sheet").innerHTML=`<b>${ti}</b><input class="inp" id="ps" type="number" step="any" inputmode="decimal" value="${def}" style="margin:12px 0"><div class="btns"><button class="btn" id="no">${t("back")}</button><button class="btn pri" id="yes">${t("okB")}</button></div>`;$("no").onclick=shut;$("yes").onclick=()=>{const v=num($("ps").value);if(!(v>0))return toast("❌ "+t("e_risk"));shut();fn(v)};$("ov").classList.add("show")}
-function modOrder(tk){const o=(S.orders||[]).find(x=>x.ticket==tk);if(!o)return;const b=isB(o.side);priceSheet(t("newPx",t(b?"oB":"oS")),o.price,v=>run("modify",{ticket:tk,side:b?"BUY":"SELL",price:v}))}
 function addOrder(side){const b=side==="BUY";priceSheet(t("addB",t(b?"oB":"oS")),b?S.buy:S.sell,v=>run("place",{side,price:v}))}
-function delLevel(sd,px){const b=sd==="BUY";ask(t("q_del"),t("q_delW",t(b?"oB":"oS"),f(px)),t("q_delY"),()=>run("delete",{side:sd}))}
-function modLevel(sd,px){const b=sd==="BUY";priceSheet(t("newPx",t(b?"oB":"oS")),px,v=>run("modify",{side:sd,price:v}))}
 let stShown=false,stOff=false;
 function renderStop(){
   const st=live()&&link()==="ok"&&S.run===false&&S.state==="STOPPED",o=$("sov");
@@ -727,7 +699,6 @@ function renderStop(){
   $("svw").onclick=()=>{stOff=true;o.classList.remove("show")};$("srs").onclick=()=>{o.classList.remove("show");start()};
   if(!stShown&&!stOff){stShown=true;o.classList.add("show")}
 }
-function cancelAll(){ask(t("q_can"),t("q_canB"),t("canB"),()=>run("cancel"))}
 let ACP={};
 function acctCard(k){
   const a=S.acct||{},c=a.cur||"",lg=a.login||SES.l||"",off=live()&&link()!=="ok",n=v=>(v==null||isNaN(v))?"—":f(v);
@@ -776,10 +747,6 @@ function linkRows(){
     +row(t("st_mt"),m?t(m.conn?"v_con":"v_dis"):t("v_unk"),m?!!m.conn:null)
     +row(t("st_tr"),m?t(why?"v_dsb":"v_en"):t("v_unk"),m?!why:null)+`</div>`;
 }
-function waitCard(){
-  if(!(live()&&link()==="ok"&&S.run&&!S.pos&&S.buy>0&&S.sell>0&&!(S.orders||[]).length&&(S.state==="ARMED"||S.state==="WAITING_REENTRY")))return"";
-  return `<div class="note"><b>${ic("clock")} ${t("wfT")}</b><br>Buy Stop: <b class="num">${f(S.buy)}</b> · Sell Stop: <b class="num">${f(S.sell)}</b><br>${t("wfR")}: ${t((S.waits||[]).length?"wfR1":"wfR2")}</div>`;
-}
 /* ═════ v4.13 · ONE order = ONE card (layer) · one delete · a real bar per order ═════
    An "order" is the Buy Stop + Sell Stop pair of one cycle. Everything shown here comes from what the EA reports
    (mode / orders / waits / pend / price) — never from the app's own input fields. Several layers stack, each with its own number. */
@@ -827,6 +794,23 @@ let _dashH="",_tch=0,_late=false;
 function setDash(h){if(h===_dashH)return;if(_tch&&Date.now()-_tch<1500){_late=true;return}_dashH=h;$("dash").innerHTML=h}
 (function(){const dn=e=>{if(e.target&&e.target.closest&&e.target.closest("#dash"))_tch=Date.now()},up=()=>{if(!_tch)return;setTimeout(()=>{_tch=0;if(_late){_late=false;renderDash()}},80)};
   document.addEventListener("pointerdown",dn,true);document.addEventListener("pointerup",up,true);document.addEventListener("pointercancel",up,true)})();
+/* v4.30: real status of every recent command: queued / received by the bot / executed / refused / expired / rejected / result unconfirmed */
+function cmdStrip(){
+  const L=Array.isArray(S.cmdStatus)?S.cmdStatus:[],now=Date.now(),lc=S.lastCmd||null,rows=[];
+  for(const x of L.slice().reverse()){
+    const age=now-(x.u||x.t||0);let k=x.st,bad=false,why="";
+    /* v4.30: the result is bound to THIS command's id (persistent Worker ledger: res = executed / failed / waiting). lastCmd is only a fallback for an older Worker. "unconfirmed" is never shown as a failure. */
+    if(x.res==="executed")k="done";
+    else if(x.res==="failed"){k="fail";bad=true;why=x.rtext||""}
+    else if(x.res==="waiting")k="wait";
+    else if(x.st==="delivered"){
+      if(lc&&lc.id===x.id){k=lc.ok?"done":"fail";bad=!lc.ok;why=lc.ok?"":(lc.text||"")}
+      else if(age>120000){k="unk";bad=true}
+    }else if(x.st==="expired"||x.st==="rejected")bad=true;
+    if(!(age<180000||(bad&&age<600000)))continue;
+    rows.push(`<div style="display:flex;justify-content:space-between;gap:8px"><span>${esc(String(x.cmd||"").toUpperCase())}</span><b class="cmdst" style="color:var(--${bad?"dn":k==="done"?"up":"mute"})">${t("cs_"+k)}${why?" · "+esc(trEA(why)):""}</b></div>`);
+    if(rows.length>=4)break}
+  return rows.length?`<div class="note"><b>${t("csT")}</b>${rows.join("")}</div>`:""}
 function renderDash(){
   const dis=(live()&&link()!=="ok")?" disabled":"";
   const x=S.pos,k=(l,v,c="")=>`<div><small>${l}</small><b class="num ${c}">${v}</b></div>`;
@@ -836,6 +820,8 @@ function renderDash(){
   h+=`</div></div>`;
   if(live()&&link()==="ok"&&S.frz)h=`<div class="note er" style="display:flex;justify-content:space-between;align-items:center;gap:8px"><span>${ic("pause")} ${t("frzL")} · ${f(S.price)}</span><button class="btn go" style="padding:8px 12px" onclick="start()">${t("rst")}</button></div>`+h;
   if(live()&&link()==="ok"&&S.wcode&&!S.frz&&D["w_"+S.wcode])h=`<div class="note"><b>⏳ ${t("w_"+S.wcode)}</b>${S.msg?`<br><small>${esc(trEA(S.msg))}</small>`:""}</div>`+h;
+  if(live()&&link()==="ok"&&S.rec&&S.rec.hold)h=`<div class="note er"><b>${ic("alert")} ${t("rcvT")}</b><br><small>${esc(trEA(S.rec.why))}</small><br>${t("rcvB")}</div>`+h;
+  if(live()&&link()==="ok")h=cmdStrip()+h;
   if(live()&&link()==="off")h=`<div class="note er"><b>${ic("alert")} ${t("offT")}</b><br>${t("offB")}${linkRows()}</div>`+h;
   else if(live()&&link()==="srv")h=`<div class="note er"><b>${ic("alert")} ${t("l_srv")}</b><br>${t("l_srvS")}${linkRows()}</div>`+h;
   else if(live()&&link()==="ok"&&tradeWhy())h=`<div class="note er"><b>${ic("alert")} ${t("trOffT")}</b><br>${t(tradeWhy())}${linkRows()}</div>`+h;
@@ -933,7 +919,7 @@ function newCycleUI(){
   if(S.pos||S.state==="BUY_ACTIVE"||S.state==="SELL_ACTIVE")return toast("❌ "+t("cyc_blk"));
   const n=(S.orders||[]).length;
   ask(t("cyc_q"),t("cyc_b",n?t("cyc_o",n):""),t("cyc_y"),()=>run("newcycle"))}
-function resetUI(){ask2(t("q_reset"),t("q_resetB2",f(S.risk),S.seq||0,f(S.acc||0)),t("q_resetY"),t("q2_reset"),t("q_resetY"),()=>run("reset"))}
+function resetUI(){ask2(t("q_reset"),t("q_resetB2",f(S.risk),S.seq||0,f(S.acc||0)),t("q_resetY"),t("q2_reset"),t("q_resetY"),()=>run("reset",{confirm:1}))}
 
 /* shell: tabs, theme, language */
 $("nav").onclick=e=>{const b=e.target.closest("button"),i=b&&b.dataset.k;if(i===undefined)return;vib();tab=+i;document.querySelectorAll(".tab").forEach((x,j)=>x.classList.toggle("on",j===tab));[...$("nav").children].forEach((c,j)=>c.classList.toggle("on",j===tab));if(tab===1)renderHist();if(tab===2&&window.YTN)YTN.open();window.scrollTo(0,0)};
