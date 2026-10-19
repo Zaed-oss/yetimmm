@@ -1,6 +1,0 @@
-# v4.31.1: one line-ending policy for every machine (stops the CRLF/LF warnings on Windows and phantom diffs)
-* text=auto eol=lf
-*.bat text eol=crlf
-*.ps1 text eol=crlf
-*.png binary
-*.ex5 binary
