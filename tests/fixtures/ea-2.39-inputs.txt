@@ -44,6 +44,7 @@ input bool   InpCatchAfterSL   = false;   // (ignored, v2.33) FAST CATCH also ri
 input double InpCatchMaxGap    = 0.0;     // FAST CATCH: skip the market entry when the price is farther than this ($) beyond the level. 0 = no limit (the lot shrinks with the distance, risk stays)
 input int    InpCatchDeviation = 300;     // FAST CATCH: max slippage (points) sent with the market order AND tolerated after the fill (a fast market needs a wide window or the broker re-quotes / rejects)
 input int    InpFastMovePts    = 80;      // A price range of at least this many points inside 1 second = FAST MARKET: no network calls (Telegram / Mini App) so every tick is processed. 0 = off
+input bool   InpNetSilence    = false;   // v2.46: false (default) = the network is NEVER silenced: Mini App heartbeat every 1 s + Telegram every InpTgPollMs (the behaviour of EA 2.30 / app 4.17.1, no "EA offline" flapping). true = legacy hot-market silence (InpHotZone / InpFastMovePts / InpNetMaxDeferSec below)
 input double InpHotZone        = 1.5;     // No network calls while the price is within this distance ($) of a level (or outside the zone) - WebRequest blocks the EA and ticks are lost. 0 = off
 input int    InpHotHoldSec     = 3;       // Seconds the network stays silent after a fast move
 input int    InpNetMaxDeferSec = 5;       // Network is never silent longer than this: one call is allowed every N seconds even in a hot market. v2.45: 20 -> 5 (20 s equalled the Worker's offline limit and delayed Mini App confirmations)

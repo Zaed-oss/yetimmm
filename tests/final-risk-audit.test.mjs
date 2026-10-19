@@ -83,7 +83,7 @@ test("v2.35 EA source: both final-size checks exist inside RiskCompute, are mapp
   assert.ok(body.indexOf("RISK_ABOVE_RISKCAP") < body.indexOf("r.vol=lot;"), "cap must be checked BEFORE the lot is accepted");
   assert.match(ea, /rc=="RISK_ABOVE_RISKCAP"\) return "WAITING_RISKCAP"/);
   assert.match(ea, /rc=="RISK_ABOVE_ACCCAP"\) return "WAITING_ACCLOSSCAP"/);
-  assert.match(ea, /#define YT_VER "2\.45"/);
+  assert.match(ea, /#define YT_VER "2\.46"/);
 });
 
 // ---- ledger rules transcribed from ProcessClosedPosition (idempotent, net-only TP reset) ----

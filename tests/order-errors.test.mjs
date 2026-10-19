@@ -57,5 +57,5 @@ test("2.39 the strategy rules of the report are untouched: no market order from 
   assert.ok(/#define YT_REAL_ORDERS_ONLY\s+true|const bool YT_REAL_ORDERS_ONLY\s*=\s*true/.test(ea) || /YT_REAL_ORDERS_ONLY[^\n]*true/.test(ea));
   assert.ok(ea.includes("void EnforceSinglePosition("));
   assert.ok(ea.includes("double NextRiskForNet("));
-  assert.match(ea, /#property version\s+"2\.45"/);
+  assert.match(ea, /#property version\s+"2\.46"/);
 });

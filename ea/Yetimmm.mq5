@@ -4,11 +4,12 @@
 //|  MetaTrader 5 | Telegram control | State recovery | Trade log    |
 //+------------------------------------------------------------------+
 #property copyright "Yetimmm"
-#property version   "2.45"
+#property version   "2.46"
 #property description "Yetimmm | XAUUSD | Two-level Stop Buy / Stop Sell switch + risk sequence | Telegram integration"
 
 #include <Trade\Trade.mqh>
 
+//--- v2.46 (NETWORK = OLD BEHAVIOUR): new input InpNetSilence=false. The v2.30 "hot market" network silence (NetHot) made the Mini App show "EA offline" every few seconds whenever the price sat near the levels (always the case with Buy/Sell Stop). With the default the EA again sends the heartbeat every second and polls Telegram every InpTgPollMs, never silenced - same as EA 2.30. The silence code is kept intact behind InpNetSilence=true. No entry / lot / SL / TP / ledger code changed.
 //--- v2.45.1 (TELEGRAM ORDER CONTROL): /orders now lists live orders AND levels waiting for the price (current price, trigger, remaining distance); new /del BUY|SELL|TICKET and /mod BUY|SELL PRICE act on ONE order and answer with the real outcome. Reuses ExecDeleteLevel / ExecDeleteOrder / ApplyLevels (no new trading path; no entry / lot / SL / TP / ledger code changed).
 //--- v2.45 (CONFIRMATION PATH): a Mini App command is confirmed within ~1 s. (1) a WAITING side silences the network only NEAR its trigger (3 x InpHotZone), not whenever it exists; (2) a pending command result (ack) is sent with priority unless the market itself is hot; (3) InpNetMaxDeferSec 20 -> 5 so the heartbeat never approaches the Worker offline limit. No entry / lot / SL / TP / ledger code changed.
 //--- v2.38 (CYCLE LEDGER): every trading cycle now has an explicit, independent ledger (CycleId / CycleNet / CycleLosses / CycleState, saved with the closing-deal id).
@@ -182,7 +183,7 @@ enum ENUM_YT_RISKPOL
    YT_RISK_CLAMP_MIN=1   // use the broker minimum volume and SAY SO: Requested Risk / Effective Risk are both shown and logged
   };
 
-#define YT_VER "2.45"
+#define YT_VER "2.46"
 #define YT_REAL_ORDERS_ONLY true   // v2.33: the EA NEVER opens a trade at market by its own decision. Every entry is a REAL Buy Stop / Sell Stop order on the server, created only from the levels the user sent (Telegram / Mini App). Virtual entry, Fast Catch and Market Reversal are disabled.
 #define YT_DUP_HALT_SEC 30     // v2.29: the Worker keeps reporting another live copy for this long -> this copy halts
 #define YT_VANISH_WAIT_SEC 90  // v2.29: a vanished position keeps the SAFE state (no orders, sequence untouched) and the history is re-read every 5 s for this long
@@ -249,6 +250,7 @@ input bool   InpCatchAfterSL   = false;   // (ignored, v2.33) FAST CATCH also ri
 input double InpCatchMaxGap    = 0.0;     // FAST CATCH: skip the market entry when the price is farther than this ($) beyond the level. 0 = no limit (the lot shrinks with the distance, risk stays)
 input int    InpCatchDeviation = 300;     // FAST CATCH: max slippage (points) sent with the market order AND tolerated after the fill (a fast market needs a wide window or the broker re-quotes / rejects)
 input int    InpFastMovePts    = 80;      // A price range of at least this many points inside 1 second = FAST MARKET: no network calls (Telegram / Mini App) so every tick is processed. 0 = off
+input bool   InpNetSilence    = false;   // v2.46: false (default) = the network is NEVER silenced: Mini App heartbeat every 1 s + Telegram every InpTgPollMs (the behaviour of EA 2.30 / app 4.17.1, no "EA offline" flapping). true = legacy hot-market silence (InpHotZone / InpFastMovePts / InpNetMaxDeferSec below)
 input double InpHotZone        = 1.5;     // No network calls while the price is within this distance ($) of a level (or outside the zone) - WebRequest blocks the EA and ticks are lost. 0 = off
 input int    InpHotHoldSec     = 3;       // Seconds the network stays silent after a fast move
 input int    InpNetMaxDeferSec = 5;       // Network is never silent longer than this: one call is allowed every N seconds even in a hot market. v2.45: 20 -> 5 (20 s equalled the Worker's offline limit and delayed Mini App confirmations)
@@ -349,6 +351,7 @@ ulong         g_hkMs=0;                     // start of that window
 ulong         g_fastUntil=0;                // network silent until (fast market seen)
 ulong         g_netDeferSince=0;            // when the network went silent
 bool          g_netAckWait=false;           // v2.45: a Mini App command result (ack) is waiting to leave: it must not sit behind a quiet-market silence
+ulong         g_brNetMs=0;                  // v2.45.1: when the LAST bridge request really left (own allowance: Telegram polling can no longer use up the bridge's turn)
 ulong         g_netPrioMs=0;                // v2.45: last priority (ack) call, throttles it to 1 per 500 ms
 ulong         g_nextCatchMs=0;              // fast-catch throttle
 bool          g_catchArmed=false;           // the price was inside the zone (or a sequence is re-entering): crossing a level may now be caught
@@ -5373,6 +5376,7 @@ bool NetHot(const bool prio=false)
 //--- true = a WebRequest may run now. A hot market silences it, but never longer than InpNetMaxDeferSec
 bool NetAllowed()
   {
+   if(!InpNetSilence) return true;                       // v2.46: silence is OFF by default (EA 2.30 behaviour) - the network is always allowed
    if(!NetHot()) { g_netDeferSince=0; return true; }
    ulong now=GetTickCount64();
    //--- v2.45 PRIORITY ACK: a command was executed and its result must reach the Worker now. Allowed unless the market itself is hot (fast move / price at a level / position + opposite order)
@@ -5380,6 +5384,22 @@ bool NetAllowed()
    if(g_netDeferSince==0) g_netDeferSince=now;
    if(now-g_netDeferSince>=(ulong)MathMax(1,InpNetMaxDeferSec)*1000) { g_netDeferSince=now; return true; }
    return false;
+  }
+
+//--- v2.45.1 HEARTBEAT ALLOWANCE (root cause of the "EA offline for 35-80 s" drops).
+//--- Before: TgPoll() and BridgeSync() shared ONE allowance (NetAllowed). In a hot market it opens once per InpNetMaxDeferSec (5 s) at a random 200 ms timer event,
+//--- TgPoll() (first in OnTimer) used it up, and BridgeSync() runs only in the 1-per-second slow path -> it got the allowance only when both happened to coincide
+//--- (about 1 time in 5). Measured by simulation: median gap between syncs 20 s, 30 % of gaps > 30 s (the Worker's offline limit), worst case 150 s.
+//--- Now the bridge has its OWN allowance, measured from the last bridge request that really left, so the heartbeat can never be starved by anything else.
+//--- It never makes the network noisier than before (<= 1 bridge call per InpNetMaxDeferSec in a hot market) and a quiet market is untouched.
+bool BrNetAllowed()
+  {
+   if(!InpNetSilence) return true;                       // v2.46: the heartbeat is sent every slow-path second, exactly as in EA 2.30
+   if(!NetHot()) return true;
+   ulong now=GetTickCount64();
+   if(g_netAckWait && now-g_netPrioMs>=500 && !NetHot(true)) { g_netPrioMs=now; return true; }   // priority ack (unchanged rule)
+   if(g_brNetMs==0 || now<g_brNetMs) return true;                                                  // never sent yet / tick counter wrapped
+   return (now-g_brNetMs>=(ulong)MathMax(1,InpNetMaxDeferSec)*1000);
   }
 
 int NetTimeout()
@@ -7145,6 +7165,8 @@ void BrFail(const string code,const int httpCode,const string human)
 void BrSuccess()
   {
    datetime now=TimeLocal();
+   if(g_brFails==0 && g_brLastOkAt>0 && now-g_brLastOkAt>=15)   // v2.45.1: a silent heartbeat gap is never hidden: it is written down with its length
+      YLog("Mini App bridge: heartbeat gap of "+IntegerToString((int)(now-g_brLastOkAt))+" s (no failed request: the EA was busy or the market was hot). Worker offline limit is "+IntegerToString(YT_BR_OFFLINE_SEC)+" s.");
    if(g_brFails>0)
      {
       int down=(g_brDownSince>0)?(int)(now-g_brDownSince):0;
@@ -7983,6 +8005,7 @@ void BridgeSync()
    string pairCode=g_brPair;
    StringTrimLeft(pairCode); StringTrimRight(pairCode);
    if(g_brPairNeed && StringLen(pairCode)>0) hdr+="X-EA-Pair: "+pairCode+"\r\n";   // sent ONLY until the Worker confirmed the pairing (and again if it ever asks for it)
+   g_brNetMs=GetTickCount64();           // v2.45.1: the bridge's own allowance restarts from the moment a request really leaves
    int code=WebRequest("POST",url,hdr,NetTimeout(),data,res,rh);
    if(code==-1)
      {
@@ -8874,7 +8897,7 @@ void OnTimer()
    if(g_timerCount%600==0) SeqAuditRun();          // v2.29: every 10 min, alert only
    MonitorSpread();
    BrWaitTrack();                    // v2.17: waiting Mini App commands -> activated / superseded / cancelled
-   if(netOk) BridgeSync();
+   if(BrNetAllowed()) BridgeSync();   // v2.45.1: own allowance (was `if(netOk)`, shared with TgPoll -> the heartbeat was starved in a hot market)
    if(netOk) TgFlush();
    UpdatePanel();
   }
