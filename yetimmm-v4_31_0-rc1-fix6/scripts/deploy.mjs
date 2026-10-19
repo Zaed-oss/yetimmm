@@ -1,6 +1,7 @@
 // One-command Worker release:  npm run deploy
 //   1) npm run check + npm test (stops on failure)
-//   2) refuses to deploy if PAIR_CODE sits in wrangler.toml as a plain variable, or if BOT_TOKEN / APP_PASSWORD / PAIR_CODE secrets are missing
+//   2) refuses to deploy if PAIR_CODE sits in wrangler.toml as a plain variable, or if BOT_TOKEN / PAIR_CODE secrets are missing
+//      (APP_PASSWORD is required ONLY when no OWNER_TG secret exists: an owner signs in through Telegram, no password needed)
 //   3) wrangler deploy
 //   4) GET <worker>/ and verifies pairConfigured:true (the cause of HTTP 503 pair_not_configured)
 // Needs Cloudflare auth in the terminal: `npx wrangler login` once, or env CLOUDFLARE_API_TOKEN (+ CLOUDFLARE_ACCOUNT_ID).
@@ -39,8 +40,12 @@ if (!dry) {
   if (ls.status !== 0) die("could not list secrets (not logged in?). Run `npx wrangler login` or set CLOUDFLARE_API_TOKEN.\n" + (ls.stderr || ""));
   let names = null;
   try { names = JSON.parse(ls.stdout.slice(ls.stdout.indexOf("["))).map((x) => x.name); } catch { die("could not parse the secret list - refusing to deploy blind"); }
-  const miss = ["BOT_TOKEN", "APP_PASSWORD", "PAIR_CODE"].filter((k) => !names.includes(k));
-  if (miss.length) die("required secret(s) missing: " + miss.join(", ") + " -> npx wrangler secret put <NAME> (PAIR_CODE: 8+ chars, strong, different from APP_PASSWORD)");
+  // v4.31.1: APP_PASSWORD is only the fallback sign-in. With an OWNER_TG secret (owner-id setup) the Worker never needs it.
+  const hasOwner = names.includes("OWNER_TG") || /^\s*OWNER_TG\s*=\s*"?\d{3,15}/m.test(toml);
+  const need = ["BOT_TOKEN", "PAIR_CODE", ...(hasOwner ? [] : ["APP_PASSWORD"])];
+  const miss = need.filter((k) => !names.includes(k));
+  if (miss.length) die("required secret(s) missing: " + miss.join(", ") + " -> npx wrangler secret put <NAME> (PAIR_CODE: 8+ chars, strong, different from APP_PASSWORD; or set OWNER_TG instead of APP_PASSWORD: npm run setup does it)");
+  log("auth: " + (hasOwner ? "owner id (Telegram sign-in), APP_PASSWORD not required" : "APP_PASSWORD") + " - secrets OK");
 }
 
 // 3) deploy

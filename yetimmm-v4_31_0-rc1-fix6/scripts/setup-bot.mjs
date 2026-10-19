@@ -27,7 +27,7 @@ function ask(q, def = "", secret = false) {
 }
 
 // ── detect ─────────────────────────────────────────────────────────────────────────────
-const dotenv = Object.fromEntries(read(".env").split(/\r?\n/).map((l) => /^\s*([A-Z_]+)\s*=\s*"?([^"#]*)"?/.exec(l)).filter(Boolean).map((m) => [m[1], m[2].trim()]));
+const dotenv = Object.fromEntries(read(".env").split(/\r?\n/).map((l) => /^\s*([A-Z_]+)\s*=\s*(.*)$/.exec(l)).filter(Boolean).map((m) => [m[1], m[2].trim().replace(/^(["'])(.*)\1\s*(#.*)?$/, "$2").replace(/\s+#.*$/, "").trim()]));
 const detWorker = process.env.WORKER_URL || dotenv.WORKER_URL || (/baseUrl:\s*"(https:\/\/[^"]+)"/.exec(read("index.html")) || [])[1] || "";
 function detPages() {
   const g = spawnSync("git", ["config", "--get", "remote.origin.url"], { cwd: root, encoding: "utf8" });
@@ -42,7 +42,7 @@ const norm = (u, slash) => { u = String(u || "").trim(); if (!u) return ""; if (
 const up = async (u) => { try { const r = await fetch(u, { method: "GET", redirect: "follow" }); return r.status; } catch { return 0; } };
 
 // ── resolve ────────────────────────────────────────────────────────────────────────────
-let token = process.env.BOT_TOKEN || dotenv.BOT_TOKEN || "";
+let token = String(process.env.BOT_TOKEN || dotenv.BOT_TOKEN || "").trim().replace(/^["']|["']$/g, "");
 if (!token) token = await ask("Bot token (from @BotFather, hidden):", "", true);
 if (!/^\d{6,}:[\w-]{30,}$/.test(token)) { console.error("[setup-bot] BOT_TOKEN is missing or malformed."); process.exit(1); }
 let worker = norm(await ask("Worker URL:", detWorker));
@@ -59,7 +59,15 @@ if (sa !== 200) { const a = (await ask("Mini App URL does not answer 200. Contin
 const api = async (m, b) => {
   if (dry) { say("(dry) " + m); return { ok: true }; }
   const r = await (await fetch(`https://api.telegram.org/bot${token}/${m}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(b) })).json();
-  say((r.ok ? "ok   " : "FAIL ") + m + (r.ok ? "" : " - " + r.description)); return r;
+  const limited = !r.ok && (r.error_code === 429 || /too many requests|retry after/i.test(r.description || ""));   // Telegram caps setMyName (~2 changes / 22 h): that is a limit, not a failure
+  const wait = limited ? Number((r.parameters && r.parameters.retry_after) || (/retry after (\d+)/i.exec(r.description || "") || [])[1] || 0) : 0;
+  say((r.ok ? "ok   " : limited ? "WARN " : "FAIL ") + m + (r.ok ? "" : " - " + r.description) + (limited && wait ? ` (try again in ~${Math.ceil(wait / 3600)} h; everything else was applied)` : ""));
+  return r;
+};
+// read-only GET helper (getMyName etc.): returns {} on any network/parse problem so the caller simply falls back to writing
+const apiGet = async (m, b) => {
+  if (dry) return {};
+  try { return await (await fetch(`https://api.telegram.org/bot${token}/${m}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(b || {}) })).json(); } catch { return {}; }
 };
 const me = dry ? { ok: true, result: { username: "?" } } : await (await fetch(`https://api.telegram.org/bot${token}/getMe`)).json();
 if (!me.ok) { console.error("[setup-bot] Telegram rejected the token."); process.exit(1); }
@@ -72,7 +80,9 @@ const T = {
 };
 for (const [lang, t] of Object.entries(T)) {
   const l = lang === "en" ? {} : { language_code: lang };
-  await api("setMyName", { name: t.name, ...l });
+  const cur = await apiGet("getMyName", l);                                   // v4.31.1: only call setMyName when the name really differs
+  if (cur.ok && cur.result && cur.result.name === t.name) say(`skip setMyName (${lang}) - already "${t.name}"`);
+  else await api("setMyName", { name: t.name, ...l });
   await api("setMyDescription", { description: t.desc, ...l });
   await api("setMyShortDescription", { short_description: t.about, ...l });
   await api("setMyCommands", { commands: t.cmds.map(([command, description]) => ({ command, description })), ...l });

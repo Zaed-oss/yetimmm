@@ -78,6 +78,19 @@ for (const [f, re] of [["TERMINAL.md", /^# Terminal \/ agent instructions \(Yeti
   const m = read(f).split("\n")[0].match(re), want = pkgVer.split(".").slice(0, re.source.includes("agent") ? 2 : 3).join(".");
   m && m[1] === want ? ok(f + " title version = " + m[1]) : fail(f + " title version (" + (m ? m[1] : "none") + ") != " + want);
 }
+// v4.31.1: the owner's Telegram id (from the git-ignored .env) must never appear in a tracked/uploadable file
+{
+  let ownerId = ""; try { ownerId = (/^\s*OWNER_TG\s*=\s*"?(\d{3,15})/m.exec(read(".env")) || [])[1] || ""; } catch {}
+  if (!ownerId) ok("no local OWNER_TG to guard (skipped)");
+  else {
+    const skip = new Set([".env", "TERMINAL.local.md", "ea/Yetimmm.cfg"]);
+    let files = [];
+    try { files = execFileSync("git", ["ls-files"], { cwd: root, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).split(/\r?\n/).filter(Boolean); }
+    catch { const walk = (d) => readdirSync(join(root, d), { withFileTypes: true }).forEach((e) => { const r = d ? d + "/" + e.name : e.name; if (e.isDirectory()) { if (!["node_modules", ".git", ".wrangler"].includes(e.name)) walk(r); } else files.push(r); }); walk(""); }
+    const leaks = files.filter((f) => !skip.has(f) && /\.(md|mjs|js|json|toml|html|txt|ps1|bat|mq5|css|yml|yaml)$/i.test(f)).filter((f) => { try { return read(f).includes(ownerId); } catch { return false; } });
+    leaks.length ? fail("OWNER_TG value found in tracked file(s): " + leaks.join(", ") + " (move it to .env / TERMINAL.local.md)") : ok("owner Telegram id appears in no tracked file");
+  }
+}
 const csp = (html.match(/Content-Security-Policy"\s+content="([^"]+)"/) || [])[1] || "";
 const apiHost = (html.match(/baseUrl:\s*"(https:\/\/[^"\/]+)/) || [])[1];
 csp && apiHost && csp.includes("connect-src") && csp.split("connect-src")[1].split(";")[0].includes(apiHost) ? ok("index.html CSP allows connect-src only to the Worker (+ Telegram)") : fail("index.html CSP missing or connect-src does not list the Worker URL");

@@ -32,8 +32,8 @@ function ask(q, def = "", secret = false) {
 }
 // local, git-ignored state: generated secrets + bot token (so re-runs are silent)
 const stateFile = P(".env");
-const env = Object.fromEntries(rd(".env").split(/\r?\n/).map((l) => /^\s*([A-Z_]+)\s*=\s*(.*)$/.exec(l)).filter(Boolean).map((m) => [m[1], m[2].trim().replace(/^"|"$/g, "")]));
-const save = () => writeFileSync(stateFile, Object.entries(env).map(([k, v]) => `${k}="${v}"`).join("\n") + "\n");
+const env = Object.fromEntries(rd(".env").split(/\r?\n/).map((l) => /^\s*([A-Z_]+)\s*=\s*(.*)$/.exec(l)).filter(Boolean).map((m) => [m[1], m[2].trim().replace(/^["']|["']$/g, "")]));
+const save = () => writeFileSync(stateFile, Object.entries(env).map(([k, v]) => `${k}=${String(v).replace(/[\r\n]/g, "")}`).join("\n") + "\n");
 const rnd = (n) => randomBytes(n).toString("base64url").replace(/[-_]/g, "x").slice(0, n);
 const digits = (n) => Array.from(randomBytes(n), (b) => b % 10).join("");
 
@@ -148,7 +148,13 @@ if (win && !noMt5) {
 
 // 10 ─ publish the Mini App
 log("10/11 GitHub Pages");
-if (gm && !noPush) {
+// v4.31.1: check GitHub credentials BEFORE committing (non-interactive: never hangs on a prompt). One-time fix: `gh auth login` (or Git Credential Manager), then every update just works.
+const gitAuthOk = () => gm && sh("git", ["push", "--dry-run", "--quiet"], { env: { ...process.env, GIT_TERMINAL_PROMPT: "0" }, stdio: "pipe" }).status === 0;   // push (not ls-remote): a public repo can be READ without credentials but not written
+if (gm && !noPush && !gitAuthOk()) {
+  warn("GitHub is not authenticated on this machine - skipping the push (nothing is lost).");
+  console.log("    One-time fix:  gh auth login   (choose GitHub.com > HTTPS > browser)   - or sign in once via Git Credential Manager.");
+  console.log("    Then re-run:   npm run setup   (or  powershell -File tools/repo-update.ps1  for code-only updates)");
+} else if (gm && !noPush) {
   sh("git", ["add", "-A"]); sh("git", ["commit", "-m", "setup: configure worker url + assets", "--quiet"]);
   const ps = sh("git", ["push"], { stdio: "inherit" });
   if (ps.status) warn("git push failed - push manually, then re-run `npm run setup`");

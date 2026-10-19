@@ -1,3 +1,14 @@
+## v4.31.0 - fix6 (scripts only; the EA and the Worker are untouched)
+- `deploy`: `APP_PASSWORD` is required only when no `OWNER_TG` secret exists, so `npm run deploy` works with the owner-id setup.
+- `setup-bot`: reads `getMyName` first and skips `setMyName` when unchanged; Telegram's rate limit (429) is a WARN with the wait time, not a failure.
+- `.gitattributes` (`* text=auto eol=lf`): ends the CRLF/LF warnings.
+- `setup`: checks GitHub push credentials before committing (clear one-time `gh auth login` hint); new `tools/repo-update.ps1`.
+- `TERMINAL.md` no longer holds the owner's Telegram id: values moved to the git-ignored `TERMINAL.local.md`; `npm run check` fails if `OWNER_TG` shows up in a tracked file.
+
+## v4.31.0 (إصلاح تشغيلي، بلا تغيير في الـ EA ولا التداول) — «البوت غير شغّال» بعد النشر
+**السبب:** `setup.mjs` كان يكتب قيم `.env` بين علامات اقتباس فيفشل فحص `getMe` (404) في PowerShell؛ والتطبيق يعرض «غير متصل» إذا لم تصل مزامنة EA خلال 30 ث (الـ EA الجديد لم يتصل إلا بعد ~2.5 دقيقة من النشر؛ استنتاج لا تأكيد).
+**الإصلاح:** `.env` بلا اقتباس + قراءة متسامحة في `setup`/`setup-bot`؛ أمر `npm run diagnose` للفحص؛ نصوص حالة «EA غير متصل» أوضح (بلا تغيير منطق ولا `EA_STALE_SEC`). التفاصيل: `docs/FIX5-BOT-NOT-RUNNING.md`. اختبارات: `tests/diagnose-v4311.test.mjs` (5).
+
 ## v4.31.0 (EA 2.45.1) — تحكّم تيليجرام بالأوامر: `/orders` يعرض المنتظرة للسعر، و`/del` و`/mod` لأمر واحد
 **المشكلة:** `/orders` كان يعرض الأوامر الموجودة عند الوسيط فقط، فالمستوى المنتظر للسعر لا يظهر («No Pending Orders») رغم أن التطبيق يعرضه. ولا يوجد حذف ولا تعديل لأمر واحد من تيليجرام.
 **الحل (EA فقط، بلا مسار تداول جديد):** `/orders` يعرض الحي والمنتظر مع السعر الحالي والزناد والمسافة المتبقية؛ `/del BUY|SELL|TICKET` و`/mod BUY|SELL PRICE` يعيدان استخدام مسارات الحذف والتعديل القائمة ويذكران النتيجة الفعلية. **غير مُترجم ولا مُختبر على MT5 (F7 ثم Demo).**

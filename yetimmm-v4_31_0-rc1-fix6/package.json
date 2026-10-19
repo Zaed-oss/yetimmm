@@ -13,7 +13,8 @@
     "deploy:dry": "node scripts/deploy.mjs --dry",
     "deploy:raw": "wrangler deploy --config worker/wrangler.toml",
     "setup:bot": "node scripts/setup-bot.mjs",
-    "setup": "node scripts/setup.mjs"
+    "setup": "node scripts/setup.mjs",
+    "diagnose": "node scripts/diagnose.mjs"
   },
   "devDependencies": {
     "wrangler": "^4"
