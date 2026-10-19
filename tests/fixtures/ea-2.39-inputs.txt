@@ -46,7 +46,7 @@ input int    InpCatchDeviation = 300;     // FAST CATCH: max slippage (points) s
 input int    InpFastMovePts    = 80;      // A price range of at least this many points inside 1 second = FAST MARKET: no network calls (Telegram / Mini App) so every tick is processed. 0 = off
 input double InpHotZone        = 1.5;     // No network calls while the price is within this distance ($) of a level (or outside the zone) - WebRequest blocks the EA and ticks are lost. 0 = off
 input int    InpHotHoldSec     = 3;       // Seconds the network stays silent after a fast move
-input int    InpNetMaxDeferSec = 20;      // Network is never silent longer than this: one call is allowed every N seconds even in a hot market
+input int    InpNetMaxDeferSec = 5;       // Network is never silent longer than this: one call is allowed every N seconds even in a hot market. v2.45: 20 -> 5 (20 s equalled the Worker's offline limit and delayed Mini App confirmations)
 input double InpMoneyScale     = 0.0;     // v2.30 CENT SUPPORT: account-currency units per 1 main unit. 0 = AUTO (USC/EUC/GBC/AUC... = 100), 1 = off, 100 = force (e.g. a cent account that reports "USD"). With it, EVERY money figure (Risk, Target, losses, balance, margin, panel, Telegram, Mini App) is in MAIN units ($), so a cent account runs the SAME system as a standard one (Risk 1 / Target 20) with its smaller lot sizes
 input int    InpNetTimeoutMs   = 2000;    // WebRequest timeout (ms, 500..5000) - was 3000; it is the longest time the EA can be blind
 input group "=== Manual changes in MT5 ==="

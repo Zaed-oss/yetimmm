@@ -4,11 +4,13 @@
 //|  MetaTrader 5 | Telegram control | State recovery | Trade log    |
 //+------------------------------------------------------------------+
 #property copyright "Yetimmm"
-#property version   "2.44"
+#property version   "2.45"
 #property description "Yetimmm | XAUUSD | Two-level Stop Buy / Stop Sell switch + risk sequence | Telegram integration"
 
 #include <Trade\Trade.mqh>
 
+//--- v2.45.1 (TELEGRAM ORDER CONTROL): /orders now lists live orders AND levels waiting for the price (current price, trigger, remaining distance); new /del BUY|SELL|TICKET and /mod BUY|SELL PRICE act on ONE order and answer with the real outcome. Reuses ExecDeleteLevel / ExecDeleteOrder / ApplyLevels (no new trading path; no entry / lot / SL / TP / ledger code changed).
+//--- v2.45 (CONFIRMATION PATH): a Mini App command is confirmed within ~1 s. (1) a WAITING side silences the network only NEAR its trigger (3 x InpHotZone), not whenever it exists; (2) a pending command result (ack) is sent with priority unless the market itself is hot; (3) InpNetMaxDeferSec 20 -> 5 so the heartbeat never approaches the Worker offline limit. No entry / lot / SL / TP / ledger code changed.
 //--- v2.38 (CYCLE LEDGER): every trading cycle now has an explicit, independent ledger (CycleId / CycleNet / CycleLosses / CycleState, saved with the closing-deal id).
 //---   A cycle ends ONLY when the NET result of the whole cycle (profit + commission + swap + fees of every trade that belongs to it) reaches the target (strict,
 //---   no 98% tolerance). A TP or a repaid debt alone never ends it. ONE completion routine (CycleComplete) serves every closing path: it cancels the cycle's pending
@@ -180,7 +182,7 @@ enum ENUM_YT_RISKPOL
    YT_RISK_CLAMP_MIN=1   // use the broker minimum volume and SAY SO: Requested Risk / Effective Risk are both shown and logged
   };
 
-#define YT_VER "2.44"
+#define YT_VER "2.45"
 #define YT_REAL_ORDERS_ONLY true   // v2.33: the EA NEVER opens a trade at market by its own decision. Every entry is a REAL Buy Stop / Sell Stop order on the server, created only from the levels the user sent (Telegram / Mini App). Virtual entry, Fast Catch and Market Reversal are disabled.
 #define YT_DUP_HALT_SEC 30     // v2.29: the Worker keeps reporting another live copy for this long -> this copy halts
 #define YT_VANISH_WAIT_SEC 90  // v2.29: a vanished position keeps the SAFE state (no orders, sequence untouched) and the history is re-read every 5 s for this long
@@ -249,7 +251,7 @@ input int    InpCatchDeviation = 300;     // FAST CATCH: max slippage (points) s
 input int    InpFastMovePts    = 80;      // A price range of at least this many points inside 1 second = FAST MARKET: no network calls (Telegram / Mini App) so every tick is processed. 0 = off
 input double InpHotZone        = 1.5;     // No network calls while the price is within this distance ($) of a level (or outside the zone) - WebRequest blocks the EA and ticks are lost. 0 = off
 input int    InpHotHoldSec     = 3;       // Seconds the network stays silent after a fast move
-input int    InpNetMaxDeferSec = 20;      // Network is never silent longer than this: one call is allowed every N seconds even in a hot market
+input int    InpNetMaxDeferSec = 5;       // Network is never silent longer than this: one call is allowed every N seconds even in a hot market. v2.45: 20 -> 5 (20 s equalled the Worker's offline limit and delayed Mini App confirmations)
 input double InpMoneyScale     = 0.0;     // v2.30 CENT SUPPORT: account-currency units per 1 main unit. 0 = AUTO (USC/EUC/GBC/AUC... = 100), 1 = off, 100 = force (e.g. a cent account that reports "USD"). With it, EVERY money figure (Risk, Target, losses, balance, margin, panel, Telegram, Mini App) is in MAIN units ($), so a cent account runs the SAME system as a standard one (Risk 1 / Target 20) with its smaller lot sizes
 input int    InpNetTimeoutMs   = 2000;    // WebRequest timeout (ms, 500..5000) - was 3000; it is the longest time the EA can be blind
 
@@ -346,6 +348,8 @@ double        g_hkLo=0.0, g_hkHi=0.0;       // price range of the current 1-seco
 ulong         g_hkMs=0;                     // start of that window
 ulong         g_fastUntil=0;                // network silent until (fast market seen)
 ulong         g_netDeferSince=0;            // when the network went silent
+bool          g_netAckWait=false;           // v2.45: a Mini App command result (ack) is waiting to leave: it must not sit behind a quiet-market silence
+ulong         g_netPrioMs=0;                // v2.45: last priority (ack) call, throttles it to 1 per 500 ms
 ulong         g_nextCatchMs=0;              // fast-catch throttle
 bool          g_catchArmed=false;           // the price was inside the zone (or a sequence is re-entering): crossing a level may now be caught
 double        g_catchLb=0.0, g_catchLs=0.0; // levels the flag belongs to
@@ -2077,6 +2081,9 @@ int PlacementState(const bool buy,const double price,string &why)
   }
 
 void BrWaitActivated(const bool buy,const double level,const ulong ticket,const ulong latMs=0);   // v2.17 (defined with the Mini App command log)
+double WaitLevelNow(const bool buy);                       // v2.45.1: defined with the Mini App command log (used by the Telegram order list)
+string ExecDeleteOrder(const ulong ticket,const string src);   // v2.45.1: defined below (used by /del)
+string ExecDeleteLevel(const bool isBuy,const string src);     // v2.45.1: defined below (used by /del)
 
 //--- v2.17: distance (broker minimum + learned safety buffer) between the market and a waiting level, and the resulting TRIGGER price
 double WaitGap(const bool buy)
@@ -3072,17 +3079,35 @@ bool CurrentLotInfo(double &lot,double &est,string &err)
 
 string OrdersText()
   {
+   //--- v2.45.1: the list shows BOTH the live orders on the server AND the levels that are accepted but still WAITING for the price (same facts as the Mini App card:
+   //--- current price, trigger, remaining distance). Before this a waiting side was invisible here ("No Pending Orders") although the bot was correctly watching it.
    ulong od[];
    int n=OwnOrders(od);
-   if(n==0) return "No Pending Orders";
-   string s="Pending Orders\n";
+   MqlTick tk0;
+   const bool hasTick=(SymbolInfoTick(g_sym,tk0) && tk0.ask>0.0 && tk0.bid>0.0);
+   string live="", wait="";
    for(int i=0;i<n;i++)
      {
       if(!OrderSelect(od[i])) continue;
       long t=OrderGetInteger(ORDER_TYPE);
-      s+=(t==ORDER_TYPE_BUY_STOP?"Buy Stop: ":"Sell Stop: ")+PX(OrderGetDouble(ORDER_PRICE_OPEN))+"  Lot: "+LotS(OrderGetDouble(ORDER_VOLUME_CURRENT))+"  SL: "+PX(OrderGetDouble(ORDER_SL))+"  TP: "+PX(OrderGetDouble(ORDER_TP))+"  Ticket: #"+UL(od[i])+"\n";
+      const bool b=(t==ORDER_TYPE_BUY_STOP);
+      const double lv=OrderGetDouble(ORDER_PRICE_OPEN);
+      live+="✅ "+(b?"Buy Stop ":"Sell Stop ")+PX(lv)+" - ON SERVER\n   Lot: "+LotS(OrderGetDouble(ORDER_VOLUME_CURRENT))+"  SL: "+PX(OrderGetDouble(ORDER_SL))+"  TP: "+PX(OrderGetDouble(ORDER_TP))+"  Ticket: #"+UL(od[i])+"\n";
+      if(hasTick) live+="   Now: "+(b?"Ask ":"Bid ")+PX(b?tk0.ask:tk0.bid)+"  Remaining: "+PX(b?(lv-tk0.ask):(tk0.bid-lv))+"\n";
      }
-   return s;
+   for(int k=0;k<2;k++)
+     {
+      const bool b=(k==0);
+      const double lv=WaitLevelNow(b);
+      if(lv<=0.0) continue;
+      const double trg=WaitTrigger(b,lv);
+      wait+="⏳ "+(b?"Buy Stop ":"Sell Stop ")+PX(lv)+" - WAITING FOR PRICE\n";
+      if(hasTick)
+         wait+="   Now: "+(b?"Ask ":"Bid ")+PX(b?tk0.ask:tk0.bid)+"  Activates when "+(b?"Ask falls to ":"Bid rises to ")+PX(trg)+(b?" or lower":" or higher")+"  Remaining: "+PX(b?(tk0.ask-trg):(trg-tk0.bid))+"\n";
+      else wait+="   Waiting for market prices\n";
+     }
+   if(live=="" && wait=="") return "No Pending Orders";
+   return "Pending Orders\n"+live+wait+"Delete one: /del BUY | /del SELL | /del TICKET\nModify one: /mod BUY PRICE | /mod SELL PRICE";
   }
 
 string OpenText()
@@ -3190,7 +3215,7 @@ string LastText()
 string HelpText()
   {
    return "Yetimmm Commands\n/start - تشغيل البوت\n/stop - إيقاف البوت\n/set BUY SELL [RISK] - إدخال المستويات والمخاطرة\n/cancel - إلغاء الأوامر / إدارة الإغلاق\n"
-          "/status - حالة البوت\n/open - الصفقات المفتوحة\n/orders - الأوامر المعلقة\n/history [N] [SKIP] - سجل الصفقات\n/last - آخر صفقة\n"
+          "/status - حالة البوت\n/open - الصفقات المفتوحة\n/orders - الأوامر المعلقة والمنتظرة للسعر\n/del BUY|SELL|TICKET - حذف أمر واحد\n/mod BUY|SELL PRICE - تعديل سعر أمر واحد\n/history [N] [SKIP] - سجل الصفقات\n/last - آخر صفقة\n"
           "/stats - الإحصائيات\n/risk - معلومات المخاطرة\n/settings - الإعدادات\n/menu - لوحة الأزرار\n/help - المساعدة";
   }
 
@@ -5309,19 +5334,29 @@ void HotTrack(const MqlTick &tk,const ulong now)
       g_fastUntil=now+(ulong)MathMax(1,InpHotHoldSec)*1000;
   }
 
-bool NetHot()
+bool NetHot(const bool prio=false)
   {
    ulong now=GetTickCount64();
    if(now<g_fastUntil) return true;
-   if(g_dirty) return true;                                   // a trade event is waiting to be processed
+   if(g_dirty && !prio) return true;                          // a trade event is waiting to be processed (a priority ack call may go out: it is one short request, the event is handled within 1 s)
    if(g_state==YT_BUY_ACTIVE || g_state==YT_SELL_ACTIVE)
      {
       ulong od[];
       return OwnOrders(od)>0;                                 // the opposite pending order must disappear first
      }
    if(g_state!=YT_ARMED && g_state!=YT_WAITING_REENTRY) return false;
-   if(g_trig[0]>0.0 || g_trig[1]>0.0) return true;            // an order is waiting for the price to allow it
    if(g_sync[0]==YS_CREATING || g_sync[1]==YS_CREATING) return true;
+   if(g_trig[0]>0.0 || g_trig[1]>0.0)
+     {
+      //--- v2.45: a WAITING side keeps the network silent only while the price is NEAR its trigger (3 x the hot zone). Before this, ANY waiting side silenced the network
+      //--- for up to 20 s even when the price was far away: the Mini App command was executed but its confirmation (and the heartbeat) left 20 s later.
+      if(InpHotZone<=0.0) return true;
+      MqlTick tw;
+      if(!SymbolInfoTick(g_sym,tw) || tw.ask<=0.0 || tw.bid<=0.0) return true;
+      const double nearW=3.0*InpHotZone;
+      if(g_trig[0]>0.0 && tw.ask<=g_trig[0]+nearW) return true;   // Buy waits for Ask <= trigger
+      if(g_trig[1]>0.0 && tw.bid>=g_trig[1]-nearW) return true;   // Sell waits for Bid >= trigger
+     }
    if(InpHotZone>0.0 && g_buyLevel>g_sellLevel && g_sellLevel>0.0)
      {
       MqlTick t;
@@ -5338,6 +5373,8 @@ bool NetAllowed()
   {
    if(!NetHot()) { g_netDeferSince=0; return true; }
    ulong now=GetTickCount64();
+   //--- v2.45 PRIORITY ACK: a command was executed and its result must reach the Worker now. Allowed unless the market itself is hot (fast move / price at a level / position + opposite order)
+   if(g_netAckWait && now-g_netPrioMs>=500 && !NetHot(true)) { g_netPrioMs=now; return true; }
    if(g_netDeferSince==0) g_netDeferSince=now;
    if(now-g_netDeferSince>=(ulong)MathMax(1,InpNetMaxDeferSec)*1000) { g_netDeferSince=now; return true; }
    return false;
@@ -6183,6 +6220,29 @@ double ParseNum(string s)
 
 string NewNonce() { return IntegerToString((long)(GetTickCount64()%1000000))+IntegerToString(MathRand()%1000); }
 
+//--- v2.45.1: modify ONE level from Telegram (same rules as the Mini App "modify": ApplyLevels validates, the sequence lock is honest). The answer states the REAL outcome
+//--- after the synchronisation (placed on the server / still waiting for the price), never just "sent".
+string ExecModifySide(const bool isBuy,const double px,const string src)
+  {
+   if(px<=0.0) return "❌ Invalid price.";
+   if(g_state!=YT_ARMED) return "❌ Orders can be changed only while the bot is ARMED (state: "+StateText()+").";
+   const bool has=(g_mode==YM_BOTH || (isBuy && g_mode==YM_BUY) || (!isBuy && g_mode==YM_SELL));
+   if(!has) return "❌ That order does not exist (use /set to enter the levels).";
+   const double nb=isBuy?px:g_buyLevel, ns=isBuy?g_sellLevel:px;
+   string er="";
+   if(!ApplyLevels(nb,ns,0.0,src,er)) return "❌ Invalid Price Configuration: "+er;
+   if(g_fresh && g_pendBuy>0.0 && g_pendSell>0.0) return LevelsAcceptedText();   // sequence locked: the change is only PENDING, say so honestly
+   GS("LVSRC",1.0);
+   g_nextPlaceMs=0; ResetSyncBackoff(); SyncAll(); g_dirty=true;
+   string out="✅ ORDER MODIFIED\n"+(isBuy?"Buy Stop @ ":"Sell Stop @ ")+PX(px);
+   ulong tk=0; double ap=0.0;
+   if(SideActual(isBuy,tk,ap))
+      out+=PriceEq(ap,px)?"\nOn the server: #"+UL(tk)+" @ "+PX(ap):"\n⚠️ The server order #"+UL(tk)+" is still at "+PX(ap)+" - the update is in progress, check /orders";
+   else if(WaitLevelNow(isBuy)>0.0) out+="\n⏳ "+WaitText(isBuy,px);
+   else out+="\nℹ️ Not confirmed on the server yet - check /orders in a few seconds.";
+   return out;
+  }
+
 void TgCommand(const string text,const long chat,const long from)
   {
    string t=text;
@@ -6209,7 +6269,7 @@ void TgCommand(const string text,const long chat,const long from)
      }
 
    //--- duplicate protection for state-changing commands
-   bool mutating=(cmd=="/start" || cmd=="/stop" || cmd=="/set" || cmd=="/cancel");
+   bool mutating=(cmd=="/start" || cmd=="/stop" || cmd=="/set" || cmd=="/cancel" || cmd=="/del" || cmd=="/mod");
    if(mutating)
      {
       string key=IntegerToString(from)+"|"+t;
@@ -6265,6 +6325,27 @@ void TgCommand(const string text,const long chat,const long from)
       string err;
       if(ApplyLevels(b,s,r,"Telegram",err)) TgQueue(LevelsAcceptedText(),chat);
       else TgQueue("❌ Invalid Price Configuration\n"+err,chat);
+     }
+   else if(cmd=="/del")
+     {
+      if(argc!=2) { TgQueue("Usage: /del BUY | /del SELL | /del TICKET\nExample: /del SELL",chat); return; }
+      string w=a[1]; StringToUpper(w);
+      if(w=="BUY" || w=="SELL") TgQueue(ExecDeleteLevel(w=="BUY","Telegram"),chat);
+      else
+        {
+         const ulong tkd=(ulong)StringToInteger(a[1]);
+         if(tkd==0) { TgQueue("Usage: /del BUY | /del SELL | /del TICKET",chat); return; }
+         TgQueue(ExecDeleteOrder(tkd,"Telegram"),chat);
+        }
+     }
+   else if(cmd=="/mod")
+     {
+      if(argc!=3) { TgQueue("Usage: /mod BUY PRICE | /mod SELL PRICE\nExample: /mod SELL 4120",chat); return; }
+      string w=a[1]; StringToUpper(w);
+      if(w!="BUY" && w!="SELL") { TgQueue("Usage: /mod BUY PRICE | /mod SELL PRICE",chat); return; }
+      const double pxm=ParseNum(a[2]);
+      if(pxm<=0.0) { TgQueue("❌ Invalid price.",chat); return; }
+      TgQueue(ExecModifySide(w=="BUY",pxm,"Telegram"),chat);
      }
    else if(cmd=="/status") TgQueue(StatusText(),chat,MenuMarkup());
    else if(cmd=="/open")   TgQueue(OpenText(),chat);
@@ -7151,6 +7232,7 @@ void BrAckAdd(const string id)
    int n=ArraySize(g_brAck);
    ArrayResize(g_brAck,n+1);
    g_brAck[n]=id;
+   g_netAckWait=true;                   // v2.45: tells NetAllowed() that a result is waiting to leave
   }
 
 //--- v2.14: Mini App command log (kept in memory + Yetimmm_<magic>_Commands.csv, sent to the app inside the state)
@@ -7863,6 +7945,7 @@ void BridgeSync()
    if(g_dupSince>0) { YLog("The other copy is gone: trading resumes on this copy."); g_dupSince=0; ClearAlert("DUPINST"); g_dirty=true; }
    g_brFresh=false;
    ArrayResize(g_brAck,0);              // the acks in this request were delivered
+   g_netAckWait=false;
    EvAckFrom(resp);                     // v2.23: events the Worker accepted (or already had) leave the outbox
    if(calSending) { g_calSent=calHashSent; g_calNeed=false; }
    if(StringFind(resp,"\"calNeed\":true")>=0) g_calNeed=true;   // the Worker lost / never had the table: send it on the next sync

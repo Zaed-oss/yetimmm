@@ -1,4 +1,4 @@
-// Yetimmm bridge v4.30.0 — ONE bot, ONE link, login by MT5 account number + ONE app password.
+// Yetimmm bridge v4.31.0 — ONE bot, ONE link, login by MT5 account number + ONE app password.
 //   EA  -> POST /api/ea/sync  (headers X-EA-Secret [+ X-EA-Pair while pairing])  body {login, srv, fresh, reset, cv, state, ack}
 //   App -> POST /login        body {login, pw, init}                -> {ok, sess}
 //   App -> POST /verify       headers X-Login + X-Session, body {init} -> {ok, hard, checks:{session,account,telegram,bot}}
@@ -17,7 +17,7 @@
 //    • SESSION_EPOCH bumped -> everybody is signed out instantly (panic button)
 // ═════════════════════════════════════════════════════════════════════════
 import { Notify } from "./news.js";
-export const VERSION = "4.30.0", EA_PROTOCOL = "2.44";   // v4.8: the ONE place the release number lives (package.json / README / CHANGELOG / EA must match: npm run check enforces it)
+export const VERSION = "4.31.0", EA_PROTOCOL = "2.45";   // v4.8: the ONE place the release number lives (package.json / README / CHANGELOG / EA must match: npm run check enforces it)
 export { Notify };
 
 const CONFIG = {
@@ -26,7 +26,7 @@ const CONFIG = {
   MAX_ATTEMPTS: 8,           // wrong passwords allowed before the lock
   FAIL_WINDOW_SEC: 600,      // wrong attempts older than this are forgotten
   SESSION_DAYS: 30,          // sliding session lifetime (refreshed on every successful verify)
-  EA_STALE_SEC: 20,          // EA counts as offline after this many seconds without a sync
+  EA_STALE_SEC: 30,          // EA counts as offline after this many seconds without a sync (v4.31: 20 -> 30; the EA now syncs at least every 5 s even when the market is hot)
   SESSION_EPOCH: 1,          // bump (1 -> 2) to sign EVERYONE out at once
   ALLOWED_ORIGIN: "",        // v4.6.1: fail-closed. CORS origin of the web app, e.g. "https://you.github.io" (set in wrangler.toml [vars]; env wins). "*" = open, testing only
   REQUIRE_TG: true,          // true = login only from inside the Telegram bot (env REQUIRE_TG="0" allows browsers)
@@ -488,12 +488,18 @@ export class Hub {
     const ack = Array.isArray(body.ack) ? body.ack : [];
     const now = Date.now();
     const next = q.filter((x) => !ack.includes(x.c.id) && now - x.t < 120000);
-    if (next.length !== q.length) {
-      // v4.29: nothing leaves the queue silently - delivered (acked by the EA) or EXPIRED (never taken within 120 s) is written to the status ledger
-      const notes = [];
+    // v4.31: every command gets a visible hand-over time (h) the first time it leaves in a sync response: "sent to the EA" is a real, separate stage from "queued".
+    const notes = [];
+    for (const x of next) if (!x.h) { x.h = now; notes.push([x.c.id, x.c.cmd, "handed", "sent to the EA - waiting for its confirmation"]); }
+    if (next.length !== q.length || notes.length) {
+      // nothing leaves the queue silently - delivered (acked by the EA), or after 120 s: EXPIRED if the EA never received it, UNKNOWN if it was handed over but no confirmation ever came back
+      // (an unconfirmed command is NEVER turned into a certain failure: the EA may well have executed it)
       for (const x of q) {
         if (ack.includes(x.c.id)) notes.push([x.c.id, x.c.cmd, "delivered", "taken by the EA"]);
-        else if (now - x.t >= 120000) notes.push([x.c.id, x.c.cmd, "expired", "not taken by the EA within 120 s (EA offline / restarting) - NOT executed, send it again"]);
+        else if (now - x.t >= 120000) {
+          if (x.h) notes.push([x.c.id, x.c.cmd, "unknown", "handed to the EA but no confirmation came back within 120 s - the result is UNCONFIRMED (it may have been executed): check the state, do not resend blindly"]);
+          else notes.push([x.c.id, x.c.cmd, "expired", "not taken by the EA within 120 s (EA offline / restarting) - NOT executed, send it again"]);
+        }
       }
       await this.ctx.storage.put("cmds", next);
       await this.cmdNote(notes);
@@ -631,10 +637,16 @@ export class Hub {
   async cmdNote(list) {
     if (!list || !list.length) return;
     const led = (await this.ctx.storage.get("cmdst")) || [], now = Date.now();
-    for (const [id, cmd, st, why] of list) {
+    for (const [id, cmd, st, why, rid] of list) {
       const i = led.findIndex((x) => x.id === id);
-      if (i >= 0) { led[i].st = st; led[i].why = why; led[i].u = now; }
-      else led.push({ id, cmd: String(cmd), st, why, t: now, u: now });
+      if (i >= 0) {
+        const r = led[i];
+        // v4.31: a stage never goes backwards, and a command whose result is already known is never re-labelled expired / unknown by a late queue purge
+        if (r.st === "delivered" && (st === "queued" || st === "handed")) continue;
+        if (r.st === "handed" && st === "queued") continue;
+        if ((st === "expired" || st === "unknown") && (r.res || r.st === "delivered")) continue;
+        r.st = st; r.why = why; r.u = now;
+      } else led.push({ id, cmd: String(cmd), st, why, t: now, u: now, ...(rid ? { rid } : {}) });
     }
     await this.ctx.storage.put("cmdst", led.slice(-60));
   }
@@ -648,10 +660,10 @@ export class Hub {
     for (const x of src) {
       if (!x || x.id == null) continue;
       const row = led.find((r) => r.id === String(x.id));
-      if (!row || row.st === "expired" || row.st === "rejected") continue;
+      if (!row || row.st === "expired" || row.st === "rejected") continue;   // (an "unknown" row CAN still receive its real result later)
       const res = x.st === "fail" || x.ok === false ? "failed" : x.st === "wait" ? "waiting" : "executed", rt = classify(x.text).text.slice(0, 140);
       if (row.res !== res || row.rtext !== rt) { row.res = res; row.rtext = rt; row.ru = now; ch = true; }
-      if (row.st === "queued") { row.st = "delivered"; row.why = "taken by the EA"; row.u = now; ch = true; }   // the EA answered, so it has certainly taken it
+      if (row.st === "queued" || row.st === "handed" || row.st === "unknown") { row.st = "delivered"; row.why = "taken by the EA"; row.u = now; ch = true; }   // the EA answered, so it has certainly taken it
     }
     if (ch) await this.ctx.storage.put("cmdst", led.slice(-60));
   }
@@ -689,14 +701,18 @@ export class Hub {
     if ((b.cmd === "delete" || b.cmd === "modify") && !(c.ticket > 0) && !c.side) return json({ error: "ticket or side required" }, 400);
     if ((b.cmd === "modify" || b.cmd === "place") && !(c.price > 0)) return json({ error: "price required" }, 400);
     if (b.cmd === "place" && !c.side) return json({ error: "side required" }, 400);
+    // v4.31 IDEMPOTENT REQUEST: the app sends one stable request id (rid) per user action. The same rid again (a retry after a lost reply / timeout) returns the ORIGINAL command id and queues nothing,
+    // so "no confirmation" can never turn into a second command.
+    const rid0 = typeof b.rid === "string" && /^[A-Za-z0-9_-]{6,40}$/.test(b.rid) ? b.rid : "";
+    if (rid0) { const prev = ((await this.ctx.storage.get("cmdst")) || []).find((x) => x.rid === rid0); if (prev) return json({ ok: true, id: prev.id, dup: true }); }
     const nowQ = Date.now(), q = ((await this.ctx.storage.get("cmds")) || []).filter((x) => nowQ - x.t < 120000);
     if (q.length >= 20) {                                   // v4.29: a full queue REFUSES the new command visibly; it never drops an older one silently
-      await this.cmdNote([[c.id, c.cmd, "rejected", "command queue full (20 waiting) - NOT queued, try again shortly"]]);
+      await this.cmdNote([[c.id, c.cmd, "rejected", "command queue full (20 waiting) - NOT queued, try again shortly", rid0]]);
       return json({ error: "queue_full", why: "queue_full" }, 429);
     }
     q.push({ t: nowQ, c });
     await this.ctx.storage.put("cmds", q);
-    await this.cmdNote([[c.id, c.cmd, "queued", "waiting for the EA"]]);
+    await this.cmdNote([[c.id, c.cmd, "queued", "waiting for the EA", rid0]]);
     return json({ ok: true, id: c.id });
   }
 }

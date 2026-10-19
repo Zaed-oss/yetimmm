@@ -94,13 +94,19 @@ test("waiting level (no ticket) is verified when it leaves S.waits", () => {
   assert.ok(c.toasts.includes("op_delOk"));
 });
 
-test("generic command: EA ack settles it; silence times out as unverified", () => {
+test("generic command: EA ack settles it; silence is NOT a failure (v4.31): it stays tracked and blocked from re-sending until the ledger decides", () => {
   const c = make(mkS()), O = c.Ops;
   const o = O.add("start"); o.id = "s1";
   O.ack({ id: "s1", ok: true, text: "Started" }); O.settle();
   assert.equal(O.active(), false);
   const o2 = O.add("stop"); o2.id = "s2"; o2.at = Date.now() - 13000; O.settle();
-  assert.ok(c.toasts.includes("❌ op_unverG"));
+  assert.ok(c.toasts.includes("⏳ op_wait"), "a soft 'still confirming' notice, never an error");
+  assert.ok(!c.toasts.some((x) => x.includes("op_unverG")), "no failure message at 12 s");
+  assert.equal(O.active(), true, "the command is still tracked");
+  assert.equal(O.add("stop"), null, "the same command cannot be sent again while its fate is unknown");
+  o2.at = Date.now() - 151000; O.settle();                       // past the Worker's own 120 s window
+  assert.ok(c.toasts.includes("⚠️ op_unverG"));
+  assert.equal(O.active(), false);
 });
 
 test("snapshot never contains secrets (only cmd/id/age/ticket/side)", () => {

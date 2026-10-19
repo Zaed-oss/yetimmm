@@ -286,7 +286,7 @@ test("report items: OneCyclePerDay / SequenceLocked / fresh-checks understand a 
   assert.match(code, /bool CycFresh\(\) \{ return \(g_accLoss<=1e-9 && MathAbs\(g_cycNet\)<=1e-9\); \}/);
   assert.ok(!code.includes("(g_accLoss>1e-9)?NextRiskFor(g_accLoss):g_initRisk"));
 });
-test("EA version and protocol are consistent (2.44) and the cycle state is exported to the app", () => {
-  assert.match(raw, /#property version\s+"2\.44"/); assert.match(raw, /#define YT_VER "2\.44"/);
+test("EA version and protocol are consistent (2.45) and the cycle state is exported to the app", () => {
+  assert.match(raw, /#property version\s+"2\.45"/); assert.match(raw, /#define YT_VER "2\.45"/);
   assert.ok(raw.includes('",\\"cyc\\":{\\"id\\":"'));
 });

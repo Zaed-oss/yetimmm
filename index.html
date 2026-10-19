@@ -305,7 +305,7 @@ body.loading .pr,body.loading .kv b{color:transparent;border-radius:8px;backgrou
 const CONFIG={
   mode:"live",
   sessionStore:"local",                        // "local" = stay signed in across launches (default) | "session" = token lives only until the app is closed (safer if XSS ever happens; you sign in again each launch)
-  staleSec:20,                                 // FALLBACK only: the server reports the real timeout (eaStaleSec in /state) so Worker and app can never disagree
+  staleSec:30,                                 // FALLBACK only: the server reports the real timeout (eaStaleSec in /state) so Worker and app can never disagree
   api:{baseUrl:"https://yetimmm-bridge.sayfhazeem078.workers.dev",pollMs:1000,headers:{}}
 };
 
@@ -383,7 +383,7 @@ op_delOk:["تم حذف الأمر من MT5 وتأكد اختفاؤه","Order del
 op_delFail:["لم يُحذف الأمر: {0}","The order was not deleted: {0}"],
 op_filled:["لم يُحذف الأمر لأنه نُفّذ فعلاً وصار صفقة","Not deleted: the order was already filled and is now a trade"],
 op_unver:["لم يتأكد الحذف خلال المهلة. الأمر معروض كما يظهر في MT5 الآن","Delete not confirmed in time. The order is shown as MT5 reports it now"],
-op_unverG:["لم يصل تأكيد العملية من البوت. تحقق من الحالة ثم أعد المحاولة","No confirmation from the bot. Check the status, then retry"],
+op_unverG:["تعذّر تأكيد نتيجة الأمر حتى الآن. قد يكون نُفِّذ: راجع «حالة الأوامر» وMT5 قبل أي إعادة إرسال","The result of the command could not be confirmed yet. It may have been executed: check «Command status» and MT5 before sending again"],op_wait:["الأمر أُرسل وما زال قيد التأكيد. لا تُعد الإرسال: ستظهر النتيجة هنا تلقائياً","The command was sent and is still being confirmed. Do not send it again: the result will appear here automatically"],cs_hand:["أُرسل للبوت · بانتظار التنفيذ","Sent to the bot · awaiting execution"],
 op_wait:["بانتظار تنفيذ MT5…","Waiting for MT5…"],
 out_ing:["جارٍ الخروج…","Signing out…"],
 out_ic:["ستُنهى الجلسة على هذا الجهاز ويُطلب إبطالها من الخادم.","This device's session will be ended and revoked on the server."],
@@ -486,6 +486,7 @@ const Ops={m:new Map(),dids:new Set(),log:[],TO:{delete:15000,_:12000},
   note(o,ev,why){this.log.unshift({t:new Date().toISOString(),op:o.rid,cmd:o.c,ev,id:o.id,ticket:(o.p&&o.p.ticket)||null,side:(o.p&&o.p.side)||null,why:why||""});if(this.log.length>120)this.log.length=120},
   end(o,ev,why){this.m.delete(o.k);this.note(o,ev,why)},
   active(){return this.m.size>0},
+  slow(){for(const o of this.m.values())if(o.soft)return true;return false},
   delTk(tk){return this.m.has("delete:t"+tk)},
   delSd(sd){return this.m.has("delete:s"+sd)},
   byId(id){for(const o of this.m.values())if(o.id&&o.id===id)return o;return null},
@@ -504,16 +505,25 @@ const Ops={m:new Map(),dids:new Set(),log:[],TO:{delete:15000,_:12000},
           this.end(o,"verified");toast(t("op_delOk"));changed=true;continue}
         if(age>to){this.end(o,"unverified");toast("❌ "+t("op_unver"));changed=true}
       }else{
+        /* v4.31: the result is bound to THIS command's id in the Worker's persistent ledger (not only "the last command") */
+        const row=o.id?(S.cmdStatus||[]).find(x=>x.id===o.id):null;
+        if(row&&!o.ack){
+          if(row.res==="executed"||row.res==="waiting"){o.ack=true;o.ok=true;o.text=row.rtext||""}
+          else if(row.res==="failed"){o.ack=true;o.ok=false;o.text=row.rtext||""}
+          else if(row.st==="expired"||row.st==="rejected"){this.end(o,row.st);changed=true;continue}}
         if(o.ack){this.end(o,o.ok?"verified":"failed",o.text);changed=true;continue}
-        if(age>to){this.end(o,"unverified");toast("❌ "+t("op_unverG"));changed=true}
+        /* v4.31: a timeout is NOT a failure. After the normal wait the command stays tracked (and blocked from being sent again) until the Worker ledger gives its fate, up to the Worker's own 120 s window. */
+        if(age>to&&!o.soft){o.soft=true;this.note(o,"unconfirmed_wait");toast("⏳ "+t("op_wait"));changed=true}
+        if(age>150000){this.end(o,"unverified");toast("⚠️ "+t("op_unverG"));changed=true}
       }
     }
     return changed},
   snapshot(){return{open:[...this.m.values()].map(o=>({cmd:o.c,id:o.id,ageMs:Date.now()-o.at})),log:this.log.slice(0,60)}}
 };
-const Bridge={ok:null,auth:false,at:0,init:false,lc:"",mine:new Set(),stSeen:new Set(),dirty:false,applyId:null,busy:false,again:false,pend:[],
+const Bridge={ok:null,auth:false,at:0,init:false,lc:"",mine:new Set(),stSeen:new Set(),tst:new Set(),restored:false,toastedLc:"",dirty:false,applyId:null,busy:false,again:false,pend:[],
   async req(path,opt){
-    const r=await fetch(CONFIG.api.baseUrl+path,{...opt,headers:{"Content-Type":"application/json","X-Login":SES.l,"X-Session":SES.s,...CONFIG.api.headers}});
+    const ac=new AbortController(),tm=setTimeout(()=>ac.abort(),path==="/state"?15000:10000);
+    let r;try{r=await fetch(CONFIG.api.baseUrl+path,{...opt,signal:ac.signal,headers:{"Content-Type":"application/json","X-Login":SES.l,"X-Session":SES.s,...CONFIG.api.headers}})}finally{clearTimeout(tm)}
     if(r.status===401){let w="";try{w=(await r.clone().json()).why||""}catch(e){}Login.out(false,w==="pw"||w==="revoked"?"e_pw_changed":w==="expired"?"e_expired":w==="acct"?"e_acct":"e_relogin")}
     if(!r.ok){const e=new Error(r.status);e.status=r.status;try{e.why=(await r.clone().json()).why||""}catch(x){}throw e}
     return r.json()},
@@ -525,7 +535,21 @@ const Bridge={ok:null,auth:false,at:0,init:false,lc:"",mine:new Set(),stSeen:new
       (Array.isArray(d.cmdStatus)?d.cmdStatus:[]).forEach(x=>{const k=x.id+":"+x.st;if(this.mine.has(x.id)&&(x.st==="expired"||x.st==="rejected")&&!this.stSeen.has(k)){this.stSeen.add(k);toast("❌ "+t(x.st==="expired"?"cmdExp":"q_full"))}});   /* v4.30: an expired / rejected command is always shown, never only inferred from a timeout */
       const lc=d.lastCmd;
       if(!this.init){this.init=true;this.lc=lc?lc.id:"";fillInputs(true)}
-      else if(lc&&lc.id!==this.lc){this.lc=lc.id;Ops.ack(lc);if(this.mine.has(lc.id)&&!Ops.dids.has(lc.id))toast(lc.cat==="tech"?"❌ "+t("e_generic"):(lc.ok?"":"❌ ")+trEA(String(lc.text||"").replace(/^[\u274C\u2705\u2139\u26A0\uFE0F\s]+/,"")));if(lc.ok&&lc.id===this.applyId)this.dirty=false}
+      else if(lc&&lc.id!==this.lc){this.lc=lc.id;Ops.ack(lc);if(this.mine.has(lc.id)&&!Ops.dids.has(lc.id)&&!this.tst.has(lc.id)&&(this.tst.add(lc.id),this.toastedLc=lc.id,true))toast(lc.cat==="tech"?"❌ "+t("e_generic"):(lc.ok?"":"❌ ")+trEA(String(lc.text||"").replace(/^[\u274C\u2705\u2139\u26A0\uFE0F\s]+/,"")));if(lc.ok&&lc.id===this.applyId)this.dirty=false}
+      /* v4.31: per-command results from the persistent ledger (works even after lastCmd moved on, and after the app was closed and reopened) */
+      (Array.isArray(d.cmdStatus)?d.cmdStatus:[]).forEach(x=>{
+        if(!this.mine.has(x.id)||!x.res)return;
+        Ops.ack({id:x.id,ok:x.res!=="failed",text:x.rtext||"",cat:""});if(x.res!=="failed"&&x.id===this.applyId)this.dirty=false;
+        if(this.tst.has(x.id))return;this.tst.add(x.id);
+        if(x.id===this.lc&&d.lastCmd&&d.lastCmd.id===x.id&&this.toastedLc===x.id)return;
+        const tx=trEA(String(x.rtext||"").replace(/^[\u274C\u2705\u2139\u26A0\uFE0F\s]+/,""));
+        toast((x.res==="failed"?"❌ ":"")+(tx||t(x.res==="failed"?"cmdFail":x.res==="waiting"?"cmdWait":"cmdOk")))});
+      if(!this.restored){this.restored=true;
+        (Array.isArray(d.cmdStatus)?d.cmdStatus:[]).forEach(x=>{
+          const age=Date.now()-(x.t||0);
+          if(x.res||x.cmd==="delete"||!["queued","handed","delivered"].includes(x.st)||age>140000)return;
+          const o=Ops.add(x.cmd,{});if(!o)return;o.id=x.id;o.at=Date.now()-Math.max(0,Math.min(age,140000));this.mine.add(x.id);Ops.note(o,"restored")});
+        if(Ops.active())this.fast()}
       if(!this.dirty)fillInputs();else prevCalc();
       feed();
     }catch(e){this.ok=false;this.auth=(e.status===401||e.status===403||!SES.s)}
@@ -533,13 +557,15 @@ const Bridge={ok:null,auth:false,at:0,init:false,lc:"",mine:new Set(),stSeen:new
     if(this.again){this.again=false;setTimeout(()=>this.pull(),120)}
   },
   /* fast polling only while an operation is open (500 ms), so the result shows up as soon as MT5 reports it */
-  fast(){if(this.fl)return;this.fl=true;const loop=async()=>{if(!Ops.active()){this.fl=false;render();return}await this.pull();setTimeout(loop,500)};setTimeout(loop,300)},
+  fast(){if(this.fl)return;this.fl=true;const loop=async()=>{if(!Ops.active()){this.fl=false;render();return}await this.pull();setTimeout(loop,Ops.slow()?1200:500)};setTimeout(loop,300)},
   async cmd(c,p){
     const o=Ops.add(c,p);
     if(!o){toast(t("op_busy"));return}            /* same operation already in flight: visible feedback, never a silent swallow */
     render();                                       /* the row switches to "deleting…" immediately, from the very first tap */
     try{
-      const r=await this.req("/command",{method:"POST",body:JSON.stringify({cmd:c,...p})});
+      /* v4.31: ONE stable request id per user action. A network-level failure (no HTTP reply) is retried once with the SAME id: the Worker returns the original command instead of queueing a second one. */
+      const send=()=>this.req("/command",{method:"POST",body:JSON.stringify({cmd:c,rid:o.rid,...p})});
+      let r;try{r=await send()}catch(e0){if(e0&&e0.status)throw e0;await new Promise(z=>setTimeout(z,900));r=await send()}
       o.id=(r&&r.id)||null;if(c==="delete"&&o.id)Ops.dids.add(o.id);Ops.note(o,"worker_accepted");
       if(r&&r.id)this.mine.add(r.id);if(c==="apply")this.applyId=r.id;trackCmd(r&&r.id,c,p,"sent");
       if(c!=="delete")toast(t(c==="newcycle"?"cyc_ok":"t_sent"));
@@ -805,10 +831,12 @@ function cmdStrip(){
     else if(x.res==="waiting")k="wait";
     else if(x.st==="delivered"){
       if(lc&&lc.id===x.id){k=lc.ok?"done":"fail";bad=!lc.ok;why=lc.ok?"":(lc.text||"")}
-      else if(age>120000){k="unk";bad=true}
-    }else if(x.st==="expired"||x.st==="rejected")bad=true;
-    if(!(age<180000||(bad&&age<600000)))continue;
-    rows.push(`<div style="display:flex;justify-content:space-between;gap:8px"><span>${esc(String(x.cmd||"").toUpperCase())}</span><b class="cmdst" style="color:var(--${bad?"dn":k==="done"?"up":"mute"})">${t("cs_"+k)}${why?" · "+esc(trEA(why)):""}</b></div>`);
+      else if(age>120000){k="unk"}    /* v4.31: an unconfirmed result is shown as such, never in the failure colour */
+    }else if(x.st==="handed")k="hand";
+    else if(x.st==="unknown")k="unk";
+    else if(x.st==="expired"||x.st==="rejected")bad=true;
+    if(!(age<180000||((bad||k==="unk")&&age<600000)))continue;
+    rows.push(`<div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:2px 8px"><span>${esc(String(x.cmd||"").toUpperCase())}</span><b class="cmdst" style="color:var(--${bad?"dn":k==="done"?"up":"mute"})">${t("cs_"+k)}${why?" · "+esc(trEA(why)):""}</b></div>`);
     if(rows.length>=4)break}
   return rows.length?`<div class="note"><b>${t("csT")}</b>${rows.join("")}</div>`:""}
 function renderDash(){
@@ -867,7 +895,7 @@ function link(){
   if(Bridge.ok===null)return"wait";
   if(Bridge.ok===false)return Bridge.auth?"auth":"srv";
   const a=eaAge();
-  if(S.eaOnline===false||a===null||a>(S.eaStaleSec||CONFIG.staleSec||20))return"off";
+  if(S.eaOnline===false||a===null||a>(S.eaStaleSec||CONFIG.staleSec||30))return"off";
   return"ok";
 }
 function renderLink(){
