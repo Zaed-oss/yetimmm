@@ -37,9 +37,9 @@ test("SOURCE 2.43 START / levels after STOP go through ImplicitResetGuarded, whi
   assert.ok(/g_accLoss>1e-9 \|\| MathAbs\(g_cycNet\)>1e-9 \|\| g_seq>0/.test(g) && g.includes("DEBT_KEPT") && g.includes("return;"));
   assert.ok(g.indexOf("DEBT_KEPT") < g.indexOf("ResetRiskLogged(src)"), "the keep-branch returns before any reset");
 });
-test("SOURCE 2.43 the only remaining ResetRisk callers: confirmed command, guarded implicit reset, and a COMPLETED cycle (net >= target)", () => {
+test("SOURCE 2.43 the only remaining ResetRisk callers: confirmed command, guarded implicit reset, a COMPLETED cycle (net >= target) and a full user cancel (fix13)", () => {
   const callers = [...ea.matchAll(/ResetRisk(Logged)?\(/g)].map((m) => ea.slice(0, m.index).split("\n").length);
-  assert.equal(callers.length, 6, "definition x2 + completion + guarded + confirmed reset + 1 log call");
+  assert.equal(callers.length, 7, "definition x2 + completion + guarded + confirmed reset + 1 log call + fix13 user cancel (CycleEndByUser)");
   assert.ok(ea.includes('ResetRiskLogged("Mini App RESET (confirmed)")'));
 });
 test("SOURCE 2.43 a reset command over a debt needs confirm=1; the worker and the app send it, a bare reset is refused", () => {

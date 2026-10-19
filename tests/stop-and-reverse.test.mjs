@@ -58,7 +58,7 @@ test("predicted ledger values: loaded, used, RESTORED, never saved, no early ret
 test("the next-step plan is booked exactly like ProcessClosedPosition books a stop-out (loss at SL joins the ledger, Seq+1)", () => {
   const p = fn("void ReverseArmPass(");
   assert.match(p, /double predLoss=vol\*\(perLot\+CommPerLotEff\(\)\);/);
-  assert.match(p, /g_accLoss=sA\+predLoss;[\s\S]*g_seq=sS\+1;[\s\S]*g_curRisk=NextRiskForNet\(g_cycNet-predLoss\);/);
+  assert.match(p, /const double predNet=g_cycNet-predLoss;[\s\S]*g_accLoss=\(predNet<0\.0\)\?-predNet:0\.0;[\s\S]*g_seq=sS\+1;[\s\S]*g_curRisk=NextRiskForNet\(predNet\);/);   // v2.48: predicted debt derived like CycleBook (max(0,-net))
   assert.match(p, /RecoveryGuardBlocks\(gw,gc\)/);                 // caps are judged on the PREDICTED step
   const c = fn("bool ProcessClosedPosition(");
   assert.match(c, /ledNote=CycleBook\(net,"SL"\);\s*g_seq\+\+;/);

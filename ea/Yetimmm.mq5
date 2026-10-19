@@ -10,6 +10,8 @@
 #include <Trade\Trade.mqh>
 
 //--- v2.46 (NETWORK = OLD BEHAVIOUR): new input InpNetSilence=false. The v2.30 "hot market" network silence (NetHot) made the Mini App show "EA offline" every few seconds whenever the price sat near the levels (always the case with Buy/Sell Stop). With the default the EA again sends the heartbeat every second and polls Telegram every InpTgPollMs, never silenced - same as EA 2.30. The silence code is kept intact behind InpNetSilence=true. No entry / lot / SL / TP / ledger code changed.
+//--- fix15 (CYCLE END IS FINAL): Cancel with a KEPT position now also ends the cycle (flag CANCELEND stays until that position's result is booked, TryPlace sends nothing meanwhile, so no recovery order of the old debt is ever armed); Mini App Cancel works on a STOPPED bot. A new cycle never inherits the old accumulated loss.
+//--- fix13 (CANCEL ENDS THE CYCLE): a full /cancel from the Telegram bot is the second way a cycle ends (the first is CycleNet >= target). Ledger zeroed, levels deleted, state IDLE: the next /set starts from ZERO and inherits nothing. STOP stays a pause. See CycleEndByUser / CancelEndTry.
 //--- v2.45.1 (TELEGRAM ORDER CONTROL): /orders now lists live orders AND levels waiting for the price (current price, trigger, remaining distance); new /del BUY|SELL|TICKET and /mod BUY|SELL PRICE act on ONE order and answer with the real outcome. Reuses ExecDeleteLevel / ExecDeleteOrder / ApplyLevels (no new trading path; no entry / lot / SL / TP / ledger code changed).
 //--- v2.45 (CONFIRMATION PATH): a Mini App command is confirmed within ~1 s. (1) a WAITING side silences the network only NEAR its trigger (3 x InpHotZone), not whenever it exists; (2) a pending command result (ack) is sent with priority unless the market itself is hot; (3) InpNetMaxDeferSec 20 -> 5 so the heartbeat never approaches the Worker offline limit. No entry / lot / SL / TP / ledger code changed.
 //--- v2.38 (CYCLE LEDGER): every trading cycle now has an explicit, independent ledger (CycleId / CycleNet / CycleLosses / CycleState, saved with the closing-deal id).
@@ -220,6 +222,7 @@ input group "=== Recovery Plan Guard (v2.24) ==="
 input int    InpMaxSeqLosses   = 0;       // v2.43 DEFAULT 0 = OFF (the cycle never stops by a loss COUNT; it ends only when the cycle NET reaches the target). Optional cap: when reached, NEW orders wait (WAITING_SEQCAP) and the debt is KEPT; open trades are never touched
 input double InpMaxLot         = 0.0;     // v2.31 Max lot allowed for ONE trade (hard safety cap for recovery sizing). 0 = broker maximum only. Above it NEW orders wait (WAITING_VOLUME) - the lot is never forced beyond it
 input bool   InpRecoveryRoundUp = true;   // v2.31 In a recovery cycle the lot is rounded UP to the broker step so the TP repays ALL accumulated losses + the Recovery Target (otherwise rounding down leaves a small debt)
+input double InpRoundUpMaxOverPct = 0.0;  // v2.47 Broker-neutral guard for the recovery round-up: the lot is rounded UP one step only if its risk stays within this % above the requested risk (0 = no limit, the previous behaviour). With a coarse lot step a limit keeps the growth smooth; the ledger carries the shortfall to the next step
 input double InpMaxRiskPctBal  = 0.0;     // Max risk of ONE trade as % of the account balance. 0 = off. If the next planned risk is above it, NEW orders wait (WAITING_RISKCAP). Report recommendation: 2-3
 input bool   InpPlanLog        = true;    // Print the exact recovery plan (risk / target / cumulative loss / balance needed) in the Experts log at start AND write the full per-trade table (lot, margin, net at TP) to Yetimmm_<magic>_Plan.csv
 input double InpMaxAccLoss     = 0.0;     // v2.34 Max ACCUMULATED loss allowed in one cycle ($, main units). 0 = off. When (accumulated loss + the next planned risk) would exceed it, NEW orders wait (WAITING_ACCLOSSCAP); open trades are never touched
@@ -407,6 +410,12 @@ color         g_uiCol[];
 
 //--- runtime configuration (inputs are the defaults; the panel can override and the values persist in a config file)
 double        g_target=20.0;
+double        g_lastLossLot=0.0;            // v2.48: volume / net / side of the LAST stop-loss booked in the ledger (used only by RecoveryTrace to explain a lot that did not grow)
+double        g_lastLossNet=0.0;
+bool          g_lastLossBuy=false;
+string        g_lcHow="";                   // v2.48: how the last lot was quantised (FLOOR / ROUND_UP / FLOOR_STEP_TOO_COARSE / CLAMP_MIN)
+string        g_rtKey="";                   // v2.48: RecoveryTrace de-duplication
+ulong         g_clRelLogged=0;              // v2.48: one release log per pending closure
 double        g_commLot=0.0;                // v2.34: learned round-trip commission per 1.00 lot (main units, >= 0); 0 = unknown yet
 double        g_rr=20.0;
 int           g_maxDev=30;
@@ -591,7 +600,7 @@ void   PSet(const ulong pid,const string k,const double v) { GlobalVariableSet(P
 
 void ClearPosGV(const ulong pid)
   {
-   string keys[]={"N","R","AL","BB","SP","DV","SLP","TPP","LOT","LB","LS","TY","ET","CRC","ENT","ORD","PM","TAINT","CY"};
+   string keys[]={"N","R","AL","BB","SP","DV","SLP","TPP","LOT","LB","LS","TY","ET","CRC","ENT","ORD","PM","TAINT","CY","CT","RL","CO"};
    for(int i=0;i<ArraySize(keys);i++) GlobalVariableDel(PNm(pid,keys[i]));
    g_gvTotal=-1;
   }
@@ -944,6 +953,122 @@ void LogOrder(const string ev,const long otype,const double price,const double l
    AppendLine(OrderFile(),ORDER_HEADER,line);
   }
 
+//+------------------------------------------------------------------+
+//| v2.48 CYCLE LIFECYCLE JOURNAL + OWNERSHIP CENSUS                 |
+//| Every cycle has ONE life: OPEN -> trades (each with its passport:|
+//| cycle id, target, role, ledger at open) -> bookings -> CLOSE.    |
+//| One CSV line per event; nothing here changes a lot, a state or a |
+//| ledger value (journal only).                                     |
+//| Ownership = Symbol + Magic (what is MINE) + the cycle id saved   |
+//| on the position (WHICH cycle). Anything else is FOREIGN: seen,   |
+//| logged once, never counted, never touched.                       |
+//+------------------------------------------------------------------+
+string LifeFile() { return "Yetimmm_"+IntegerToString(g_magic)+"_CycleLife.csv"; }
+const string LIFE_HEADER="Time;CycleId;Event;Trade;Position;Side;Lot;Role;Owner;NetBefore;NetAfter;Target;Seq;Note";
+long          g_bookTno=0;            // trade being booked right now (set by ProcessClosedPosition, read by CycleBook, then cleared)
+ulong         g_bookPid=0;
+string        g_bookSide="", g_bookRole="";
+double        g_bookLot=0.0;
+ulong         g_fgSeen[32];           // foreign tickets already reported (each is logged once)
+int           g_fgPos=0;
+ulong         g_censusMs=0;
+
+void CycLife(const long cyc,const string ev,const long tno,const ulong pid,const string side,const double lot,const string role,const string owner,
+             const double nb,const double na,const string note)
+  {
+   string line=TimeToString(TimeCurrent(),TIME_DATE|TIME_SECONDS)+";"+IntegerToString((int)cyc)+";"+ev+";"+(tno>0?IntegerToString((int)tno):"")+";"+(pid>0?UL(pid):"")+";"+side+";"+
+               (lot>0.0?DoubleToString(lot,g_lotDigits):"")+";"+role+";"+owner+";"+D2(nb)+";"+D2(na)+";"+D2(g_target)+";"+IntegerToString(g_seq)+";"+note;
+   AppendLine(LifeFile(),LIFE_HEADER,line);
+  }
+
+//--- the first trade (or first booking) of a cycle opens its life: start time, target, initial risk, RR
+void CycOpenIfNeeded(const string why)
+  {
+   if((long)GV("CYCOP",0.0)==g_cycId) return;
+   GS("CYCOP",(double)g_cycId);
+   GS("CYCT0",(double)TimeCurrent());
+   const string t="CYCLE #"+IntegerToString((int)g_cycId)+" OPENED | target "+D2(g_target)+" | initial risk "+D2(g_initRisk)+" | RR "+D2(g_rr)+" | "+why;
+   YLog(t);
+   CycLife(g_cycId,"CYCLE_OPEN",0,0,"",0.0,"","MINE",g_cycNet,g_cycNet,t);
+  }
+
+//--- the end of a cycle's life (TARGET_MET / CANCELLED_BY_USER): a full summary of what it was
+void CycCloseLife(const long id,const string result,const double cnet,const int trades,const int steps,const double losses)
+  {
+   if((long)GV("CYCOP",0.0)!=id) return;                       // a cycle that never opened has no life to close
+   const datetime t0=(datetime)GV("CYCT0",(double)TimeCurrent());
+   const long mins=(long)((TimeCurrent()-t0)/60);
+   const string t="CYCLE #"+IntegerToString((int)id)+" CLOSED "+result+" | opened "+TimeToString(t0,TIME_DATE|TIME_SECONDS)+" | lasted "+IntegerToString((int)mins)+" min | trades "+IntegerToString(trades)+
+                  " | SL steps "+IntegerToString(steps)+" | cycle losses "+D2(losses)+" | net "+D2(cnet)+" vs target "+D2(g_target);
+   YLog(t);
+   CycLife(id,"CYCLE_CLOSE",0,0,"",0.0,"","MINE",cnet,cnet,t);
+   GS("CYCOP",0.0);
+  }
+
+bool FgSeen(const ulong tk)
+  {
+   for(int i=0;i<32;i++) if(g_fgSeen[i]==tk) return true;
+   g_fgSeen[g_fgPos]=tk; g_fgPos=(g_fgPos+1)%32;
+   return false;
+  }
+
+//--- what is mine and what is not: counted by cycle, foreign ones reported once. Read-only (selects positions, changes nothing).
+void CycleCensus(const string src,const bool force)
+  {
+   const ulong now=GetTickCount64();
+   if(!force && now-g_censusMs<30000) return;
+   g_censusMs=now;
+   int mine=0, oldc=0, unreg=0, fgn=0, ownOrd=0, fgnOrd=0;
+   const int n=PositionsTotal();
+   for(int i=0;i<n;i++)
+     {
+      const ulong t=PositionGetTicket(i);
+      if(t==0) continue;
+      if(PositionGetString(POSITION_SYMBOL)!=g_sym) continue;
+      const ulong pid=(ulong)PositionGetInteger(POSITION_IDENTIFIER);
+      if((long)PositionGetInteger(POSITION_MAGIC)!=g_magic)
+        {
+         fgn++;
+         if(!FgSeen(t))
+           {
+            const string w="FOREIGN position #"+UL(t)+" on "+g_sym+" (magic "+IntegerToString((int)PositionGetInteger(POSITION_MAGIC))+", "+(PositionGetInteger(POSITION_TYPE)==POSITION_TYPE_BUY?"BUY ":"SELL ")+DoubleToString(PositionGetDouble(POSITION_VOLUME),g_lotDigits)+
+                           ") is NOT mine: not counted in cycle #"+IntegerToString((int)g_cycId)+", not touched"+(g_netting?" (Netting: it can merge with mine - the Netting taint rules apply)":"");
+            YLog(w);
+            CycLife(g_cycId,"FOREIGN_SEEN",0,t,(PositionGetInteger(POSITION_TYPE)==POSITION_TYPE_BUY?"BUY":"SELL"),PositionGetDouble(POSITION_VOLUME),"","FOREIGN",g_cycNet,g_cycNet,w);
+           }
+         continue;
+        }
+      const long pc=(long)PGV(pid,"CY",0.0);
+      if(pc==0) unreg++;
+      else if(pc!=g_cycId)
+        {
+         oldc++;
+         if(!FgSeen(t))
+           {
+            const string w="Position #"+UL(t)+" is MINE but belongs to OLD cycle #"+IntegerToString((int)pc)+" (current #"+IntegerToString((int)g_cycId)+"): its result will NOT be booked in the current cycle";
+            YLog(w);
+            CycLife(pc,"OLD_CYCLE_POSITION",(long)PGV(pid,"N",0.0),t,"",PositionGetDouble(POSITION_VOLUME),"","MINE_OLD_CYCLE",g_cycNet,g_cycNet,w);
+           }
+        }
+      else mine++;
+     }
+   for(int i=OrdersTotal()-1;i>=0;i--)
+     {
+      const ulong t=OrderGetTicket(i);
+      if(t==0) continue;
+      if(OrderGetString(ORDER_SYMBOL)!=g_sym) continue;
+      if((long)OrderGetInteger(ORDER_MAGIC)==g_magic) ownOrd++; else fgnOrd++;
+     }
+   if(force)
+     {
+      const string t="CENSUS ["+src+"] cycle #"+IntegerToString((int)g_cycId)+" ("+CycStateText()+") net "+D2(g_cycNet)+" of target "+D2(g_target)+" | positions: mine in this cycle "+IntegerToString(mine)+", mine in an old cycle "+IntegerToString(oldc)+
+                     ", mine not registered yet "+IntegerToString(unreg)+", FOREIGN "+IntegerToString(fgn)+" | pending orders: mine "+IntegerToString(ownOrd)+", foreign "+IntegerToString(fgnOrd);
+      YLog(t);
+      LogOrder("CYCLE_CENSUS",-1,0.0,0.0,0,0,t);
+     }
+  }
+
+
 bool IsLoggedPos(const ulong pid)
   {
    for(int i=0;i<ArraySize(g_loggedPos);i++) if(g_loggedPos[i]==pid) return true;
@@ -1220,6 +1345,22 @@ double DirVolume(const bool buy)
    return v;
   }
 
+//--- v2.47 BROKER-NEUTRAL LOT QUANTISATION (min / step / max always come from the live symbol specification, nothing is hard-coded)
+//--- FLOOR: real risk <= requested. ROUND_UP (recovery with a debt): one step higher so the TP repays debt + target, bounded by InpRoundUpMaxOverPct when set.
+double QuantizeLot(const double raw,const double vmin,const double step,const double risk,const double perSz,const bool debt,string &how)
+  {
+   double lot=vmin+MathFloor((raw-vmin)/step+1e-7)*step;
+   how="FLOOR";
+   if(InpRecoveryRoundUp && debt && lot*perSz<risk-1e-9)
+     {
+      const double up=lot+step;
+      if(InpRoundUpMaxOverPct>0.0 && up*perSz>risk*(1.0+InpRoundUpMaxOverPct/100.0)+1e-9) how="FLOOR_STEP_TOO_COARSE";
+      else { lot=up; how="ROUND_UP"; }
+     }
+   return lot;
+  }
+string g_lcKey="";
+
 //--- Requested Risk -> executable volume, with the explicit policy. Never throws a "fatal": it explains WHY no volume exists.
 bool RiskCompute(const double risk,const bool buy,const double entry,const double sl,SRiskResult &r)
   {
@@ -1242,9 +1383,10 @@ bool RiskCompute(const double risk,const bool buy,const double entry,const doubl
    r.rawVol=raw;
    if(InpMaxLot>0.0 && InpMaxLot<vmax) { vmax=InpMaxLot; r.maxVol=vmax; r.maxRisk=vmax*perLot; }   // v2.31 hard safety cap
    double lot;
+   string how="FLOOR";
    if(raw<vmin-1e-9)
      {
-      if(InpRiskPolicy==YT_RISK_CLAMP_MIN) { lot=vmin; r.clamped=true; }
+      if(InpRiskPolicy==YT_RISK_CLAMP_MIN) { lot=vmin; r.clamped=true; how="CLAMP_MIN"; }
       else
         {
          r.code="RISK_BELOW_MIN_VOLUME";
@@ -1254,11 +1396,23 @@ bool RiskCompute(const double risk,const bool buy,const double entry,const doubl
      }
    else
      {
-      lot=vmin+MathFloor((raw-vmin)/step+1e-7)*step;           // rounded DOWN to the step: real risk <= requested
-      //--- v2.31 recovery: the lot must be big enough that the TP repays the accumulated loss + target -> round UP (never beyond the caps below)
-      if(InpRecoveryRoundUp && (g_accLoss>1e-9 || g_cycNet>1e-9) && lot*perSz<risk-1e-9) lot+=step;
+      //--- rounded DOWN to the step (real risk <= requested); v2.31 recovery: rounded UP one step when a debt exists so the TP repays loss + target (v2.47: bounded by InpRoundUpMaxOverPct)
+      lot=QuantizeLot(raw,vmin,step,risk,perSz,(g_accLoss>1e-9 || g_cycNet>1e-9),how);
      }
    lot=NormalizeDouble(lot,g_lotDigits);
+   g_lcHow=how;
+   {
+    //--- v2.47 LOTCHAIN: ONE line per distinct sizing decision (deduplicated) - the whole chain loss -> ledger -> risk -> lot, with the live broker limits
+    const string lck=DoubleToString(risk,4)+"|"+DoubleToString(lot,4)+"|"+how+"|"+D2(g_cycNet);
+    if(lck!=g_lcKey)
+      {
+       g_lcKey=lck;
+       YLog("LOTCHAIN risk "+D2(risk)+" | cycle net "+D2(g_cycNet)+" | acc.loss "+D2(g_accLoss)+" | loss/lot "+D2(perLot)+" | raw lot "+DoubleToString(raw,5)+
+            " | broker min "+DoubleToString(vmin,g_lotDigits)+" step "+DoubleToString(step,g_lotDigits)+" max "+DoubleToString(vmax,g_lotDigits)+" | final lot "+DoubleToString(lot,g_lotDigits)+" ("+how+") | effective risk "+D2(lot*perLot));
+       if(how=="FLOOR_STEP_TOO_COARSE")
+          YLog("LOTCHAIN note: the broker lot step ("+DoubleToString(step,g_lotDigits)+") is too coarse for the requested growth; the lot stays and the ledger carries the shortfall until the next step fits within "+DoubleToString(InpRoundUpMaxOverPct,1)+"% over risk.");
+      }
+   }
    if(lot>vmax+1e-9)
      {
       r.code="RISK_ABOVE_MAX_VOLUME";
@@ -1510,8 +1664,8 @@ void WritePlanTable(const string why)
         }
       else
         {
-         lot=vmin+MathFloor((raw-vmin)/step+1e-7)*step;
-         if(InpRecoveryRoundUp && L>1e-9 && lot*perSz<risk-1e-9) lot+=step;
+         string how2="";
+         lot=QuantizeLot(raw,vmin,step,risk,perSz,(L>1e-9),how2);
         }
       lot=NormalizeDouble(lot,g_lotDigits);
       if(lot>vmax+1e-9) { st="ABOVE_MAX_VOLUME"; }
@@ -3459,7 +3613,8 @@ long RegisterPosition(const ulong pid)
       useRisk=GV("PAR",g_curRisk);
       useAL=GV("PAA",g_accLoss);
       GS("PAO",0.0);
-      YLog("Pre-armed reverse order #"+UL(order)+" triggered by the market: planned risk "+D2(useRisk)+" | planned accumulated loss "+D2(useAL));
+      YLog("Pre-armed reverse order #"+UL(order)+" triggered by the market: planned risk "+D2(useRisk)+" | planned accumulated loss "+D2(useAL)+" | FILLED lot "+LotS(vol));
+      LogOrder("REVERSE_FILLED",otype,orderPrice,vol,order,0,"filled lot "+LotS(vol)+" | planned risk "+D2(useRisk)+" | planned acc.loss "+D2(useAL)+" | ledger NOW (previous trade may not be booked yet): cycle net "+D2(g_cycNet));
      }
    g_tradeNo++;
    SaveState();
@@ -3482,6 +3637,11 @@ long RegisterPosition(const ulong pid)
    PSet(pid,"ENT",orderPrice);
    PSet(pid,"ORD",(double)order);
    PSet(pid,"PM",(double)priorMode);
+   //--- v2.48 TRADE PASSPORT: which cycle, which target, which role, what the cycle looked like when this trade was born
+   CycOpenIfNeeded("first trade of this cycle");
+   PSet(pid,"CT",g_target); PSet(pid,"RL",revFill?1.0:0.0); PSet(pid,"CO",g_cycNet);
+   CycLife(g_cycId,"TRADE_OPEN",g_tradeNo,pid,buy?"BUY":"SELL",vol,revFill?"REVERSE_PREARM":(g_state==YT_WAITING_REENTRY?"RE_ENTRY":"ENTRY"),"MINE",g_cycNet,g_cycNet,
+           "planned risk "+D2(useRisk)+" | planned acc.loss "+D2(useAL)+" | cycle net at open "+D2(g_cycNet)+" of target "+D2(g_target)+" | SL step so far "+IntegerToString(g_seq)+" | entry "+PX(entry));
    GlobalVariablesFlush();
 
    //--- make sure the position is protected by SL/TP (a position without them is a CRITICAL failure: see ProtectPosition)
@@ -3541,7 +3701,10 @@ string CycleBook(const double net,const string why)
    string st=CycleMet(g_cycNet)?"TARGET MET":"remaining "+D2(g_target-g_cycNet);
    string t=why+" net "+D2(net)+" booked in cycle #"+IntegerToString((int)g_cycId)+": CYCLE NET "+D2(before)+" -> "+D2(g_cycNet)+" vs target "+D2(g_target)+" ("+st+") | Acc.Loss "+D2(g_accLoss)+" | next risk "+D2(g_curRisk);
    CycTouch();
+   CycOpenIfNeeded("first booking of this cycle");
    YLog("LEDGER: "+t);
+   CycLife(g_cycId,"BOOK",g_bookTno,g_bookPid,g_bookSide,g_bookLot,g_bookRole,"MINE",before,g_cycNet,why+" net "+D2(net)+" | "+st+" | Acc.Loss "+D2(g_accLoss)+" | next risk "+D2(g_curRisk));
+   g_bookTno=0; g_bookPid=0; g_bookSide=""; g_bookRole=""; g_bookLot=0.0;
    return t;
   }
 
@@ -3563,6 +3726,7 @@ void CycleFinishLedger(const bool record)
                " | CYCLE NET "+D2(cnet)+" vs target "+D2(g_target)+" | TARGET MET | ledger zeroed, pending orders cancelled, waiting for the user";
       YLog(t);
       LogOrder("CYCLE_COMPLETE",-1,0.0,0.0,0,0,t);
+      CycCloseLife(id,"TARGET_MET",cnet,trades,steps,losses);
       TgQueue("🏁 CYCLE #"+IntegerToString((int)id)+" COMPLETE\nTrades: "+IntegerToString(trades)+" | SL steps: "+IntegerToString(steps)+"\nCycle losses: $"+D2(losses)+"\nCYCLE NET: $"+D2(cnet)+" (target $"+D2(g_target)+") ✅\nLedger zeroed. The bot WAITS for your START.");
       ClearAlert("CYCSHORT");
      }
@@ -3674,6 +3838,8 @@ bool ProcessClosedPosition(const ulong pid)
    if(comm<-1e-9 && inVol>0.0) { g_commLot=-comm/inVol; GS("CPL",g_commLot); }
    bool buy=(ptype==(long)POSITION_TYPE_BUY);
    long tno=(long)PGV(pid,"N",0);
+   g_bookTno=tno; g_bookPid=pid; g_bookSide=buy?"BUY":"SELL"; g_bookLot=inVol;                    // v2.48: the journal line of this booking names the trade
+   g_bookRole=(PGV(pid,"RL",0.0)>0.5)?"REVERSE_PREARM":"ENTRY";
    double reqRisk=PGV(pid,"R",g_curRisk);
    double accBefore=PGV(pid,"AL",g_accLoss);
    double balBefore=PGV(pid,"BB",0);
@@ -3769,6 +3935,8 @@ bool ProcessClosedPosition(const ulong pid)
       bookkeeping=true;
       cnote="belongs to cycle #"+IntegerToString((int)posCyc)+" (current cycle #"+IntegerToString((int)g_cycId)+"): logged only, NOT booked in the current cycle";
       YLog("Closing deal "+UL(dealOut)+" belongs to an older cycle (#"+IntegerToString((int)posCyc)+") - its result is NOT booked in cycle #"+IntegerToString((int)g_cycId)+".");
+      CycLife(posCyc,"CLOSE_NOT_BOOKED",tno,pid,buy?"BUY":"SELL",inVol,"","MINE_OLD_CYCLE",g_cycNet,g_cycNet,"net "+D2(net)+" belongs to cycle #"+IntegerToString((int)posCyc)+", current cycle #"+IntegerToString((int)g_cycId)+": logged only");
+      g_bookTno=0; g_bookPid=0;
       RaiseAlert("OLDCYC"+IntegerToString((int)tno),"Trade #"+TNo(tno)+" (net "+D2(net)+") closed after its cycle #"+IntegerToString((int)posCyc)+" had ended. It was NOT added to the current cycle.",false,true);
      }
    //--- v4.30 (final polish, problem 1): a result that closes while the EA is STOPPED (manual Stop / Telegram Stop / Cancel sweep, or a broker SL that fires during the stop)
@@ -3818,6 +3986,7 @@ bool ProcessClosedPosition(const ulong pid)
         {
          ledNote=CycleBook(net,"SL");
          g_seq++;
+         g_lastLossLot=inVol; g_lastLossNet=net; g_lastLossBuy=buy;     // v2.48: remembered for RecoveryTrace
          if(keepState)
            {
             //--- v2.29: an OLD / overlapping SL: the loss and the Seq step count, but the CURRENT state, mode and levels are left exactly as they are
@@ -4199,8 +4368,25 @@ bool ClosurePendingBlocks()
      }
    if(!pend) { g_pendClSince=0; g_pendClPid=0; return false; }
    ulong now=GetTickCount64();
-   if(g_pendClSince==0 || pp!=g_pendClPid) { g_pendClSince=now; g_pendClPid=pp; }   // a NEW pending closure restarts the 20 s bound
-   return (now-g_pendClSince)<20000;
+   if(g_pendClSince==0 || pp!=g_pendClPid) { g_pendClSince=now; g_pendClPid=pp; g_clRelLogged=0; }   // a NEW pending closure restarts the bound
+   //--- v2.48: the loss of a closed trade MUST be in the ledger before the next lot is sized. The old 20 s release sized the next order from a STALE ledger (the loss
+   //--- was not yet booked, so the lot did not grow). Now: block up to 90 s (the periodic sync keeps trying to book it); only then is the gate released, LOUDLY.
+   const ulong waited=now-g_pendClSince;
+   if(waited<90000)
+     {
+      if(waited>=20000 && AlertThrottle("CLWAIT",15))
+         YLog("LEDGER WAIT: closed position #"+UL(pp)+" is still NOT booked after "+UL(waited/1000)+" s - no new order is sized from a stale ledger (cycle net "+D2(g_cycNet)+", next risk "+D2(g_curRisk)+"). Retrying the booking.");
+      return true;
+     }
+   if(g_clRelLogged!=pp)
+     {
+      g_clRelLogged=pp;
+      string t="LEDGER NOT UPDATED: closed position #"+UL(pp)+" could not be booked within 90 s (history not available?). The gate is released so trading is never blocked forever, but the NEXT LOT MAY BE SIZED FROM A STALE LEDGER (cycle net "+D2(g_cycNet)+", risk "+D2(g_curRisk)+"). Check the Experts log and the account history.";
+      YLog(t);
+      LogOrder("LEDGER_STALE_RELEASE",-1,0.0,0.0,pp,0,t);
+      RaiseAlert("CLSTALE",t,true,true);
+     }
+   return false;
   }
 
 //--- v2.34: every reason why a RE-ENTRY order is NOT re-placed is written to the Orders log (throttled), so a missing re-arm can be explained
@@ -4731,12 +4917,41 @@ bool TransDealSeen(const ulong deal)
    return false;
   }
 
+//--- v2.48 RECOVERY TRACE (report: diagnostic log). ONE line per distinct sizing decision: which loss came before, the ledger it was sized from, the risk asked,
+//--- the raw / final lot, how it was quantised and which cap (if any) acted. A lot that did NOT grow after a loss is flagged with its reason - the user never has to guess.
+void RecoveryTrace(const string stage,const bool buy,const double risk,const double lot,const double prevLot)
+  {
+   const string key=stage+"|"+(buy?"B":"S")+"|"+D2(risk)+"|"+DoubleToString(lot,g_lotDigits)+"|"+D2(g_cycNet)+"|"+IntegerToString(g_seq);
+   if(key==g_rtKey) return;
+   g_rtKey=key;
+   string prev=(g_lastLossLot>0.0)?(string)(g_lastLossBuy?"BUY":"SELL")+" lot "+LotS(g_lastLossLot)+" net "+D2(g_lastLossNet):"none this session";
+   string t="RECOVERY_TRACE ["+stage+"] next "+(buy?"BUY":"SELL")+" | last SL booked: "+prev+" | ledger: cycle net "+D2(g_cycNet)+", acc.loss "+D2(g_accLoss)+", seq "+IntegerToString(g_seq)+
+            " | required risk "+D2(risk)+" | raw lot "+DoubleToString(g_rk.rawVol,5)+" -> final lot "+DoubleToString(lot,g_lotDigits)+" ("+g_lcHow+", code "+g_riskCode+")"+
+            " | broker min "+DoubleToString(g_rk.minVol,g_lotDigits)+" step "+DoubleToString(g_rk.step,g_lotDigits)+" max "+DoubleToString(g_rk.maxVol,g_lotDigits)+(InpMaxLot>0.0?" (Max Lot cap "+DoubleToString(InpMaxLot,g_lotDigits)+")":"");
+   YLog(t);
+   LogOrder("RECOVERY_TRACE",buy?(long)ORDER_TYPE_BUY_STOP:(long)ORDER_TYPE_SELL_STOP,0.0,lot,0,0,t);
+   const bool inDebt=(g_cycNet<-1e-9 || g_accLoss>1e-9);
+   if(inDebt && prevLot>0.0 && lot<=prevLot+g_rk.step/2.0)
+     {
+      string why;
+      if(g_lcHow=="FLOOR_STEP_TOO_COARSE") why="the broker lot step is too coarse for this growth and Round-Up Max Over % ("+DoubleToString(InpRoundUpMaxOverPct,1)+") refused the next step - the shortfall is carried in the ledger";
+      else if(g_lcHow=="CLAMP_MIN") why="the requested risk is below the broker minimum lot and CLAMP_TO_MIN raised it";
+      else if(InpMaxLot>0.0 && lot>=InpMaxLot-g_rk.step/2.0) why="the Max Lot cap ("+DoubleToString(InpMaxLot,g_lotDigits)+") is reached";
+      else if(!InpRecoveryRoundUp) why="Recovery Round-Up is OFF, so the lot is rounded DOWN to the step";
+      else why="the loss per lot at this SL distance and the lot step give the same volume for the required risk";
+      string w="RECOVERY_LOT_NOT_GROWN: previous lot "+LotS(prevLot)+" -> new lot "+LotS(lot)+" although the cycle is in debt (net "+D2(g_cycNet)+"). Reason: "+why+". The ledger is NOT cleared.";
+      YLog(w);
+      LogOrder("RECOVERY_LOT_NOT_GROWN",buy?(long)ORDER_TYPE_BUY_STOP:(long)ORDER_TYPE_SELL_STOP,0.0,lot,0,0,w);
+     }
+  }
+
 bool TryPlace(const bool buy,const double level)
   {
    int s=SideIdx(buy);
    if(!InstOkTrade("place a pending order")) return false;     // v2.29: lock ownership re-verified before every send
    if(UncBlocks(buy)) return false;                            // v2.40: an earlier request of this side has no confirmed outcome yet - NOTHING new is sent
    if(g_recHold) return false;                                 // v2.42: REQUIRED_RECOVERY - nothing new is sent until the saved state and the broker are reconciled
+   if(GV("CANCELEND",0.0)>0.5) return false;                   // fix15: the user ENDED this cycle - no recovery order of the old debt is ever sent while its last trade is closing
    if(!g_revCtx && g_state!=YT_ARMED && g_state!=YT_WAITING_REENTRY) return false;   // v2.42: the cycle state must allow a new order (no order from an idle / finished / stopped cycle)
    ulong nowMs=GetTickCount64();
    //--- v2.28 HARD GUARD: a second order of the same side, or ANY new pending order while a position is open, is never sent.
@@ -4830,6 +5045,7 @@ bool TryPlace(const bool buy,const double level)
    if(StringLen(g_riskAlertKey)>0) { ClearAlert(g_riskAlertKey); g_riskAlertKey=""; }
    ClearAlert("AUTOTR");
    if(g_rk.clamped) YLog("CLAMP_TO_MIN: "+g_rk.text);
+   RecoveryTrace(g_revCtx?"REVERSE_PLACE":(g_state==YT_WAITING_REENTRY?"RE-ENTRY":"PLACE"),buy,g_curRisk,lot,g_lastLossLot);
 
    double slp=SLPrice(buy,level), tpp=TPPrice(buy,level);
    PlanCheck(buy,level,lot);                         // v2.34: financial verification before the order is sent
@@ -5502,9 +5718,12 @@ void ReverseArmPass(const ulong ptk,const bool posBuy)
    int    sS=g_seq, sF=g_failCount;
    ulong  sN=g_nextPlaceMs;
    g_revSwap=true;                              // from here until the restore below NOTHING may return early
-   g_accLoss=sA+predLoss;
+   //--- v2.48: the PREDICTED debt is derived exactly like CycleBook does (max(0, -net)); the old 'sA+predLoss' over-stated it when the cycle was in partial profit
+   //--- (net > 0), which fed the wrong debt to the accumulated-loss cap, the round-up rule and the value stored with the order (PAA)
+   const double predNet=g_cycNet-predLoss;
+   g_accLoss=(predNet<0.0)?-predNet:0.0;
    g_seq=sS+1;
-   g_curRisk=NextRiskForNet(g_cycNet-predLoss);
+   g_curRisk=NextRiskForNet(predNet);
    double lot=0.0, est=0.0;
    string err="", gw="", gc="";
    bool guard=RecoveryGuardBlocks(gw,gc);
@@ -5512,6 +5731,7 @@ void ReverseArmPass(const ulong ptk,const bool posBuy)
    double planRisk=g_curRisk;
    if(lotOk)
      {
+      RecoveryTrace("REVERSE_PREARM",revBuy,g_curRisk,lot,vol);
       g_nextPlaceMs=g_revNextMs;                 // the reverse order has its own retry cooldown
       g_revCtx=true;
       ReconcileSide(revBuy,level,lot,true,keepT);
@@ -5886,6 +6106,7 @@ void SyncAll()
    RegisterLivePositions();
    CheckClosures();
    Reconcile();
+   CycleCensus("sync",false);          // v2.48: what is mine / foreign (throttled 30 s, read-only)
    g_busy=false;
    g_lastSyncMs=GetTickCount64();
   }
@@ -5919,6 +6140,8 @@ void PromotePending()
    g_fresh=false;
   }
 
+bool CancelEndTry(const string src);   // fix13 forward declaration (defined after the Stop/Cancel helpers)
+
 bool ApplyLevels(const double buy,const double sell,const double risk,const string src,string &err)
   {
    if(g_cycState==YC_COMPLETING) { err="the finished cycle is still being closed (its pending orders are being cancelled) - try again in a moment"; return false; }   // v2.38
@@ -5931,6 +6154,8 @@ bool ApplyLevels(const double buy,const double sell,const double risk,const stri
       return false;
      }
    g_applyNote="";
+   if(GV("CANCELEND",0.0)>0.5 && !CancelEndTry("Telegram CANCEL (completed)"))
+     { err="The cancelled cycle is still closing its last trade - try again in a few seconds."; return false; }
    RecoveryRelease("user applied new levels");            // v2.42: new levels from the user are an explicit decision
    const bool locked=SequenceLocked();
    bool riskSame=(risk<=0.0 || MathAbs(risk-g_initRisk)<1e-9);
@@ -6045,6 +6270,7 @@ string LevelsAcceptedText()
 
 string DoStart(const string src)
   {
+   if(GV("CANCELEND",0.0)>0.5 && !CancelEndTry("Telegram CANCEL (completed)")) return "⏳ The cancelled cycle is still closing its last trade. Try again in a few seconds.";
    if(StringFind(g_sym,"XAUUSD")<0) return "❌ START FAILED\nReason: Symbol is not XAUUSD.";
    if(g_recHold) return "❌ START FAILED\nReason: REQUIRED_RECOVERY - "+g_recWhy+"\nSend /cancel (removes the pending orders) or /stop first, then /set BUY SELL and START.";
    if(!g_connected) return "❌ START FAILED\nReason: No connection to the trade server.";
@@ -6199,6 +6425,89 @@ string StopResultText(const bool done)
    return "⏳ STOP IN PROGRESS\nBot is STOPPED; closing remaining Yetimmm trades/orders. A confirmation follows when verified.";
   }
 
+//--- fix13 (user request): a FULL CANCEL from the Telegram bot is one of the TWO ways a cycle ends (the other is CycleNet >= target).
+//--- The cycle is over: ledger zeroed (new CycleId), levels and queued levels removed, no pending order, state IDLE, nothing inherited by the next /set.
+//--- STOP is only a pause (same cycle). The accumulated loss shown in the app is ONLY this cycle's own number - it is 0 again after this.
+int PendingClosedRecords()
+  {
+   //--- closed positions of this EA whose result has not been booked into the ledger yet (history not ready): they must be booked BEFORE the ledger is zeroed
+   string prefix=GN("P");
+   int pl=StringLen(prefix), total=GlobalVariablesTotal(), cnt=0;
+   for(int i=0;i<total;i++)
+     {
+      string nm=GlobalVariableName(i);
+      if(StringFind(nm,prefix)!=0) continue;
+      int L=StringLen(nm);
+      if(L<pl+3 || StringSubstr(nm,L-2)!="_N") continue;
+      string mid=StringSubstr(nm,pl,L-pl-2);
+      bool digits=(StringLen(mid)>0);
+      for(int k=0;k<StringLen(mid) && digits;k++)
+        { ushort c=StringGetCharacter(mid,k); if(c<'0' || c>'9') digits=false; }
+      if(!digits) continue;
+      ulong tk;
+      if(!FindLive((ulong)StringToInteger(mid),tk)) cnt++;
+     }
+   return cnt;
+  }
+
+void CycleEndByUser(const string src)
+  {
+   long id=g_cycId; double cnet=g_cycNet; int trades=g_cycTrades; int steps=g_seq; double losses=g_cycLosses;
+   if(trades>0 && (long)GV("LCID",0.0)!=id)
+     {
+      string line=IntegerToString((int)id)+";"+IntegerToString(trades)+";"+IntegerToString(steps)+";"+D2(losses)+";"+D2(cnet)+";"+D2(g_target)+";CANCELLED_BY_USER;"+
+                  TimeToString(TimeCurrent(),TIME_DATE|TIME_SECONDS)+";"+IntegerToString(g_magic)+";"+g_sym;
+      AppendLine(CycleFile(),CYCLE_HEADER,line);
+      GS("LCID",(double)id); GS("LCNET",cnet); GS("LCTR",(double)trades); GS("LCTM",(double)TimeCurrent());
+     }
+   CycCloseLife(id,"CANCELLED_BY_USER",cnet,trades,steps,losses);
+   ResetRiskLogged(src);                                   // new CycleId, empty ledger, Seq 0, risk = initial risk
+   GS("CYCDAY",0.0);                                       // no one-cycle-per-day lock after a user cancel
+   GS("REVERR",0.0);
+   g_lastSLSide=0;
+   g_mode=YM_NONE;
+   g_buyLevel=0.0; g_sellLevel=0.0; g_pendBuy=0.0; g_pendSell=0.0; g_fresh=false;
+   g_deferLvl[0]=0.0; g_deferLvl[1]=0.0;
+   g_revFails=0; g_revHard=0; g_nextRevMs=0; g_failCount=0; g_nextPlaceMs=0; g_blockReason="";
+   g_state=YT_IDLE;
+   g_cycState=YC_IDLE;
+   GS("CANCELEND",0.0);
+   SaveState();
+   g_dirty=true;
+   TgQueue("🛑 CYCLE #"+IntegerToString((int)id)+" ENDED (cancelled by you)\nCycle net: $"+D2(cnet)+" | trades "+IntegerToString(trades)+"\nEverything was deleted. The next cycle starts from ZERO when you send /set BUY SELL [RISK].");
+  }
+
+//--- tries to finish a user cancel: only when no order and no position of this EA is left and every closed result is booked (nothing can leak into the next cycle)
+bool CancelEndTry(const string src)
+  {
+   ulong a[],b[];
+   if(OwnOrders(a)>0 || OwnPositions(b)>0) return false;
+   CheckClosures();
+   if(PendingClosedRecords()>0) return false;
+   CycleEndByUser(src);
+   return true;
+  }
+
+void CancelEndTick()
+  {
+   if(GV("CANCELEND",0.0)<0.5) return;
+   if(GetTickCount64()<g_nextDelMs) return;
+   {
+    ulong kp[];
+    if(OwnPositions(kp)>0)                                                          // fix15: a kept position - the cycle ends after ITS result is booked
+      {
+       if(TimeLocal()-(datetime)GV("CANCELEND",0.0)>30) GS("CANCELEND",(double)TimeLocal());   // the 180 s history safety counts from the moment it closes
+       return;
+      }
+   }
+   ulong od[];
+   if(OwnOrders(od)>0) { if(!CleanupOrders("Cancelled by user")) g_nextDelMs=GetTickCount64()+2000; return; }
+   if(CancelEndTry("Telegram CANCEL (completed)")) return;
+   ulong pk[];
+   if(OwnPositions(pk)==0 && TimeLocal()-(datetime)GV("CANCELEND",0.0)>180)      // safety: a closed trade whose history never arrives must not keep the cycle open forever
+      CycleEndByUser("Telegram CANCEL (completed, history timeout)");
+  }
+
 string ExecCancel(const bool closePos)
   {
    RecoveryRelease("user cancel");                        // v2.42: an explicit user decision resolves a REQUIRED_RECOVERY conflict
@@ -6224,9 +6533,25 @@ string ExecCancel(const bool closePos)
          t+=p?"\n✅ Open position closed.":"\n❌ Could not close the open position.";
          CheckClosures();
         }
-      else t+="\n⚠️ Open position kept.";
+      else
+        {
+         //--- fix15: the cycle is ENDED by the user even though the position is kept. The position runs to its own SL / TP, its result is booked in the ending cycle, then the ledger is zeroed
+         //--- and NO recovery order is armed (TryPlace is blocked by CANCELEND). The next /set starts from ZERO.
+         GS("CANCELEND",(double)TimeLocal());
+         t+="\n⚠️ Open position kept until its own SL/TP. The cycle is ENDED: no recovery order will be placed, and the next /set starts from ZERO.";
+        }
      }
    YLog("Telegram Cancel / Cancel executed");
+   if(o)
+     {
+      ulong pk[];
+      if(OwnPositions(pk)==0)
+        {
+         GS("CANCELEND",(double)TimeLocal());                                // persistent: finished by CancelEndTick even if the history of a just-closed trade is late
+         if(CancelEndTry("Telegram CANCEL")) t+="\n🛑 CYCLE ENDED: ledger zeroed, accumulated loss 0, everything deleted. Send /set BUY SELL [RISK] to start a new cycle from zero.";
+         else t+="\n⏳ Cycle ends as soon as the last closed trade is booked.";
+        }
+     }
    g_dirty=true;
    return t;
   }
@@ -6415,7 +6740,13 @@ void TgCallbackBody(const string data,const long chat,const long from)
      {
       bool p=CleanupPositions(3);
       CheckClosures();
-      TgQueue(p?"✅ Open position closed.":"❌ Could not close the open position.",chat);
+      string ex="";
+      if(p)
+        {
+         GS("CANCELEND",(double)TimeLocal());
+         ex=CancelEndTry("Telegram CANCEL + CLOSE")?"\n🛑 CYCLE ENDED: ledger zeroed, everything deleted. Send /set BUY SELL [RISK] to start a new cycle from zero.":"\n⏳ Cycle ends as soon as the closed trade is booked.";
+        }
+      TgQueue((p?"✅ Open position closed.":"❌ Could not close the open position.")+ex,chat);
      }
   }
 
@@ -7842,7 +8173,15 @@ string BrExec(const string cmd,const string seg)
      }
    if(cmd=="cancel")
      {
-      if(g_state==YT_STOPPED) return "ℹ️ Bot is stopped - no pending orders to cancel.";
+      if(g_state==YT_STOPPED)
+        {
+         //--- fix15: a STOPPED bot with an open debt could never be ended from the app. Cancel now ends the cycle (ledger zeroed) when nothing of the EA is left.
+         ulong sp[],so[];
+         if(OwnPositions(sp)>0 || OwnOrders(so)>0) return "ℹ️ Bot is stopped - close the open trade / orders first (or use CLOSE), then Cancel ends the cycle.";
+         GS("CANCELEND",(double)TimeLocal());
+         if(CancelEndTry("MiniApp CANCEL (stopped)")) { g_dirty=true; SyncAll(); return "🛑 CYCLE ENDED: ledger zeroed, accumulated loss 0. Send levels to start a new cycle from zero."; }
+         return "⏳ Cycle ends as soon as the last closed trade is booked.";
+        }
       string r=ExecCancel(false);
       g_dirty=true; SyncAll();
       return r;
@@ -8595,6 +8934,7 @@ void StartupAudit()
    if(g_unc[0].active || g_unc[1].active) diff+="an unresolved order request was restored (verified before anything is sent); ";
    LogOrder("STARTUP_AUDIT",-1,0.0,0.0,0,0,"saved state "+StateText()+" | cycle #"+IntegerToString((int)g_cycId)+" net "+D2(g_cycNet)+" seq "+IntegerToString(g_seq)+" trade# "+IntegerToString((int)g_tradeNo)+" last deal "+UL(g_lastDeal)+
             " | positions: "+(StringLen(ps)>0?ps:"none")+" | orders: "+(StringLen(os)>0?os:"none")+" | acct "+(g_netting?"Netting":"Hedging")+" | differences: "+(StringLen(diff)>0?diff:"none"));
+   CycleCensus("startup",true);
    if(StringLen(diff)>0)
      {
       YLog("Startup audit - differences between the saved state and the broker: "+diff);
@@ -8892,6 +9232,7 @@ void OnTimer()
    g_dirty=false;
    SyncAll();
    StopCleanupTick();
+   CancelEndTick();                                 // fix13: finishes a user cancel (cycle end) once every closed result is booked
    if(g_timerCount%30==0 && g_connected) RecoverHistory();
    if(g_timerCount%120==0) RiskScaleAdvisory();    // v2.30: Risk/Target can be changed from the Mini App at any time
    if(g_timerCount%600==0) SeqAuditRun();          // v2.29: every 10 min, alert only

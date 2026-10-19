@@ -94,7 +94,8 @@ test("EA 2.34 has the new inputs with SAFE defaults (guards off, one-cycle-per-d
 test("EA 2.34: lot sizing uses SizingPerLot in the raw volume AND in the recovery round-up", () => {
   assert.match(ea, /double perSz=SizingPerLot\(perLot\);/);
   assert.match(ea, /double raw=risk\/perSz;/);
-  assert.match(ea, /lot\*perSz<risk-1e-9\) lot\+=step;/);
+  assert.match(ea, /lot\*perSz<risk-1e-9\)/);
+  assert.match(ea, /QuantizeLot\(raw,vmin,step,risk,perSz,/);
   assert.match(ea, /double\s+CommPerLotEff\(\)/);
 });
 test("EA 2.34: real commission is learned from the closing deals and persisted", () => {
