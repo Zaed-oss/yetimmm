@@ -1,0 +1,55 @@
+name = "yetimmm-bridge"
+main = "worker.js"
+compatibility_date = "2025-06-01"
+
+[observability]
+enabled = true
+
+# ── Durable Objects ─────────────────────────────────────────────────────
+# HUB    : one isolated hub per MT5 account (EA state, sessions, commands, order alerts)
+# NOTIFY : economic calendar + unified notifications (news alerts, order alerts, Telegram delivery)
+[[durable_objects.bindings]]
+name = "HUB"
+class_name = "Hub"
+
+[[durable_objects.bindings]]
+name = "NOTIFY"
+class_name = "Notify"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["Hub"]
+
+[[migrations]]
+tag = "v2"
+new_sqlite_classes = ["Notify"]
+
+# ── Secrets (never put these in this file) ──────────────────────────────
+#   wrangler secret put BOT_TOKEN      REQUIRED  Telegram bot token (also used to verify Telegram identity)
+#   wrangler secret put APP_PASSWORD   REQUIRED  the app password. Login is refused until it exists.
+#   wrangler secret put PAIR_CODE      REQUIRED  EA <-> account PAIRING code: at least 8 chars, strong, different from APP_PASSWORD (weak values such as 123123 are refused). `npm run setup` generates it and writes the same value to Yetimmm.cfg for the EA. No fallback unless the legacy opt-in ALLOW_PAIR_FALLBACK="1" is set (NOT recommended).
+#   wrangler secret put ADMIN_KEY     optional  enables GET /admin/diag (internal diagnostics: raw EA command log, technical failures, archive summary). Unset = the endpoint does not exist. Never shown in the Mini App.
+#   wrangler secret put TE_KEY         optional  Trading Economics key (only used when no EA is online)
+#
+# ── Optional settings: uncomment the lines you need under [vars] above (an env value always wins over worker.js CONFIG) ──
+[vars]
+# PAIR_CODE: set it as a SECRET (npx wrangler secret put PAIR_CODE, or `npm run setup`). Do NOT put it in this file: it is committed to the repo and it can bind any MT5 account number.
+# Without a strong PAIR_CODE the Worker answers HTTP 503 pair_not_configured and no EA can pair.
+# MINI_APP_URL = "https://YOUR-USER.github.io/YOUR-REPO/"   # OPTIONAL override. Normally NOT needed: the Worker reads the Menu-Button URL that `npm run setup:bot` sets. BANNER_URL optional (default: app URL + assets/banner.png)
+# PRODUCTION: CORS is restricted to YOUR web app. The Origin is the DOMAIN ONLY (no /repo path). Several origins: comma separated.
+# Not set / empty = no browser origin is allowed (fail-closed). "*" = open, local testing only (GET / then reports corsOpen:true).
+ALLOWED_ORIGIN = "https://zaed-oss.github.io"
+# LOCK_SECONDS   = "120"      # lock length after too many wrong passwords
+# MAX_ATTEMPTS   = "8"        # wrong passwords before the lock
+# SESSION_DAYS   = "30"       # sliding session lifetime (any authenticated request extends it)
+# EA_STALE_SEC   = "30"       # seconds without an EA sync before it counts as offline (the app reads this value from the server)
+# NEWS_SCOPE     = "server"   # server = calendar/notifications per broker server (default) | global = one shared shard (v4.5 behaviour)
+# SESSION_EPOCH  = "1"        # bump 1 -> 2 to sign EVERYBODY out at once
+# REQUIRE_TG     = "1"        # "0" = allow sign-in from a normal browser (default: only inside Telegram)
+# MT5_FEED       = "1"        # "0" = ignore the MT5 calendar and use only the external feeds
+# NEWS_PROVIDER  = "auto"     # auto | ff | te
+# MARKET_TZ      = "UTC"      # fallback platform time zone (the EA reports the real broker offset itself)
+# OWNER_TG       = "123456789"  # Telegram numeric id(s) (comma separated) that sign in WITHOUT a password (identity is proven by Telegram initData)
+# FAIL_WINDOW_SEC = "600"     # wrong attempts older than this are forgotten
+# PAIR_LOCKOUT   = "1"        # "0" turns off the wrong-pairing-code throttle (NOT recommended: allows brute force of PAIR_CODE)
+# ALLOW_EA_BOT_TOKEN = "0"    # "1" = legacy opt-in that sends BOT_TOKEN to the EA (NOT recommended: a rogue paired EA could read it)
