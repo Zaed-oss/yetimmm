@@ -24,6 +24,12 @@ new_sqlite_classes = ["Hub"]
 tag = "v2"
 new_sqlite_classes = ["Notify"]
 
+[[migrations]]
+tag = "v3"
+
+[[migrations]]
+tag = "v4"
+
 # ── Secrets (never put these in this file) ──────────────────────────────
 #   wrangler secret put BOT_TOKEN      REQUIRED  Telegram bot token (also used to verify Telegram identity)
 #   wrangler secret put APP_PASSWORD   REQUIRED  the app password. Login is refused until it exists.
