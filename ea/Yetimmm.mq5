@@ -3850,6 +3850,7 @@ bool ProcessClosedPosition(const ulong pid)
          //--- v2.38: a TP is just a closed trade. Its NET goes into the cycle ledger; the cycle ends ONLY when the whole cycle's net reaches the target.
          ledNote=CycleBook(net,"TP");
          g_lastSLSide=0;
+         if(others==0) CleanupOrders("TP hit: the pair is finished - leftover pending order deleted");   // v2.45.1: also here (restart / missed event); cycle end or re-arm is decided below
          if(CycleMet(g_cycNet) && others==0)
            {
             cycTxt="CYCLE #"+IntegerToString((int)g_cycId)+" NET "+D2(g_cycNet)+" >= target "+D2(g_target)+" -> COMPLETE";
@@ -8771,6 +8772,25 @@ void OnTrade()
    UpdatePanel();          // show the real server state immediately (incremental, cheap)
   }
 
+//--- v2.45.1 TP = THE PAIR IS FINISHED: the moment a position of this EA closes by Take Profit and NO own position is left, the opposite pending Stop
+//--- (the pre-armed reverse order, or any leftover of the pair) is deleted AT ONCE - it does not wait for the closing deal to reach the history,
+//--- for the ledger booking or for the cycle-completion test. A position that is still open (e.g. the reverse order already filled) is never touched.
+//--- Whether the cycle ends or continues (net target not reached yet) is still decided by ProcessClosedPosition / the ledger exactly as before.
+void TpOppositeSweep(const ulong deal)
+  {
+   if(g_halt || g_recHold) return;                       // REQUIRED_RECOVERY: nothing is deleted until the conflict is reconciled
+   ulong rp[];
+   if(OwnPositions(rp)>0) return;                        // a position is still open: its pending reverse order is legitimate
+   ulong od[];
+   int n=OwnOrders(od);
+   if(n<=0) return;
+   int gone=0;
+   for(int i=0;i<n;i++)
+      if(DeleteOrder(od[i],"TP hit (deal #"+UL(deal)+"): the pair is finished - opposite pending order deleted")) { gone++; TgQueue("🗑 OPPOSITE ORDER DELETED (TP hit)\nTicket: "+UL(od[i])); }
+   LogOrder(gone==n?"TP_OPPOSITE_DELETED":"TP_OPPOSITE_DELETE_PARTIAL",-1,0.0,0.0,0,0,"TP closing deal #"+UL(deal)+" | pending orders found "+IntegerToString(n)+" | deleted "+IntegerToString(gone)+(gone<n?" | the rest is retried by the normal cleanup":""));
+   g_dirty=true;
+  }
+
 void OnTradeTransaction(const MqlTradeTransaction &trans,const MqlTradeRequest &request,const MqlTradeResult &result)
   {
    if(g_halt) return;
@@ -8821,6 +8841,7 @@ void OnTradeTransaction(const MqlTradeTransaction &trans,const MqlTradeRequest &
          //--- the decision (stop loss -> opposite order) is taken by ProcessClosedPosition from the booked deal. The log line is written AFTER the synchronisation.
          g_tlTrMs=GetTickCount64();
          closeNote="closing deal #"+UL(trans.deal)+" of position #"+UL((ulong)HistoryDealGetInteger(trans.deal,DEAL_POSITION_ID))+" | reason "+DealReasonText(HistoryDealGetInteger(trans.deal,DEAL_REASON))+" | price "+PX(HistoryDealGetDouble(trans.deal,DEAL_PRICE));
+         if(HistoryDealGetInteger(trans.deal,DEAL_REASON)==DEAL_REASON_TP) TpOppositeSweep(trans.deal);   // v2.45.1: TP -> the opposite pending order goes now
         }
      }
    g_dirty=true;
