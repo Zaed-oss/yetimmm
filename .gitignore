@@ -1,0 +1,10 @@
+node_modules/
+.wrangler/
+.dev.vars
+.env
+*.log
+.DS_Store
+# MT5 compiled output
+*.ex5
+ea/Yetimmm.cfg
+TERMINAL.local.md
