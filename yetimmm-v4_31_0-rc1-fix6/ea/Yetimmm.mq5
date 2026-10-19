@@ -2787,6 +2787,7 @@ void TgPop()
 
 //--- chat==0 -> broadcast to every authorized id (requires Notifications enabled)
 string JEsc(const string s);   // defined with the Mini App bridge
+void LoadAutoConfig(const bool quiet=false);   // defined below the bridge; BridgeSync() re-reads the settings (quiet = no log lines)
 
 //--- v2.23 EVENT OUTBOX: every notification gets a unique id (login:magic:sequence). The Worker de-duplicates by id and acks it;
 //--- unacked events are re-sent with the next sync (same id = never delivered twice). The sequence survives MT5 restarts.
@@ -7064,6 +7065,103 @@ string   g_brLastId="";
 string   g_brLastText="";
 bool     g_brLastOk=true;
 
+//+------------------------------------------------------------------+
+//| v4.31.1 bridge connection state machine + diagnostics            |
+//| CONFIG_LOADING -> CONFIG_READY | CONFIG_INVALID                  |
+//| CONNECTING -> CONNECTED -> RETRYING -> OFFLINE -> CONNECTED      |
+//| CONNECTED is declared ONLY after a real "ok":true answer from    |
+//| the Worker. A state change is logged once (no log spam).         |
+//+------------------------------------------------------------------+
+enum YT_BR_STATE { BR_CONFIG_LOADING=0, BR_CONFIG_INVALID, BR_CONFIG_READY, BR_CONNECTING, BR_CONNECTED, BR_RETRYING, BR_OFFLINE };
+YT_BR_STATE g_brState=BR_CONFIG_LOADING;
+datetime g_brLastOkAt=0;        // last successful sync
+datetime g_brLastFailAt=0;      // last failed sync attempt
+datetime g_brDownSince=0;       // first failure of the current outage (0 = none)
+int      g_brFails=0;           // consecutive failed attempts
+string   g_brLastErr="";        // short code of the last failure: wr<MT5 error> | http<code> | <Worker error>
+int      g_brLastHttp=0;        // last HTTP status (0 = no HTTP answer)
+int      g_brLastOutSec=0;      // duration of the last recovered outage (reported to the Worker)
+int      g_brLastOutFails=0;
+const int YT_BR_OFFLINE_SEC=30; // equals the Worker EA_STALE_SEC: beyond this the app shows the bot as offline
+
+string BrStateName(const YT_BR_STATE s)
+  {
+   switch(s)
+     {
+      case BR_CONFIG_LOADING: return "CONFIG_LOADING";
+      case BR_CONFIG_INVALID: return "CONFIG_INVALID";
+      case BR_CONFIG_READY:   return "CONFIG_READY";
+      case BR_CONNECTING:     return "CONNECTING";
+      case BR_CONNECTED:      return "CONNECTED";
+      case BR_RETRYING:       return "RETRYING";
+      case BR_OFFLINE:        return "OFFLINE";
+     }
+   return "?";
+  }
+// A transition is logged ONCE; the same state is never logged twice in a row.
+void BrSetState(const YT_BR_STATE s,const string why="")
+  {
+   if(s==g_brState) return;
+   g_brState=s;
+   YLog("Mini App bridge: "+BrStateName(s)+(why!=""?" - "+why:""));
+  }
+// "" = the settings are usable. Otherwise the exact missing / wrong setting (never a vague "INACTIVE").
+string BrConfigProblem()
+  {
+   if(StringLen(g_brUrl)<12) return "Worker URL missing (InpBrUrl is empty and Common\\Files\\Yetimmm.cfg has no url=) - run `npm run setup` or fill InpBrUrl.";
+   if(StringFind(g_brUrl,"https://")!=0) return "Worker URL must start with https:// (got '"+g_brUrl+"').";
+   if(StringLen(BrKeyEff())<8) return "no EA key could be created (is the Common Files folder writable?).";
+   return "";
+  }
+// Seconds before the next attempt. Normal: InpBrPollSec. After failures: x2 per failure, capped at 10 s (recovery stays fast, the Worker is never flooded).
+int BrRetryDelaySec()
+  {
+   int base=MathMax(1,InpBrPollSec);
+   if(g_brFails<=0) return base;
+   int d=base<<MathMin(g_brFails,3);
+   return MathMin(MathMax(d,base),10);
+  }
+// One failed attempt: recorded -> RETRYING (OFFLINE after YT_BR_OFFLINE_SEC without any success). The first failure is always logged.
+void BrFail(const string code,const int httpCode,const string human)
+  {
+   datetime now=TimeLocal();
+   if(g_brFails==0) g_brDownSince=now;
+   g_brFails++;
+   g_brLastFailAt=now;
+   g_brLastErr=code;
+   g_brLastHttp=httpCode;
+   g_brOk=false;
+   datetime ref=(g_brLastOkAt>0)?g_brLastOkAt:g_brDownSince;
+   if(now-ref>=YT_BR_OFFLINE_SEC) BrSetState(BR_OFFLINE,human);
+   else if(g_brState!=BR_OFFLINE) BrSetState(BR_RETRYING,human);
+   if(g_brFails==1 || g_brErrLog==0 || now-g_brErrLog>=60)
+     {
+      g_brErrLog=now;
+      YLog("Mini App bridge: "+human+" | attempt #"+IntegerToString(g_brFails)+" | next try in "+IntegerToString(BrRetryDelaySec())+" s | last success "+(g_brLastOkAt>0?IntegerToString((int)(now-g_brLastOkAt))+" s ago":"never"));
+     }
+  }
+// A real, verified success: the outage (if any) is closed and measured.
+void BrSuccess()
+  {
+   datetime now=TimeLocal();
+   if(g_brFails>0)
+     {
+      int down=(g_brDownSince>0)?(int)(now-g_brDownSince):0;
+      g_brLastOutSec=down; g_brLastOutFails=g_brFails;
+      g_brState=BR_CONNECTED;
+      YLog("Mini App bridge: CONNECTED - recovered automatically after "+IntegerToString(down)+" s and "+IntegerToString(g_brFails)+" failed attempt(s) (last error "+g_brLastErr+"). No restart / re-login needed.");
+     }
+   else BrSetState(BR_CONNECTED,"Worker answered ok");
+   g_brFails=0; g_brDownSince=0; g_brErrLog=0;
+   g_brLastOkAt=now; g_brLastHttp=200; g_brLastErr="";
+   g_brOk=true;
+  }
+// Outage report for the Worker: lets it tell "EA / network was down" from "Worker was down" (error code, failed attempts, last outage length).
+string BrNetJson()
+  {
+   return "{\"fails\":"+IntegerToString(g_brFails)+",\"err\":\""+JEsc(g_brLastErr)+"\",\"outSec\":"+IntegerToString(g_brLastOutSec)+",\"outFails\":"+IntegerToString(g_brLastOutFails)+",\"st\":\""+BrStateName(g_brState)+"\"}";
+  }
+
 string JEsc(const string s)
   {
    string r=s;
@@ -7834,9 +7932,27 @@ string BrExec(const string cmd,const string seg)
 void BridgeSync()
   {
    if(!InpBrEnable || MQLInfoInteger(MQL_TESTER)) return;
-   if(StringLen(g_brUrl)<12 || StringLen(BrKeyEff())<8) return;
-   if(TimeLocal()-g_brLast<MathMax(1,InpBrPollSec)) return;
+   //--- v4.31.1 fix8: the gate is the connection STATE, not a raw length test. An EA that started with an empty / invalid URL must reach the re-read below
+   //--- (an early `return` on the empty URL used to make the recovery code unreachable). The cfg file is re-read at most every 5 s, silently.
+   if(g_brState==BR_CONFIG_INVALID || g_brState==BR_CONFIG_LOADING)
+     {
+      if(TimeLocal()-g_brLast<5) return;
+      g_brLast=TimeLocal();
+      LoadAutoConfig(true);
+      string cfgWhy=BrConfigProblem();
+      if(cfgWhy!="")
+        {
+         if(g_brErrLog==0 || TimeLocal()-g_brErrLog>=60) { g_brErrLog=TimeLocal(); YLog("Mini App bridge: still CONFIG_INVALID - "+cfgWhy+" (settings are re-checked every 5 s; no restart needed once fixed)."); }
+         return;
+        }
+      g_brErrLog=0;
+      BrSetState(BR_CONFIG_READY,g_brUrl);
+      g_brLast=0;                                          // the first sync starts right away
+     }
+   if(StringLen(g_brUrl)<12 || StringLen(BrKeyEff())<8) { BrSetState(BR_CONFIG_INVALID,BrConfigProblem()); return; }   // defensive: settings lost at runtime
+   if(TimeLocal()-g_brLast<BrRetryDelaySec()) return;   // v4.31.1: normal poll, or exponential back-off (1,2,4,8,10 s) while the Worker is unreachable
    g_brLast=TimeLocal();
+   if(g_brState==BR_CONFIG_READY) BrSetState(BR_CONNECTING,"first sync");
 
    if(!g_brCvLoaded) { g_brCv=(int)StringToInteger(CfgGet("brcv","0")); g_brCvLoaded=true; }
    if(!g_brPairLoaded) { g_brPairNeed=(CfgGet("brpaired","0")!="1"); g_brPairLoaded=true; }
@@ -7852,7 +7968,7 @@ void BridgeSync()
      }
    string body="{\"login\":\""+IntegerToString((long)AccountInfoInteger(ACCOUNT_LOGIN))+"\",\"srv\":\""+JEsc(AccountInfoString(ACCOUNT_SERVER))+"\",\"fresh\":"+(g_brFresh?"true":"false")+",\"reset\":"+(InpBrResetPw?"true":"false")+",\"cv\":"+IntegerToString(g_brCv)+calPart+",\"inst\":\""+g_instId+"\",\"state\":"+BrStateJson()+",\"ack\":[";
    for(int i=0;i<ArraySize(g_brAck);i++) body+=(i>0?",":"")+"\""+g_brAck[i]+"\"";
-   body+="],\"ev\":"+EvJson()+"}";
+   body+="],\"ev\":"+EvJson()+",\"net\":"+BrNetJson()+"}";
    string url=g_brUrl;
    while(StringLen(url)>0 && StringSubstr(url,StringLen(url)-1,1)=="/") url=StringSubstr(url,0,StringLen(url)-1);
    url+="/api/ea/sync";
@@ -7870,17 +7986,13 @@ void BridgeSync()
    if(code==-1)
      {
       int e=GetLastError();
-      g_brOk=false;
-      if(TimeLocal()-g_brErrLog>=60)
+      //--- v4.31.1: a network failure is RECOVERABLE (retry with back-off, never gives up); 4014 is a settings problem and is explained once per minute
+      if(e==4014)
         {
-         g_brErrLog=TimeLocal();
-         if(e==4014)
-           {
-            YLog("Mini App bridge: error 4014 - tick 'Allow WebRequest for listed URL' and add: "+AllowUrlsHint()+"  (Tools > Options > Expert Advisors). Shortcut: close MT5 and run tools\\allow-urls.bat");
-            AllowUrlsAlertOnce();
-           }
-         else YLog("Mini App bridge: WebRequest failed, error "+IntegerToString(e));
+         BrFail("wr4014",0,"WebRequest error 4014 - tick 'Allow WebRequest for listed URL' and add: "+AllowUrlsHint()+" (Tools > Options > Expert Advisors; shortcut: close MT5 and run tools\\allow-urls.bat)");
+         AllowUrlsAlertOnce();
         }
+      else BrFail("wr"+IntegerToString(e),0,"WebRequest failed (MT5 error "+IntegerToString(e)+"; internet down / timeout / DNS)");
       return;
      }
    string resp=CharArrayToString(res,0,WHOLE_ARRAY,CP_UTF8);
@@ -7888,10 +8000,11 @@ void BridgeSync()
      {
       g_brOk=false;
       string werr=JStr(resp,"\"error\":\"");
+      bool explainNow=(g_brFails==0 || g_brErrLog==0 || TimeLocal()-g_brErrLog>=60);   // decided BEFORE BrFail() refreshes the log clock
+      BrFail((werr!="")?werr:"http"+IntegerToString(code),code,"HTTP "+IntegerToString(code)+((werr!="")?" '"+werr+"'":""));   // v4.31.1: state + counters + first-failure log
       if(werr=="secret" || werr=="pair_required") g_brPairNeed=true;       // the Worker does not know this EA's secret: present the pairing code on the next sync
-      if(TimeLocal()-g_brErrLog>=60)
+      if(explainNow)
         {
-         g_brErrLog=TimeLocal();
          if(werr=="pair_required")     YLog("Mini App bridge: this MT5 account is NOT PAIRED yet - run `npm run setup` (or set InpBrPairCode to the Worker secret PAIR_CODE (or the app password if PAIR_CODE is not set).");
          else if(werr=="pair_bad")     YLog("Mini App bridge: pairing code REJECTED - the pairing code must equal the Worker secret PAIR_CODE (or APP_PASSWORD when PAIR_CODE is not set).");
          else if(werr=="pair_locked")  YLog("Mini App bridge: too many wrong pairing codes - pairing is locked for a few minutes.");
@@ -7904,8 +8017,7 @@ void BridgeSync()
         }
       return;
      }
-   if(!g_brOk) YLog("Mini App bridge: connected.");
-   g_brOk=true;
+   BrSuccess();                         // v4.31.1: CONNECTED only now - after a verified "ok":true answer (and the outage report is closed)
    //--- v2.21 pairing: the Worker mints the EA secret (CSPRNG) when the pairing code is accepted; store it and stop sending the code
    string mintedSecret=JStr(resp,"\"es\":\"");
    if(StringLen(mintedSecret)>=32)
@@ -8043,13 +8155,13 @@ void BridgeSync()
   }
 
 //--- v2.27: zero-typing setup. `npm run setup` writes Common\Files\Yetimmm.cfg (url=..., pair=...). Inputs, if filled, win.
-void LoadAutoConfig()
+void LoadAutoConfig(const bool quiet)
   {
    g_brUrl=InpBrUrl; g_brPair=InpBrPairCode;
    StringTrimLeft(g_brUrl); StringTrimRight(g_brUrl); StringTrimLeft(g_brPair); StringTrimRight(g_brPair);
    if(StringLen(g_brUrl)>=12 && StringLen(g_brPair)>0) return;
    int h=FileOpen("Yetimmm.cfg",FILE_READ|FILE_TXT|FILE_ANSI|FILE_COMMON);
-   if(h==INVALID_HANDLE) { if(StringLen(g_brUrl)<12) YLog("Mini App bridge: Yetimmm.cfg not found in the Common Files folder - run `npm run setup` (or fill InpBrUrl / InpBrPairCode)."); return; }
+   if(h==INVALID_HANDLE) { if(!quiet && StringLen(g_brUrl)<12) YLog("Mini App bridge: Yetimmm.cfg not found in the Common Files folder - run `npm run setup` (or fill InpBrUrl / InpBrPairCode)."); return; }
    while(!FileIsEnding(h))
      {
       string ln=FileReadString(h); StringTrimLeft(ln); StringTrimRight(ln);
@@ -8060,7 +8172,7 @@ void LoadAutoConfig()
       if(k=="pair" && StringLen(g_brPair)==0) g_brPair=v;
      }
    FileClose(h);
-   YLog("Mini App bridge: configuration loaded automatically (Yetimmm.cfg).");
+   if(!quiet) YLog("Mini App bridge: configuration loaded automatically (Yetimmm.cfg).");
   }
 
 //--- v2.33: REAL ORDERS ONLY. Everything "virtual" (zone trigger armed in memory, fast-catch arming, remembered market-entry
@@ -8546,14 +8658,20 @@ int OnInit()
    YLog("Stop-and-reverse (v2.37): "+(InpPreArmReverse?(g_netting?"OFF - Netting account (the reverse order would merge into the open position); the previous re-entry behaviour applies":"ON - the opposite Stop order stays on the server while a position is open"):"OFF (input) - previous re-entry behaviour"));
    YLog("After-SL policy: "+((!YT_REAL_ORDERS_ONLY && InpBreachPolicy==BREACH_MARKET)?"MARKET (advanced / opt-in - reverses at market when the level was already crossed)":"WAIT (literal philosophy - pending Stop at the SL level)")+
         " | Protection emergency-close: "+(InpProtectCloseSec>0?IntegerToString(InpProtectCloseSec)+" s":"OFF (alert + retry only)"));
+   //--- v4.31.1 FIX-A: the bridge settings are loaded (inputs, else Common\Files\Yetimmm.cfg) BEFORE they are validated, so a valid
+   //--- configuration can never be reported as "INACTIVE" merely because it had not been read yet. Result: CONFIG_READY / CONFIG_INVALID (exact reason).
    if(InpBrEnable && !MQLInfoInteger(MQL_TESTER))
      {
-      if(StringLen(g_brUrl)<12 || StringLen(BrKeyEff())<8)
-         YLog("Mini App bridge: INACTIVE - InpBrUrl is empty/too short (or no app key). Fill InpBrUrl, then allow it in Tools > Options > Expert Advisors.");
-      else if(StringFind(g_brUrl,"https://")!=0)
-         YLog("Mini App bridge: INACTIVE - InpBrUrl must start with https://");
+      BrSetState(BR_CONFIG_LOADING,"reading bridge settings");
+      LoadAutoConfig();
+      string cfgWhy=BrConfigProblem();
+      if(cfgWhy!="")
+         BrSetState(BR_CONFIG_INVALID,cfgWhy);
       else
+        {
+         BrSetState(BR_CONFIG_READY,g_brUrl);
          YLog("Mini App bridge: enabled | "+g_brUrl+" | Allowed URLs must contain: "+AllowUrlsHint()+" (error 4014 otherwise).");
+        }
       if(CfgGet("brpaired","0")!="1" && StringLen(g_brPair)==0)
          YLog("Mini App bridge: InpBrPairCode is empty - an account that is not yet bound to this Worker will be refused until you enter the pairing code (accounts bound by v2.20 keep working).");
      }
@@ -8564,7 +8682,7 @@ int OnInit()
 
    //--- v2.27: the Telegram Mini App is the ONLY source of levels/risk. Input levels, panel fields and old defaults never create orders.
    if(InpBuyStop>0.0 || InpSellStop>0.0) YLog("InpBuyStop / InpSellStop are DEPRECATED and ignored (v2.27): set the levels from the Telegram Mini App.");
-   LoadAutoConfig();
+   if(!(InpBrEnable && !MQLInfoInteger(MQL_TESTER))) LoadAutoConfig();   // v4.31.1: with the bridge enabled the settings were already loaded and validated above
    RecoverHistory();
    PurgeLegacyLevels();
    RecoveryStateSafe();                                           // v2.42: saved state vs the broker (position / pending orders / unresolved request / cycle) - recovered, or the bot waits for the user

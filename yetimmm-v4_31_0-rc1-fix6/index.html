@@ -349,7 +349,7 @@ t_sl:["وقف الخسارة {0}$ · المخاطرة التالية ${1}","Stop
 t_saved:["تم حفظ الإعدادات","Settings saved"],t_applied:["تم تحديث الأوامر المعلقة","Pending orders updated"],t_pend:["تم الحفظ — تُطبَّق بعد إغلاق الصفقة الحالية","Saved — applies after the current trade closes"],
 t_reset:["تمت إعادة ضبط تسلسل المخاطرة","Risk sequence reset"],t_noReset:["لا يمكن أثناء وجود صفقة مفتوحة","Not possible while a trade is open"],
 l_sim:["وضع تجريبي (محاكاة)","Demo mode (simulation)"],l_wait:["جارٍ الاتصال بالخادم…","Connecting…"],
-l_srv:["تعذّر الوصول إلى الخادم","Server unreachable"],l_srvS:["تحقق من الإنترنت — جارٍ إعادة المحاولة","Check your internet — retrying"],
+l_rec:["جارٍ إعادة الاتصال…","Reconnecting…"],l_recS:["انقطاع مؤقت — جلستك محفوظة وسيعود الاتصال تلقائياً","Brief interruption — your session is kept and it reconnects by itself"],l_net:["لا يوجد اتصال بالإنترنت على هاتفك","Your phone is offline"],l_netS:["سيعود التحديث تلقائياً فور عودة الإنترنت — لا حاجة لتسجيل الدخول من جديد","Updates resume automatically when the internet is back — no need to sign in again"],l_outg:["آخر انقطاع في المزامنة: {0} ث · قبل {1}","Last sync gap: {0}s · {1} ago"],l_outEa:["خطأ الـ EA: {0} ({1} محاولة)","EA error: {0} ({1} tries)"],l_srv:["تعذّر الوصول إلى الخادم","Server unreachable"],l_srvS:["تحقق من الإنترنت — جارٍ إعادة المحاولة","Check your internet — retrying"],
 l_auth:["انتهت الجلسة","Session expired"],l_authS:["سجّل الدخول من جديد","Please sign in again"],
 l_off:["الـ EA غير متصل","EA offline"],l_offS:["لا مزامنة من الـ EA (تحقّق: Algo Trading أخضر، الـ EA على XAUUSD، وسجل Experts بلا خطأ 4014). بعد تحديث الـ EA ينتظر الاتصال الأول بضع ثوانٍ.","No sync from the EA (check: Algo Trading is green, the EA is on XAUUSD, Experts log has no error 4014). After an EA update the first connection takes a few seconds."],l_last:["آخر اتصال قبل {0}","last seen {0} ago"],
 l_okWait:["البوت متصل · بانتظار الأوامر","Bot connected · waiting for commands"],l_okRun:["البوت متصل · يعمل","Bot connected · running"],
@@ -520,18 +520,28 @@ const Ops={m:new Map(),dids:new Set(),log:[],TO:{delete:15000,_:12000},
     return changed},
   snapshot(){return{open:[...this.m.values()].map(o=>({cmd:o.c,id:o.id,ageMs:Date.now()-o.at})),log:this.log.slice(0,60)}}
 };
-const Bridge={ok:null,auth:false,at:0,init:false,lc:"",mine:new Set(),stSeen:new Set(),tst:new Set(),restored:false,toastedLc:"",dirty:false,applyId:null,busy:false,again:false,pend:[],
+const Bridge={ok:null,auth:false,at:0,okAt:0,failSince:0,fails:0,err:"",nextAt:0,init:false,lc:"",mine:new Set(),stSeen:new Set(),tst:new Set(),restored:false,toastedLc:"",dirty:false,applyId:null,busy:false,again:false,pend:[],
   async req(path,opt){
     const ac=new AbortController(),tm=setTimeout(()=>ac.abort(),path==="/state"?15000:10000);
     let r;try{r=await fetch(CONFIG.api.baseUrl+path,{...opt,signal:ac.signal,headers:{"Content-Type":"application/json","X-Login":SES.l,"X-Session":SES.s,...CONFIG.api.headers}})}finally{clearTimeout(tm)}
     if(r.status===401){let w="";try{w=(await r.clone().json()).why||""}catch(e){}Login.out(false,w==="pw"||w==="revoked"?"e_pw_changed":w==="expired"?"e_expired":w==="acct"?"e_acct":"e_relogin")}
     if(!r.ok){const e=new Error(r.status);e.status=r.status;try{e.why=(await r.clone().json()).why||""}catch(x){}throw e}
     return r.json()},
+  /* v4.31.1: ONE place decides what a failed request means. A network / server hiccup NEVER touches the saved session (only a real 401 signs out, in req()):
+     the app keeps the last good data, shows "reconnecting", backs off (0.5 s .. 8 s) and recovers by itself - no re-login, no restart. */
+  fail(e){
+    const st=e&&e.status;
+    if(!this.fails)this.failSince=Date.now();
+    this.fails++;this.ok=false;
+    this.auth=(st===401||st===403||!SES.s);
+    this.err=st?(this.auth?"auth":"srv"):"net";
+    this.nextAt=Date.now()+Math.min(8000,500*Math.pow(2,Math.min(this.fails,4)))},
+  kick(){this.nextAt=0;if(Login.has()&&Verify.ok&&!this.busy)this.pull()},      /* immediate retry: back online / app visible again / user pressed retry */
   async pull(){
     if(this.busy){this.again=true;return}this.busy=true;
     try{
       const d=await this.req("/state");
-      prev=S.price||d.price;Object.assign(S,d);this.pend=this.pend.filter(p=>Date.now()-p.at<900000);this.ok=true;this.auth=false;this.at=Date.now();
+      prev=S.price||d.price;Object.assign(S,d);this.pend=this.pend.filter(p=>Date.now()-p.at<900000);this.ok=true;this.auth=false;this.at=Date.now();this.okAt=this.at;this.fails=0;this.failSince=0;this.err="";this.nextAt=0;
       (Array.isArray(d.cmdStatus)?d.cmdStatus:[]).forEach(x=>{const k=x.id+":"+x.st;if(this.mine.has(x.id)&&(x.st==="expired"||x.st==="rejected")&&!this.stSeen.has(k)){this.stSeen.add(k);toast("❌ "+t(x.st==="expired"?"cmdExp":"q_full"))}});   /* v4.30: an expired / rejected command is always shown, never only inferred from a timeout */
       const lc=d.lastCmd;
       if(!this.init){this.init=true;this.lc=lc?lc.id:"";fillInputs(true)}
@@ -552,7 +562,7 @@ const Bridge={ok:null,auth:false,at:0,init:false,lc:"",mine:new Set(),stSeen:new
         if(Ops.active())this.fast()}
       if(!this.dirty)fillInputs();else prevCalc();
       feed();
-    }catch(e){this.ok=false;this.auth=(e.status===401||e.status===403||!SES.s)}
+    }catch(e){this.fail(e)}
     Ops.settle();this.busy=false;setMode();render();
     if(this.again){this.again=false;setTimeout(()=>this.pull(),120)}
   },
@@ -577,7 +587,7 @@ const Bridge={ok:null,auth:false,at:0,init:false,lc:"",mine:new Set(),stSeen:new
       if(e.status===429){toast("❌ "+t("q_full"));return}      /* v4.29: queue full is an explicit refusal, never a silent drop */
       if(c==="newcycle"&&e.status===409){toast("❌ "+t(e.why==="pending"?"cyc_pnd":"cyc_blk"));return}
       if(e.status===503)toast("❌ "+t("noLink"));
-      else{this.ok=false;this.auth=(e.status===401||e.status===403||!SES.s);setMode();render();toast("❌ "+t(this.auth?"l_auth":"l_srv"))}
+      else{this.fail(e);setMode();render();toast("❌ "+t(this.auth?"l_auth":"l_rec"))}
     }
   }
 };
@@ -769,9 +779,10 @@ function linkRows(){
   const a=eaAge(),last=(!eaOn&&a!==null)?" · "+t("l_last",ago(a)):"";
   return `<div style="margin-top:8px;border-top:1px solid var(--bd,rgba(127,127,127,.25));padding-top:6px">`
     +row(t("st_ea"),t(eaOn?"v_on":"v_off")+last,eaOn)
-    +row(t("st_br"),t(k==="srv"?"v_dis":"v_con"),k!=="srv")
+    +row(t("st_br"),t(k==="srv"||k==="rec"?"v_dis":"v_con"),k!=="srv"&&k!=="rec")
     +row(t("st_mt"),m?t(m.conn?"v_con":"v_dis"):t("v_unk"),m?!!m.conn:null)
-    +row(t("st_tr"),m?t(why?"v_dsb":"v_en"):t("v_unk"),m?!why:null)+`</div>`;
+    +row(t("st_tr"),m?t(why?"v_dsb":"v_en"):t("v_unk"),m?!why:null)
+    +((S.outages&&S.outages.length)?(o=>`<div class="mu" style="font-size:12px;padding-top:4px">${t("l_outg",o.sec,ago((Date.now()-o.to)/1000))}${o.ea?" · "+t("l_outEa",esc(o.err||"?"),o.fails):""}</div>`)(S.outages[S.outages.length-1]):"")+`</div>`;
 }
 /* ═════ v4.13 · ONE order = ONE card (layer) · one delete · a real bar per order ═════
    An "order" is the Buy Stop + Sell Stop pair of one cycle. Everything shown here comes from what the EA reports
@@ -851,7 +862,7 @@ function renderDash(){
   if(live()&&link()==="ok"&&S.rec&&S.rec.hold)h=`<div class="note er"><b>${ic("alert")} ${t("rcvT")}</b><br><small>${esc(trEA(S.rec.why))}</small><br>${t("rcvB")}</div>`+h;
   if(live()&&link()==="ok")h=cmdStrip()+h;
   if(live()&&link()==="off")h=`<div class="note er"><b>${ic("alert")} ${t("offT")}</b><br>${t("offB")}${linkRows()}</div>`+h;
-  else if(live()&&link()==="srv")h=`<div class="note er"><b>${ic("alert")} ${t("l_srv")}</b><br>${t("l_srvS")}${linkRows()}</div>`+h;
+  else if(live()&&link()==="srv")h=`<div class="note er"><b>${ic("alert")} ${t(navigator.onLine===false?"l_net":"l_srv")}</b><br>${t(navigator.onLine===false?"l_netS":"l_srvS")}${linkRows()}</div>`+h;
   else if(live()&&link()==="ok"&&tradeWhy())h=`<div class="note er"><b>${ic("alert")} ${t("trOffT")}</b><br>${t(tradeWhy())}${linkRows()}</div>`+h;
   if(x){
     const b=isB(x.side),fl=floating(),lo=b?x.sl:x.tp,hi=b?x.tp:x.sl,pc=v=>Math.max(0,Math.min(100,(v-lo)/(hi-lo)*100)),z=pc(x.entry);
@@ -893,7 +904,11 @@ const eaAge=()=>S.eaAge==null?null:S.eaAge+(Date.now()-Bridge.at)/1000;
 function link(){
   if(!live())return"sim";
   if(Bridge.ok===null)return"wait";
-  if(Bridge.ok===false)return Bridge.auth?"auth":"srv";
+  if(Bridge.ok===false){
+    if(Bridge.auth)return"auth";
+    /* v4.31.1: a short failure is "reconnecting" (soft); only a failure that lasts 20 s+ is reported as "server unreachable" */
+    /* fix8: the 20 s are counted from the START OF THE CURRENT FAILURE CHAIN (failSince), never from an old success (okAt) - otherwise the first failure after a long quiet period would jump straight to "unreachable" */
+    return Date.now()-(Bridge.failSince||Date.now())<20000?"rec":"srv"}
   const a=eaAge();
   if(S.eaOnline===false||a===null||a>(S.eaStaleSec||CONFIG.staleSec||30))return"off";
   return"ok";
@@ -903,7 +918,8 @@ function renderLink(){
   let c="off",ti="",su="";
   if(k==="sim"){c="busy";ti=t("l_sim")}
   else if(k==="wait"){c="busy";ti=t("l_wait")}
-  else if(k==="srv"){ti=t("l_srv");su=t("l_srvS")}
+  else if(k==="rec"){c="busy";ti=t("l_rec");su=t(navigator.onLine===false?"l_netS":"l_recS")}
+  else if(k==="srv"){ti=t(navigator.onLine===false?"l_net":"l_srv");su=t(navigator.onLine===false?"l_netS":"l_srvS")}
   else if(k==="auth"){ti=t("l_auth");su=t("l_authS")}
   else if(k==="off"){ti=t("l_off");su=t("l_offS");const a=eaAge();if(a!==null)su+=" · "+t("l_last",ago(a))}
   else{
@@ -913,7 +929,7 @@ function renderLink(){
     su=t("l_upd",ago(eaAge()))+(S.spread!=null?" · Spread "+S.spread:"");
   }
   el.className="lnk "+c;$("lnkT").textContent=ti;$("lnkS").textContent=su;
-  $("retryB").hidden=!(k==="srv"||k==="off");
+  $("retryB").hidden=!(k==="srv"||k==="rec"||k==="off");
   $("qc").classList.toggle("stale",k!=="ok"&&k!=="sim");
   $("applyB").disabled=live()&&k!=="ok";
 }
@@ -1099,7 +1115,7 @@ const Verify={ok:false,busy:false,tm:null,tries:0,
       const m=d.why==="pw"||d.why==="revoked"?"e_pw_changed":d.why==="expired"?"e_expired":d.why==="acct"?"e_acct":d.why==="tg"?"e_tgchg":"e_relogin";
       setTimeout(()=>Login.out(false,m),900);return}
     $("vfM").textContent=t("vf_wait");this.next()},      // only the bot is off: keep trying, enter automatically
-  next(){clearTimeout(this.tm);this.tries++;this.tm=setTimeout(()=>{if(!document.hidden)this.run()},this.tries<10?3000:8000)},
+  next(){clearTimeout(this.tm);this.tries++;this.tm=setTimeout(()=>{if(document.hidden)this.next();else this.run()},this.tries<10?3000:8000)},
   enter(){this.ok=true;this.hide();Bridge.init=false;Bridge.ok=null;Bridge.pull()}
 };
 $("vfGo").onclick=()=>{vib&&vib();Verify.tries=0;Verify.run(true)};
@@ -1110,14 +1126,17 @@ $("in_b").value=S.buy;$("in_s").value=S.sell;$("in_r").value=S.risk;$("in_t").va
 const phoneLang=()=>{try{const w=TG.wa||(window.Telegram&&Telegram.WebApp),u=w&&w.initDataUnsafe&&w.initDataUnsafe.user,l=String((u&&u.language_code)||navigator.language||(navigator.languages&&navigator.languages[0])||"ar").toLowerCase();return l.indexOf("ar")===0?0:1}catch(e){return 0}};
 setLang(UI.lgManual?(UI.lg||0):phoneLang());   // phone language (Telegram / system) unless the user switched manually with the language button
 window.addEventListener("load",()=>{if(!UI.lgManual){const v=phoneLang();if(v!==LG)setLang(v)}});   // the Telegram script loads async: re-check once it is there
-if(live()){if(Login.has())Verify.run();else Login.show(Login.msg());setInterval(()=>{if(!document.hidden&&Login.has()&&Verify.ok)Bridge.pull()},CONFIG.api.pollMs);setInterval(()=>{setMode();renderLink()},1000);document.addEventListener("visibilitychange",()=>{if(!document.hidden&&Login.has()&&Verify.ok)Bridge.pull()})}else setInterval(tick,1200);
+if(live()){if(Login.has())Verify.run();else Login.show(Login.msg());setInterval(()=>{if(!document.hidden&&Login.has()&&Verify.ok&&Date.now()>=Bridge.nextAt)Bridge.pull()},CONFIG.api.pollMs);setInterval(()=>{setMode();renderLink()},1000);
+  /* v4.31.1: recovery triggers - the phone is back online / the app is visible again / the page was restored from the back-forward cache: retry NOW and re-run the entry check if it had stalled */
+  const wake=()=>{if(document.hidden||!Login.has())return;if(Verify.ok)Bridge.kick();else if(!Verify.busy){Verify.tries=0;Verify.run()}};
+  document.addEventListener("visibilitychange",wake);window.addEventListener("online",wake);window.addEventListener("focus",wake);window.addEventListener("pageshow",wake)}else setInterval(tick,1200);
 /* ── v2 polish: tick flash, loading skeleton, retry, Esc, a11y, haptics ── */
 (function(){
   document.body.classList.add("loading");
   const o=Bridge.pull.bind(Bridge);let lp=0;
   Bridge.pull=async function(){await o();document.body.classList.remove("loading")};
   const rp=renderPrice;renderPrice=function(){const old=lp;rp();if(old&&S.price>0&&!S.frz&&S.price!==old){const e=$("pr");e.classList.remove("tu","td");void e.offsetWidth;e.classList.add(S.price>old?"tu":"td")}lp=S.price};
-  $("retryB").onclick=()=>{vib();Bridge.ok=null;if(Login.has()&&Verify.ok)Bridge.pull()};
+  $("retryB").onclick=()=>{vib();Bridge.ok=null;Bridge.fails=0;Bridge.failSince=0;Bridge.nextAt=0;if(Login.has()&&Verify.ok)Bridge.pull()};
   document.addEventListener("keydown",e=>{if(e.key==="Escape")shut()});
   $("sheet").setAttribute("role","dialog");$("sheet").setAttribute("aria-modal","true");$("ssh").setAttribute("role","alertdialog");$("toast").setAttribute("role","status");$("toast").setAttribute("aria-live","polite");
 })();

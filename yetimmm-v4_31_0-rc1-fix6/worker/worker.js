@@ -132,6 +132,12 @@ function classify(raw) {
 }
 const cleanTxt = (x, n) => String(x == null ? "" : x).replace(/[<>"'`&\\]/g, "").slice(0, n);   // v4.22: text shown in the app can never carry markup
 const rid = (id) => "r-" + String(id == null ? "" : id).replace(/[^\w-]/g, "").slice(0, 8);
+// v4.31.1 connection diagnostics reported by the EA (sanitised: numbers and short codes only, never free text)
+function netOf(n) {
+  if (!n || typeof n !== "object") return null;
+  const i = (v, mx) => Math.max(0, Math.min(mx, Math.round(Number(v)) || 0));
+  return { fails: i(n.fails, 1e6), err: String(n.err || "").replace(/[^A-Za-z0-9_.-]/g, "").slice(0, 32), outSec: i(n.outSec, 864000), outFails: i(n.outFails, 1e6), st: String(n.st || "").replace(/[^A-Z_]/g, "").slice(0, 20) };
+}
 function publicOf(st) {
   const o = { ...st };
   for (const k of ["bs", "acct"]) if (o[k] && typeof o[k] === "object") { o[k] = { ...o[k] }; for (const f of ["ccy", "cur", "sym", "name", "srv", "broker"]) if (typeof o[k][f] === "string") o[k][f] = cleanTxt(o[k][f], 40); }
@@ -310,8 +316,18 @@ export default {
 
 const CMD_MAX = { buy: 1e7, sell: 1e7, price: 1e7, risk: 1e7, target: 1e9, rr: 100, confirm: 1, ticket: 9007199254740991 };
 export class Hub {
-  constructor(ctx, env) { this.ctx = ctx; this.env = env || {}; this.c = cfg(env || {}); this.st = null; this.ts = 0; this.oa = null; this.miss = {}; this.hxSig = ""; this.wkc = null; this.dseen = new Set(); }
+  constructor(ctx, env) { this.ctx = ctx; this.env = env || {}; this.c = cfg(env || {}); this.st = null; this.ts = 0; this.oa = null; this.miss = {}; this.hxSig = ""; this.wkc = null; this.dseen = new Set(); this.net = null; }
   age() { return this.ts ? (Date.now() - this.ts) / 1000 : null; }
+  // v4.31.1: a gap between two accepted EA syncs longer than the stale window IS a real disconnection: record when it started, when it ended and what the EA reported
+  // (the EA tells its last error code and failed-attempt count, so "EA / network was down" is told apart from "Worker was down": those have no EA-side failures).
+  async outage(from, to, rawNet) {
+    const net = netOf(rawNet);
+    this.net = net;
+    if (!from || !(to - from > this.c.staleSec * 1000)) return;
+    const list = (await this.ctx.storage.get("outages")) || [];
+    list.push({ from, to, sec: Math.round((to - from) / 1000), fails: net ? net.outFails : 0, err: net ? net.err : "", ea: !!(net && net.outFails > 0) });
+    await this.ctx.storage.put("outages", list.slice(-30));
+  }
   botUp() { const g = this.age(); return g !== null && g < this.c.staleSec; }
   bound(a) { return !!(a.eaSecretH || a.eaSecret); }
   // v4.6: every authenticated request slides the session (persisted at most once per SESSION_TOUCH_SEC so /state polling never hammers storage)
@@ -479,7 +495,7 @@ export class Hub {
         if (!cur || cur.id !== inst || tn - cur.t > 5000) await this.ctx.storage.put("inst", { id: inst, t: tn });
       } else return json({ ok: true, dupInst: true, commands: [], staleSec: this.c.staleSec });
     }
-    if (body.state && typeof body.state === "object") { this.st = body.state; this.ts = Date.now(); try { await this.watch(a); } catch (e) { /* alerts must never break the EA sync */ } try { await this.archive(body.state, a); await this.diagFrom(body.state); } catch (e) { /* the internal archive / diagnostics must never break the EA sync */ } try { await this.cmdResults(body.state); } catch (e) { /* the command-result ledger must never break the EA sync */ } }
+    if (body.state && typeof body.state === "object") { const gapFrom = this.ts; this.st = body.state; this.ts = Date.now(); try { await this.outage(gapFrom, this.ts, body.net); } catch (e) { /* diagnostics must never break the EA sync */ } try { await this.watch(a); } catch (e) { /* alerts must never break the EA sync */ } try { await this.archive(body.state, a); await this.diagFrom(body.state); } catch (e) { /* the internal archive / diagnostics must never break the EA sync */ } try { await this.cmdResults(body.state); } catch (e) { /* the command-result ledger must never break the EA sync */ } }
     let evack = [];
     if (Array.isArray(body.ev) && body.ev.length) { try { evack = await this.events(body.ev, a, String(m.login || "")); } catch (e) { /* notifications must never break the EA sync */ } }
     let calNeed = false;
@@ -614,7 +630,7 @@ export class Hub {
   }
   async diag() {
     const a = await this.S(), weeks = [...(await this.ctx.storage.list({ prefix: "hx:" })).entries()].map(([k, v]) => ({ weekDay: Number(k.slice(3)), trades: v.length }));
-    return json({ ok: true, now: Date.now(), tzo: a.tzo || 0, eaAge: this.age(), diag: (await this.ctx.storage.get("diag")) || [], commandLog: (this.st && this.st.cmds) || [], lastCmdRaw: (this.st && this.st.lastCmd) || null, archivedWeeks: weeks });
+    return json({ ok: true, now: Date.now(), tzo: a.tzo || 0, eaAge: this.age(), eaNet: this.net || null, outages: (await this.ctx.storage.get("outages")) || [], diag: (await this.ctx.storage.get("diag")) || [], commandLog: (this.st && this.st.cmds) || [], lastCmdRaw: (this.st && this.st.lastCmd) || null, archivedWeeks: weeks });
   }
   async state(m) {
     const a = await this.S();
@@ -631,7 +647,8 @@ export class Hub {
     pub.stats = weekStats(wk);
     pub.week = { from: win.from, to: win.to, tzo: Number(a.tzo) || 0 };
     pub.cmdStatus = ((await this.ctx.storage.get("cmdst")) || []).slice(-20);   // v4.29: visible status of every command (queued / delivered / expired / rejected)
-    return json({ ...pub, eaAge: ag, eaOnline: this.botUp(), eaStaleSec: this.c.staleSec, oalerts: oal });
+    const outs = ((await this.ctx.storage.get("outages")) || []).slice(-5);
+    return json({ ...pub, eaAge: ag, eaOnline: this.botUp(), eaStaleSec: this.c.staleSec, eaNet: this.net || null, outages: outs, oalerts: oal });
   }
   // v4.29: persistent command status ledger (last 60): queued -> delivered | expired | rejected. The EA's own result (executed / failed) comes from its command log.
   async cmdNote(list) {
