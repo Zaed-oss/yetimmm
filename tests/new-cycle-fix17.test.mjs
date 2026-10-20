@@ -104,3 +104,25 @@ test("SOURCE: a closed trade of an older cycle is logged only (never booked into
 test("SOURCE: no new input was added (the rule is not optional)", () => {
   assert.ok(!ea.includes("InpNewCycleOnUserStart"));
 });
+
+// ---- manual close ends the cycle (real log: cycle #3 kept +4.05 of manual profit, so a -1.00 loss left net +3.05 and the next lot stayed 0.10) ----
+test("A2: log reproduction - manual profit kept inside the cycle cancels the next debt (the bug)", () => {
+  const b = bot();
+  b.book(-1.0); b.book(+4.82);                       // trade closed by hand with +4.82 (cycle #3, 11:27)
+  b.book(+0.23);                                      // another manual close
+  b.book(-1.0);                                       // the buy that lost at 11:37
+  assert.ok(b.net > 0 && b.lot() === 0.10, "net " + b.net + " is positive -> no debt -> lot 0.10 (what the log shows)");
+});
+test("A3: with the fix a manual close ends the cycle: the next cycle starts empty and the next loss is a real debt", () => {
+  const b = bot();
+  b.book(-1.0); b.book(+4.82);
+  const manualEnd = () => { b.userNewCycle(); };     // CANCELEND path: ledger zeroed once the result is booked
+  manualEnd();
+  assert.equal(b.net, 0); b.book(-1.0);
+  assert.ok(b.net < 0 && b.lot() > 0.10, "after the loss of the NEW cycle the next lot grows: " + b.lot());
+});
+test("SOURCE: a manual (External) close books its result, then ends the cycle through the CANCELEND path", () => {
+  const f = fnBody("bool ProcessClosedPosition(");
+  assert.ok(f.includes('rs=="Manual (External)"') && f.includes('GS("CANCELEND",(double)TimeLocal());') && f.includes('"MANUAL_CLOSE_CYCLE_END"'));
+  assert.ok(/!bookkeeping && !tainted && !replay && !orphanCyc && !stopBooked && others==0/.test(f), "never on replays, old cycles, stopped bookkeeping or while another position is open");
+});

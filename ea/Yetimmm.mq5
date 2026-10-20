@@ -384,6 +384,7 @@ bool          g_vArmed=false;               // v2.22 virtual entry: the price ha
 bool          g_zoneGate=false;             // v2.18: both orders are held back until the price is inside the zone
 bool          g_unconf[2]={false,false};    // server accepted the modify but the order does not show the new values yet
 ulong         g_nextDelMs=0;
+ulong         g_revCleanMs=0;         // fix18: own cooldown of the reverse pre-arm clean-up (a failed clean-up must NEVER delay the replacement of the reverse order)
 
 //--- REAL tickets (buyStopTicket / sellStopTicket) + the last snapshot verified on the server (index 0 = BUY STOP, 1 = SELL STOP)
 ulong         g_stopTicket[2]={0,0};
@@ -1857,6 +1858,11 @@ int OwnOrders(ulong &tk[])
       if(t==0) continue;
       if(OrderGetString(ORDER_SYMBOL)!=g_sym) continue;
       if((long)OrderGetInteger(ORDER_MAGIC)!=g_magic) continue;
+      //--- fix18: the closing order that the server creates for a STOP-LOSS execution (type BUY / SELL, same lot as the stopped position) is visible in the
+      //--- active-order list for a few ms. It is NOT a pending order: trying to delete it failed with retcode 10013 and armed the 2 s delete cooldown, which then
+      //--- blocked the replacement of the reverse order (trade #9 of cycle #1 fired with 0.14 instead of 0.15).
+      long ot=OrderGetInteger(ORDER_TYPE);
+      if(ot==ORDER_TYPE_BUY || ot==ORDER_TYPE_SELL) continue;
       int k=ArraySize(tk);
       ArrayResize(tk,k+1);
       tk[k]=t;
@@ -2209,7 +2215,7 @@ void ResetSyncBackoff()
       g_retryMs[k]=0; g_failCnt[k]=0; g_failLvl[k]=0.0; g_unconf[k]=false;
       g_hold[k]=false; g_missMs[k]=0; g_guardMs[k]=0;      // a user action releases every hold
      }
-   g_nextDelMs=0;
+   g_nextDelMs=0; g_revCleanMs=0;
   }
 
 bool TradingAllowedNow(string &why)
@@ -2735,7 +2741,7 @@ void ReconcileSide(const bool buy,const double level,const double expLot,const b
    if(volDiff)
      {
       //--- MT5 cannot change the volume of a pending order: the ONLY case that needs delete + create
-      if(GetTickCount64()<g_nextDelMs) return;
+      if(!g_revCtx && GetTickCount64()<g_nextDelMs) return;     // fix18: the reverse order is time-critical - the generic delete cooldown does not apply to it
       string why="Lot changed (risk update): volume cannot be modified, order is replaced";
       if(FrozenNow(buy,aP)) { SetSync(buy,YS_WAITING,"Order is inside the Freeze Level"); return; }
       SetSync(buy,YS_UPDATING,why);
@@ -2748,7 +2754,7 @@ void ReconcileSide(const bool buy,const double level,const double expLot,const b
         }
       else
         {
-         g_nextDelMs=GetTickCount64()+2000;
+         g_nextDelMs=GetTickCount64()+(g_revCtx?250:2000);      // fix18: a failed REVERSE replacement is retried within 250 ms (it may fire at any tick)
          SetSync(buy,YS_FAILED,"REPLACE FAILED: could not delete the old order");
         }
       return;
@@ -4175,6 +4181,17 @@ bool ProcessClosedPosition(const ulong pid)
    bool cycDone=false;
    if(!stopBooked && ((!bookkeeping && !tainted) || (ledgerBooked && !bookkeeping))) cycDone=CycleTryComplete(dealOut);   // v4.30: a Netting share may end the cycle; a result booked while STOPPED never changes the state (START closes the cycle)
    if(cycDone) cycTxt="CYCLE #"+IntegerToString((int)g_lastCycIdShown())+" COMPLETE | CYCLE NET "+D2(GV("LCNET",0.0))+" vs target "+D2(g_target)+" | ledger zeroed - WAITING FOR YOUR START";
+   //--- fix17: a position the USER closes by hand (MT5 terminal / mobile / web) is the user's decision to END the cycle at whatever amount it reached.
+   //--- Its result is booked above (nothing is lost); then the cycle is ended exactly like /cancel: pending orders deleted, ledger zeroed, NO recovery order,
+   //--- and the next /set begins a NEW cycle from zero. Without this, a manual profit stayed inside the old cycle as a credit that cancelled the next debt.
+   if(!cycDone && rs=="Manual (External)" && !bookkeeping && !tainted && !replay && !orphanCyc && !stopBooked && others==0 && GV("CANCELEND",0.0)<0.5)
+     {
+      GS("CANCELEND",(double)TimeLocal());
+      const string mt="MANUAL_CLOSE_ENDS_CYCLE: trade #"+TNo(tno)+" closed by hand with net "+D2(net)+" - cycle #"+IntegerToString((int)g_cycId)+" ends at net "+D2(g_cycNet)+" (target "+D2(g_target)+"); pending orders are deleted, the ledger is zeroed.";
+      YLog(mt);
+      LogOrder("MANUAL_CLOSE_CYCLE_END",-1,0.0,inVol,0,0,mt);
+      TgQueue("🛑 MANUAL CLOSE ENDS THE CYCLE\nTrade #"+TNo(tno)+" closed by you: "+Money(net)+"\nCycle net: $"+D2(g_cycNet)+"\nPending orders are being deleted and the ledger zeroed. Send /set BUY SELL [RISK] to start a NEW cycle from zero.");
+     }
 
    //--- notifications
    if(!isSL) { g_tlTrMs=0; g_tlBookMs=0; }                  // v2.42: the timeline belongs to a stop-loss reversal only
@@ -5725,14 +5742,14 @@ void ReverseArmPass(const ulong ptk,const bool posBuy)
    const double level=revBuy?g_buyLevel:g_sellLevel;
    //--- 1) only ONE order may exist next to the position: the reverse one
    ulong keepT=CanonicalTicket(revBuy,level);
-   if(GetTickCount64()>=g_nextDelMs)
+   if(GetTickCount64()>=g_revCleanMs)
      {
       ulong od[];
       int no=OwnOrders(od);
       for(int i=0;i<no;i++)
         {
          if(od[i]==keepT) continue;
-         if(!DeleteOrder(od[i],"Reverse pre-arm: only ONE opposite Stop order is kept")) g_nextDelMs=GetTickCount64()+2000;
+         if(!DeleteOrder(od[i],"Reverse pre-arm: only ONE opposite Stop order is kept")) g_revCleanMs=GetTickCount64()+1000;   // fix18: own cooldown, g_nextDelMs is NOT touched
         }
      }
    //--- 2) predicted next step: the loss of the OPEN trade at its SL (broker specification + learned commission) joins the ledger exactly as ProcessClosedPosition will book it
@@ -5762,6 +5779,16 @@ void ReverseArmPass(const ulong ptk,const bool posBuy)
       g_nextPlaceMs=g_revNextMs;                 // the reverse order has its own retry cooldown
       g_revCtx=true;
       ReconcileSide(revBuy,level,lot,true,keepT);
+      //--- fix18: an order that already has the right lot is KEPT (no new order, so TryPlace never stored the plan). Store the plan now, otherwise its fill is
+      //--- booked as a plain ENTRY with the stale risk / debt of the day it was placed (Orders / CycleLife showed planned risk 1.22 for a 0.13 lot that really covered 1.29).
+      if(keepT!=0 && OrderSelect(keepT) && MathAbs(OrderGetDouble(ORDER_VOLUME_CURRENT)-lot)<=MathMax(SymbolInfoDouble(g_sym,SYMBOL_VOLUME_STEP),0.01)/2.0)
+        {
+         GS("PAO",(double)keepT);
+         GS("PAR",g_curRisk);
+         GS("PAA",g_accLoss);
+         GS("PCY",(double)g_cycId);
+         GS("PLV",(double)g_ledgerVer);
+        }
       g_revCtx=false;
       g_revNextMs=g_nextPlaceMs;
      }
