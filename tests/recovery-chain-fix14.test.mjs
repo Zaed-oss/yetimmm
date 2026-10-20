@@ -34,11 +34,12 @@ test("SOURCE the pre-armed plan derives its debt from the predicted NET (same ru
   assert.match(p, /g_accLoss=sA; g_curRisk=sC; g_seq=sS;/, "the saved ledger is restored right after the plan (SaveState stays frozen meanwhile)");
 });
 
-test("SOURCE a closed-but-unbooked trade holds the next sizing up to 90 s and the release is LOUD (no silent stale-ledger lot)", () => {
+test("SOURCE (fix16 supersedes the 90 s release) a closed-but-unbooked trade holds the next sizing until it is booked - LOUD alert after 90 s, NO release", () => {
   const c = fn("bool ClosurePendingBlocks()", "//--- v2.34: every reason");
-  assert.match(c, /waited<90000/);
+  assert.match(c, /waited>=90000/);
   assert.ok(!c.includes("<20000;"), "the old silent 20 s release is gone");
-  assert.ok(c.includes("LEDGER_STALE_RELEASE") && c.includes("RaiseAlert(\"CLSTALE\""));
+  assert.ok(!c.includes("LEDGER_STALE_RELEASE") && c.includes("LEDGER_STALE_HOLD") && c.includes("RaiseAlert(\"CLSTALE\""));
+  assert.ok(/return true;\s*\}\s*$/.test(c.trim()), "the function ends with return true: the gate is never released by a timer");
   assert.ok(c.includes("g_clRelLogged"), "one release message per pending closure");
 });
 

@@ -39,7 +39,7 @@ test("SOURCE 2.43 START / levels after STOP go through ImplicitResetGuarded, whi
 });
 test("SOURCE 2.43 the only remaining ResetRisk callers: confirmed command, guarded implicit reset, a COMPLETED cycle (net >= target) and a full user cancel (fix13)", () => {
   const callers = [...ea.matchAll(/ResetRisk(Logged)?\(/g)].map((m) => ea.slice(0, m.index).split("\n").length);
-  assert.equal(callers.length, 7, "definition x2 + completion + guarded + confirmed reset + 1 log call + fix13 user cancel (CycleEndByUser)");
+  assert.equal(callers.length, 8, "definition x2 + completion + guarded + confirmed reset + 1 log call + fix13 user cancel (CycleEndByUser) + fix16 startup self-check (a CLOSED cycle's stale ledger is discarded)");
   assert.ok(ea.includes('ResetRiskLogged("Mini App RESET (confirmed)")'));
 });
 test("SOURCE 2.43 a reset command over a debt needs confirm=1; the worker and the app send it, a bare reset is refused", () => {

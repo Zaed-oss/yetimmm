@@ -338,6 +338,7 @@ double        g_cycNet=0.0;        // v2.38: NET of every closed trade of this c
 double        g_cycLosses=0.0;     // v2.38: sum of the net LOSSES inside this cycle (never the account history)
 int           g_cycTrades=0;       // v2.38: closed trades booked in this cycle
 int           g_cycState=YC_IDLE;  // v2.38: ENUM_YT_CYCLE
+long          g_ledgerVer=0;       // fix16: monotonic version of the cycle ledger (+1 on EVERY booking and on EVERY new cycle); saved with the ledger; every plan / log line names the version it was made from
 int           g_seq=0;
 long          g_tradeNo=0;
 bool          g_fresh=false;
@@ -486,6 +487,10 @@ void          RecoveryRelease(const string src);   // v2.42 (defined with the Re
 void          RecoveryHoldTick();
 void          FastReverseNow();
 void          Reconcile();
+void          CyclePlanSweep();                 // fix16 (defined after PendingClosedRecords)
+void          LedgerSelfCheck(const string src); // fix16
+bool          CycleResetBlocked(string &why);   // fix16
+string        CycleStatusLine();                // fix16
 bool          InstOkTrade(const string what);
 bool          InstOk(const string what);   // v2.29: re-verifies lock ownership right before a sensitive operation (defined with the instance guard)
 bool          PosSLCrossed(const ulong ticket);                               // v2.37 (defined with the stop-and-reverse block)
@@ -747,6 +752,7 @@ void SaveState()
    GS("CYCLS",g_cycLosses);
    GS("CYCTR",(double)g_cycTrades);
    GS("CYCST",(double)g_cycState);
+   GS("LVER",(double)g_ledgerVer);                             // fix16: ledger version travels with the ledger
    GS("SEQ",(double)g_seq);
    GS("TNO",(double)g_tradeNo);
    GS("FRESH",g_fresh?1.0:0.0);
@@ -775,11 +781,13 @@ void LoadState()
          g_cycId=(long)GV("CYCID",1); if(g_cycId<1) g_cycId=1;
          g_cycNet=GV("CYCNET",0.0); g_cycLosses=GV("CYCLS",0.0); g_cycTrades=(int)GV("CYCTR",0);
          g_cycState=(int)GV("CYCST",(double)YC_IDLE);
+         g_ledgerVer=(long)GV("LVER",0.0);
         }
       else        // migration from a version without the cycle ledger: the open debt IS the (negative) cycle net
         {
          g_cycId=1; g_cycNet=-MathMax(g_accLoss,0.0); g_cycLosses=MathMax(g_accLoss,0.0); g_cycTrades=(int)GV("SEQ",0);
          g_cycState=(g_accLoss>1e-9 || GV("SEQ",0)>0)?YC_ACTIVE:YC_IDLE;
+         g_ledgerVer=0;
         }
       g_seq=(int)GV("SEQ",0);
       g_tradeNo=(long)GV("TNO",0);
@@ -796,7 +804,7 @@ void LoadState()
      {
       g_state=YT_IDLE; g_mode=YM_NONE; g_buyLevel=0; g_sellLevel=0;
       g_initRisk=InpInitialRisk; g_curRisk=InpInitialRisk; g_accLoss=0; g_seq=0;
-      g_cycId=1; g_cycNet=0.0; g_cycLosses=0.0; g_cycTrades=0; g_cycState=YC_IDLE;
+      g_cycId=1; g_cycNet=0.0; g_cycLosses=0.0; g_cycTrades=0; g_cycState=YC_IDLE; g_ledgerVer=0;
       g_tradeNo=(long)GV("TNO",0); g_fresh=false; g_lastDeal=0; g_pendBuy=0; g_pendSell=0; g_lastSLSide=0;
       g_stateRecovered=false;
      }
@@ -812,7 +820,11 @@ void ResetRisk()
    g_curRisk=g_initRisk;
    g_cycNet=0.0; g_cycLosses=0.0; g_cycTrades=0;
    g_cycId++;
+   g_ledgerVer++;
    g_cycState=YC_IDLE;
+   //--- fix16: every TEMPORARY plan of the old cycle dies with it (reverse pre-arm plan, prepared Netting plan, dedup key of the recovery trace)
+   GS("PAO",0.0); GS("PAR",0.0); GS("PAA",0.0); GS("PCY",0.0); GS("PLV",0.0);
+   g_pvOk=false; g_pvCyc=0; g_rtKey="";
   }
 
 bool CycleMet(const double cycNet) { return cycNet>=g_target-YT_MONEY_EPS; }     // v2.38: STRICT target test (19.99 of 20.00 is NOT met)
@@ -850,6 +862,8 @@ void ResetRiskLogged(const string src)
 void ImplicitResetGuarded(const string src)
   {
    if(!InpResetRiskOnStart) return;
+   string rbWhy="";
+   if(CycleResetBlocked(rbWhy)) { YLog("NEW CYCLE REFUSED ("+src+"): "+rbWhy); LogOrder("NEW_CYCLE_REFUSED",-1,0.0,0.0,0,0,rbWhy); return; }
    if(g_accLoss>1e-9 || MathAbs(g_cycNet)>1e-9 || g_seq>0)
      {
       string t="DEBT KEPT ("+src+"): Reset-on-Start is ON but the cycle holds Acc.Loss "+D2(g_accLoss)+", Cycle Net "+D2(g_cycNet)+", Seq "+IntegerToString(g_seq)+" - NOT cleared. Use the confirmed Reset / New Cycle in the Mini App to clear it.";
@@ -3612,9 +3626,19 @@ long RegisterPosition(const ulong pid)
       revFill=true;
       useRisk=GV("PAR",g_curRisk);
       useAL=GV("PAA",g_accLoss);
-      GS("PAO",0.0);
-      YLog("Pre-armed reverse order #"+UL(order)+" triggered by the market: planned risk "+D2(useRisk)+" | planned accumulated loss "+D2(useAL)+" | FILLED lot "+LotS(vol));
-      LogOrder("REVERSE_FILLED",otype,orderPrice,vol,order,0,"filled lot "+LotS(vol)+" | planned risk "+D2(useRisk)+" | planned acc.loss "+D2(useAL)+" | ledger NOW (previous trade may not be booked yet): cycle net "+D2(g_cycNet));
+      const long planCyc=(long)GV("PCY",0.0), planVer=(long)GV("PLV",0.0);
+      GS("PAO",0.0); GS("PCY",0.0); GS("PLV",0.0);
+      if(planCyc>0 && planCyc!=g_cycId)
+        {
+         //--- fix16: the plan belongs to ANOTHER cycle (it must have been swept when that cycle ended). Its risk / debt are NEVER carried into this cycle's passport.
+         useRisk=g_curRisk; useAL=g_accLoss;
+         string pm="PLAN_CYCLE_MISMATCH: reverse order #"+UL(order)+" was planned in cycle #"+IntegerToString((int)planCyc)+" but filled in cycle #"+IntegerToString((int)g_cycId)+" (lot "+LotS(vol)+"). The old plan is NOT used: this trade carries the CURRENT ledger (risk "+D2(useRisk)+", acc.loss "+D2(useAL)+"). Check the Orders log.";
+         YLog(pm);
+         LogOrder("PLAN_CYCLE_MISMATCH",otype,orderPrice,vol,order,0,pm);
+         RaiseAlert("PLANCYC",pm,true,true);
+        }
+      YLog("Pre-armed reverse order #"+UL(order)+" triggered by the market: planned risk "+D2(useRisk)+" | planned accumulated loss "+D2(useAL)+" | FILLED lot "+LotS(vol)+" | cycle #"+IntegerToString((int)g_cycId)+" ledger v"+IntegerToString((int)g_ledgerVer)+" (plan made at v"+IntegerToString((int)planVer)+")");
+      LogOrder("REVERSE_FILLED",otype,orderPrice,vol,order,0,"filled lot "+LotS(vol)+" | planned risk "+D2(useRisk)+" | planned acc.loss "+D2(useAL)+" | plan cycle "+IntegerToString((int)planCyc)+" v"+IntegerToString((int)planVer)+" | ledger NOW (previous trade may not be booked yet): cycle #"+IntegerToString((int)g_cycId)+" v"+IntegerToString((int)g_ledgerVer)+" net "+D2(g_cycNet));
      }
    g_tradeNo++;
    SaveState();
@@ -3694,6 +3718,7 @@ string CycleBook(const double net,const string why)
   {
    double before=g_cycNet;
    g_cycNet=NormalizeDouble(before+net,8);
+   g_ledgerVer++;                                             // fix16: a new ledger version on every booking
    g_cycTrades++;
    if(net<0.0) g_cycLosses+=-net;
    g_accLoss=(g_cycNet<0.0)?-g_cycNet:0.0;
@@ -4369,24 +4394,23 @@ bool ClosurePendingBlocks()
    if(!pend) { g_pendClSince=0; g_pendClPid=0; return false; }
    ulong now=GetTickCount64();
    if(g_pendClSince==0 || pp!=g_pendClPid) { g_pendClSince=now; g_pendClPid=pp; g_clRelLogged=0; }   // a NEW pending closure restarts the bound
-   //--- v2.48: the loss of a closed trade MUST be in the ledger before the next lot is sized. The old 20 s release sized the next order from a STALE ledger (the loss
-   //--- was not yet booked, so the lot did not grow). Now: block up to 90 s (the periodic sync keeps trying to book it); only then is the gate released, LOUDLY.
+   //--- fix16: the loss of a closed trade MUST be in the ledger before the next lot is sized. There is NO timed release any more: a lot is never sized from a ledger that
+   //--- does not hold the last closed trade. The gate stays CLOSED (safe waiting), the booking is retried every 15 s, and the user is alerted loudly after 90 s.
    const ulong waited=now-g_pendClSince;
-   if(waited<90000)
+   if(waited>=20000 && AlertThrottle("CLWAIT",15))
      {
-      if(waited>=20000 && AlertThrottle("CLWAIT",15))
-         YLog("LEDGER WAIT: closed position #"+UL(pp)+" is still NOT booked after "+UL(waited/1000)+" s - no new order is sized from a stale ledger (cycle net "+D2(g_cycNet)+", next risk "+D2(g_curRisk)+"). Retrying the booking.");
-      return true;
+      YLog("LEDGER WAIT: closed position #"+UL(pp)+" is still NOT booked after "+UL(waited/1000)+" s - no new order is sized from a stale ledger (cycle #"+IntegerToString((int)g_cycId)+" v"+IntegerToString((int)g_ledgerVer)+", cycle net "+D2(g_cycNet)+", next risk "+D2(g_curRisk)+"). Retrying the booking.");
+      CheckClosures();
      }
-   if(g_clRelLogged!=pp)
+   if(waited>=90000 && g_clRelLogged!=pp)
      {
       g_clRelLogged=pp;
-      string t="LEDGER NOT UPDATED: closed position #"+UL(pp)+" could not be booked within 90 s (history not available?). The gate is released so trading is never blocked forever, but the NEXT LOT MAY BE SIZED FROM A STALE LEDGER (cycle net "+D2(g_cycNet)+", risk "+D2(g_curRisk)+"). Check the Experts log and the account history.";
+      string t="LEDGER_STALE_HOLD: closed position #"+UL(pp)+" could not be booked within 90 s (history not available?). The bot STAYS IN SAFE WAIT - no new lot is calculated from the old ledger (cycle #"+IntegerToString((int)g_cycId)+" v"+IntegerToString((int)g_ledgerVer)+", net "+D2(g_cycNet)+"). Check the terminal connection / account history; /cancel ends the cycle.";
       YLog(t);
-      LogOrder("LEDGER_STALE_RELEASE",-1,0.0,0.0,pp,0,t);
+      LogOrder("LEDGER_STALE_HOLD",-1,0.0,0.0,pp,0,t);
       RaiseAlert("CLSTALE",t,true,true);
      }
-   return false;
+   return true;
   }
 
 //--- v2.34: every reason why a RE-ENTRY order is NOT re-placed is written to the Orders log (throttled), so a missing re-arm can be explained
@@ -4925,7 +4949,7 @@ void RecoveryTrace(const string stage,const bool buy,const double risk,const dou
    if(key==g_rtKey) return;
    g_rtKey=key;
    string prev=(g_lastLossLot>0.0)?(string)(g_lastLossBuy?"BUY":"SELL")+" lot "+LotS(g_lastLossLot)+" net "+D2(g_lastLossNet):"none this session";
-   string t="RECOVERY_TRACE ["+stage+"] next "+(buy?"BUY":"SELL")+" | last SL booked: "+prev+" | ledger: cycle net "+D2(g_cycNet)+", acc.loss "+D2(g_accLoss)+", seq "+IntegerToString(g_seq)+
+   string t="RECOVERY_TRACE ["+stage+"] next "+(buy?"BUY":"SELL")+" | last SL booked: "+prev+" | ledger: cycle #"+IntegerToString((int)g_cycId)+" v"+IntegerToString((int)g_ledgerVer)+" cycle net "+D2(g_cycNet)+", acc.loss "+D2(g_accLoss)+", seq "+IntegerToString(g_seq)+
             " | required risk "+D2(risk)+" | raw lot "+DoubleToString(g_rk.rawVol,5)+" -> final lot "+DoubleToString(lot,g_lotDigits)+" ("+g_lcHow+", code "+g_riskCode+")"+
             " | broker min "+DoubleToString(g_rk.minVol,g_lotDigits)+" step "+DoubleToString(g_rk.step,g_lotDigits)+" max "+DoubleToString(g_rk.maxVol,g_lotDigits)+(InpMaxLot>0.0?" (Max Lot cap "+DoubleToString(InpMaxLot,g_lotDigits)+")":"");
    YLog(t);
@@ -5090,6 +5114,8 @@ bool TryPlace(const bool buy,const double level)
          GS("PAO",(double)ticket);
          GS("PAR",g_curRisk);
          GS("PAA",g_accLoss);
+         GS("PCY",(double)g_cycId);                      // fix16: the plan is BOUND to this cycle and to the ledger version it was made from
+         GS("PLV",(double)g_ledgerVer);
         }
       g_failCount=0;
       g_raceCnt[s]=0;
@@ -6319,11 +6345,12 @@ string DoStart(const string src)
    ResetSyncBackoff();
    CycTouch();                                                    // v2.38: WAITING_USER -> ACTIVE (a new cycle begins on the user's START)
    SaveState();
-   YLog("EA Started ("+src+")");
+   YLog("EA Started ("+src+") | "+CycleStatusLine());
+   LogOrder((CycFresh() && g_cycTrades==0)?"CYCLE_NEW_START":"CYCLE_RESUME",-1,0.0,0.0,0,0,CycleStatusLine());
    SyncAll();
    if(g_state==YT_ERROR) return "❌ START FAILED\nReason: Bot entered ERROR state. See Journal.";
    ulong od[]; int no=OwnOrders(od);
-   string t="✅ START EXECUTED\nYetimmm is now RUNNING.\nBuy Stop: "+PX(g_buyLevel)+"\nSell Stop: "+PX(g_sellLevel)+"\nRisk: $"+D2(g_curRisk)+"\nPending orders: "+IntegerToString(no)+"\nSync: "+SyncSummary();
+   string t="✅ START EXECUTED\nYetimmm is now RUNNING.\n"+CycleStatusLine()+"\nBuy Stop: "+PX(g_buyLevel)+"\nSell Stop: "+PX(g_sellLevel)+"\nRisk: $"+D2(g_curRisk)+"\nPending orders: "+IntegerToString(no)+"\nSync: "+SyncSummary();
    if(StringLen(g_blockReason)>0) t+="\n⚠️ "+g_blockReason;
    string wn=WaitNote();
    if(StringLen(wn)>0) t+="\n⏳ "+wn;
@@ -6448,6 +6475,80 @@ int PendingClosedRecords()
       if(!FindLive((ulong)StringToInteger(mid),tk)) cnt++;
      }
    return cnt;
+  }
+
+//--- fix16: a NEW cycle may only be created when nothing of the old one is unresolved: no open position of the EA and no closed trade whose result is not booked yet.
+bool CycleResetBlocked(string &why)
+  {
+   ulong rp[];
+   if(OwnPositions(rp)>0) { why="a position of the current cycle is still open - its result must be booked first"; return true; }
+   int pc=PendingClosedRecords();
+   if(pc>0) { why=IntegerToString(pc)+" closed trade(s) of the current cycle are not booked yet - the ledger cannot be zeroed before they are"; return true; }
+   return false;
+  }
+
+//--- fix16: the answer to 'did the bot RESUME the old cycle or begin a NEW one?' - always explicit, always logged.
+string CycleStatusLine()
+  {
+   const bool fresh=(CycFresh() && g_cycTrades==0);
+   string t=fresh
+      ? "🆕 NEW CYCLE #"+IntegerToString((int)g_cycId)+": empty ledger (net 0.00, seq 0, debt 0.00), starts from the initial risk $"+D2(g_initRisk)
+      : "♻️ SAME CYCLE #"+IntegerToString((int)g_cycId)+" RESUMED (no new cycle): net "+D2(g_cycNet)+", debt "+D2(g_accLoss)+", seq "+IntegerToString(g_seq)+", next risk $"+D2(g_curRisk)+" - use /cancel to end it";
+   return t;
+  }
+
+//--- fix16: a pre-armed reverse order is a PLAN of one cycle. When the cycle ends (target / cancel / confirmed reset) the plan is dead: any pending order still carrying it is deleted.
+void CyclePlanSweep()
+  {
+   const ulong tk=(ulong)GV("PAO",0.0);
+   if(tk==0) return;
+   const long pc=(long)GV("PCY",0.0);
+   if(pc<=0 || pc==g_cycId) return;
+   if(GetTickCount64()<g_nextDelMs) return;
+   if(!OrderSelect(tk)) { GS("PAO",0.0); GS("PCY",0.0); GS("PLV",0.0); return; }   // the order is gone (or filled: the fill path handles it)
+   string t="PLAN_REJECTED: pending order #"+UL(tk)+" carries the plan of cycle #"+IntegerToString((int)pc)+" but the current cycle is #"+IntegerToString((int)g_cycId)+" - deleted, it will be re-planned from the current ledger.";
+   YLog(t);
+   LogOrder("PLAN_REJECTED",-1,0.0,0.0,tk,0,t);
+   if(DeleteOrder(tk,"Plan of an older cycle")) { GS("PAO",0.0); GS("PAR",0.0); GS("PAA",0.0); GS("PCY",0.0); GS("PLV",0.0); }
+   else g_nextDelMs=GetTickCount64()+2000;
+  }
+
+//--- fix16: structural invariants of the cycle ledger, checked after a restart. A saved value that contradicts the ledger is never trusted silently.
+void LedgerSelfCheck(const string src)
+  {
+   ulong rp[];
+   const bool noPos=(OwnPositions(rp)==0);
+   //--- 1) a cycle that is already RECORDED as closed must not keep a non-zero ledger (crash between 'record' and 'save')
+   const long lastClosed=(long)GV("LCID",0.0);
+   if(noPos && lastClosed>0 && g_cycId<=lastClosed && g_cycState!=YC_COMPLETING && (g_cycTrades>0 || MathAbs(g_cycNet)>1e-9 || g_accLoss>1e-9 || g_seq>0))
+     {
+      string t="LEDGER_STALE_DISCARDED ("+src+"): saved ledger belongs to cycle #"+IntegerToString((int)g_cycId)+" which is already recorded as CLOSED (last closed #"+IntegerToString((int)lastClosed)+") | net "+D2(g_cycNet)+", acc.loss "+D2(g_accLoss)+", seq "+IntegerToString(g_seq)+" - NOT loaded into a new cycle.";
+      YLog(t);
+      LogOrder("LEDGER_STALE_DISCARDED",-1,0.0,0.0,0,0,t);
+      TgQueue("♻️ "+t);
+      if(g_cycId<lastClosed) g_cycId=lastClosed;     // the reset below makes it lastClosed+1: ids never go backwards
+      ResetRisk();
+      g_state=YT_IDLE; g_mode=YM_NONE; g_cycState=YC_IDLE;
+      return;
+     }
+   //--- 2) the debt is ALWAYS derived from the cycle net, the next risk ALWAYS from the net (never a stored number of its own)
+   const double wantAL=(g_cycNet<0.0)?-g_cycNet:0.0;
+   if(MathAbs(g_accLoss-wantAL)>1e-6)
+     {
+      string t="LEDGER_INVARIANT ("+src+"): saved acc.loss "+D2(g_accLoss)+" contradicts cycle net "+D2(g_cycNet)+" - re-derived to "+D2(wantAL)+".";
+      YLog(t); LogOrder("LEDGER_INVARIANT",-1,0.0,0.0,0,0,t);
+      g_accLoss=wantAL;
+     }
+   if(!g_revSwap)
+     {
+      const double wantRisk=NextRiskForNet(g_cycNet);
+      if(MathAbs(g_curRisk-wantRisk)>1e-6)
+        {
+         string t="LEDGER_INVARIANT ("+src+"): saved next risk "+D2(g_curRisk)+" contradicts cycle #"+IntegerToString((int)g_cycId)+" net "+D2(g_cycNet)+" - re-derived to "+D2(wantRisk)+" (a stored risk of an older cycle is never kept).";
+         YLog(t); LogOrder("LEDGER_INVARIANT",-1,0.0,0.0,0,0,t);
+         g_curRisk=wantRisk;
+      }
+     }
   }
 
 void CycleEndByUser(const string src)
@@ -8233,6 +8334,10 @@ string BrExec(const string cmd,const string seg)
    if(cmd=="reset")
      {
       if(OwnPositions(tk)>0) return "❌ Cannot reset the risk sequence while a position is open.";
+      {
+       string rbWhy="";
+       if(CycleResetBlocked(rbWhy)) { LogOrder("NEW_CYCLE_REFUSED",-1,0.0,0.0,0,0,rbWhy); return "❌ NEW CYCLE REFUSED: "+rbWhy+". Nothing was changed."; }
+      }
       //--- v2.43: an open debt is cleared ONLY by an explicit, CONFIRMED command (the app asks twice and sends confirm=1). A bare reset never wipes it.
       double cfm=0.0;
       bool hasDebt=(g_accLoss>1e-9 || MathAbs(g_cycNet)>1e-9 || g_seq>0);
@@ -9051,6 +9156,7 @@ int OnInit()
    PurgeLegacyLevels();
    RecoveryStateSafe();                                           // v2.42: saved state vs the broker (position / pending orders / unresolved request / cycle) - recovered, or the bot waits for the user
    PurgeVirtualState();
+   if(g_stateRecovered) LedgerSelfCheck("startup");                // fix16: a saved ledger of a CLOSED cycle / a stored risk that contradicts the net is never loaded into a new cycle
    if(!g_stateRecovered) { g_initRisk=InpInitialRisk; g_curRisk=InpInitialRisk; }
    SaveState();
    ChartSetInteger(0,CHART_SHOW_TRADE_LEVELS,true);   // real pending-order / SL / TP levels are drawn by MT5 itself
@@ -9232,6 +9338,7 @@ void OnTimer()
    g_dirty=false;
    SyncAll();
    StopCleanupTick();
+   CyclePlanSweep();                                // fix16: a pending order carrying the plan of an ended cycle is deleted
    CancelEndTick();                                 // fix13: finishes a user cancel (cycle end) once every closed result is booked
    if(g_timerCount%30==0 && g_connected) RecoverHistory();
    if(g_timerCount%120==0) RiskScaleAdvisory();    // v2.30: Risk/Target can be changed from the Mini App at any time

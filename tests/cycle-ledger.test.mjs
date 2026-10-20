@@ -233,7 +233,7 @@ test("3.2 ONE completion rule: strict target, no 98% tolerance, no ResetRisk in 
   assert.equal((code.match(/CycleTryComplete\(/g) || []).length, 2);                           // definition + the single call in ProcessClosedPosition
   assert.equal((pcp.match(/CycleTryComplete\(/g) || []).length, 1);
   assert.equal((code.match(/CycleFinishLedger\(/g) || []).length, 4);                          // definition + CycleTryComplete + CycleCompletionTick + DoStart (v2.44: closes a cycle whose target was reached while STOPPED)
-  assert.equal((code.match(/\bResetRisk\(\);/g) || []).length, 2);                             // CycleFinishLedger + ResetRiskLogged (explicit user reset)
+  assert.equal((code.match(/\bResetRisk\(\);/g) || []).length, 3);                             // CycleFinishLedger + ResetRiskLogged (explicit user reset) + fix16 LedgerSelfCheck (stale ledger of a closed cycle)
   assert.ok(!/g_accLoss\s*\+=/.test(code) && !/g_accLoss\s*-=/.test(code), "g_accLoss is DERIVED from the cycle net, never edited directly");
 });
 test("3.2b every closing path books through CycleBook (SL, TP, old TP, manual, extra loss, extra profit)", () => {
