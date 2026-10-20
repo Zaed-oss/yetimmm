@@ -490,6 +490,7 @@ void          Reconcile();
 void          CyclePlanSweep();                 // fix16 (defined after PendingClosedRecords)
 void          LedgerSelfCheck(const string src); // fix16
 bool          CycleResetBlocked(string &why);   // fix16
+int           UserNewCycle(const string src,string &why);   // fix17 (defined after CycleEndByUser)
 string        CycleStatusLine();                // fix16
 bool          InstOkTrade(const string what);
 bool          InstOk(const string what);   // v2.29: re-verifies lock ownership right before a sensitive operation (defined with the instance guard)
@@ -6168,7 +6169,7 @@ void PromotePending()
 
 bool CancelEndTry(const string src);   // fix13 forward declaration (defined after the Stop/Cancel helpers)
 
-bool ApplyLevels(const double buy,const double sell,const double risk,const string src,string &err)
+bool ApplyLevels(const double buy,const double sell,const double risk,const string src,string &err,const bool newCycle=false)
   {
    if(g_cycState==YC_COMPLETING) { err="the finished cycle is still being closed (its pending orders are being cancelled) - try again in a moment"; return false; }   // v2.38
    err=ValidateLevels(buy,sell);
@@ -6183,6 +6184,13 @@ bool ApplyLevels(const double buy,const double sell,const double risk,const stri
    if(GV("CANCELEND",0.0)>0.5 && !CancelEndTry("Telegram CANCEL (completed)"))
      { err="The cancelled cycle is still closing its last trade - try again in a few seconds."; return false; }
    RecoveryRelease("user applied new levels");            // v2.42: new levels from the user are an explicit decision
+   if(newCycle)                                           // fix17: a user /set begins a NEW cycle from zero (no inherited debt / sequence / lot)
+     {
+      string ncw="";
+      const int ncr=UserNewCycle(src+" /set",ncw);
+      if(ncr==2) { err=ncw; return false; }
+      if(ncr==1) YLog("APPLY ("+src+"): "+ncw+" - the new levels are queued; the new cycle begins with your next /set once that trade is closed");
+     }
    const bool locked=SequenceLocked();
    bool riskSame=(risk<=0.0 || MathAbs(risk-g_initRisk)<1e-9);
 
@@ -6333,6 +6341,12 @@ string DoStart(const string src)
          ClearAlert("STOPTARGET");
         }
      }
+   //--- fix17: EVERY user START begins a NEW cycle from zero. There is no 'resume the old debt' any more (STOP is a pause of the BOT, not a memory of the cycle).
+   {
+      string ncw="";
+      const int ncr=UserNewCycle("START ("+src+")",ncw);
+      if(ncr!=0) return "⏳ START postponed: "+ncw;
+   }
    if(g_state==YT_STOPPED) ImplicitResetGuarded("START after STOP");
    //--- v2.11: after a market-reversal ERROR the REVERSAL is resumed (WAITING_REENTRY keeps the direction); every other start re-arms normally
    bool resumeRev=(g_state==YT_ERROR && GV("REVERR",0.0)>0.5 && (g_lastSLSide==1 || g_lastSLSide==2));
@@ -6551,23 +6565,24 @@ void LedgerSelfCheck(const string src)
      }
   }
 
-void CycleEndByUser(const string src)
+void CycleEndByUser(const string src,const bool keepLevels=false)
   {
    long id=g_cycId; double cnet=g_cycNet; int trades=g_cycTrades; int steps=g_seq; double losses=g_cycLosses;
    if(trades>0 && (long)GV("LCID",0.0)!=id)
      {
-      string line=IntegerToString((int)id)+";"+IntegerToString(trades)+";"+IntegerToString(steps)+";"+D2(losses)+";"+D2(cnet)+";"+D2(g_target)+";CANCELLED_BY_USER;"+
+      string line=IntegerToString((int)id)+";"+IntegerToString(trades)+";"+IntegerToString(steps)+";"+D2(losses)+";"+D2(cnet)+";"+D2(g_target)+";"+(keepLevels?"CLOSED_BY_NEW_USER_CYCLE":"CANCELLED_BY_USER")+";"+
                   TimeToString(TimeCurrent(),TIME_DATE|TIME_SECONDS)+";"+IntegerToString(g_magic)+";"+g_sym;
       AppendLine(CycleFile(),CYCLE_HEADER,line);
       GS("LCID",(double)id); GS("LCNET",cnet); GS("LCTR",(double)trades); GS("LCTM",(double)TimeCurrent());
      }
-   CycCloseLife(id,"CANCELLED_BY_USER",cnet,trades,steps,losses);
+   if(keepLevels) CycCloseLife(id,"CLOSED_BY_NEW_USER_CYCLE",cnet,trades,steps,losses);
+   else CycCloseLife(id,"CANCELLED_BY_USER",cnet,trades,steps,losses);
    ResetRiskLogged(src);                                   // new CycleId, empty ledger, Seq 0, risk = initial risk
    GS("CYCDAY",0.0);                                       // no one-cycle-per-day lock after a user cancel
    GS("REVERR",0.0);
    g_lastSLSide=0;
    g_mode=YM_NONE;
-   g_buyLevel=0.0; g_sellLevel=0.0; g_pendBuy=0.0; g_pendSell=0.0; g_fresh=false;
+   if(!keepLevels) { g_buyLevel=0.0; g_sellLevel=0.0; g_pendBuy=0.0; g_pendSell=0.0; g_fresh=false; }   // fix17: a NEW user cycle keeps the levels the user just sent
    g_deferLvl[0]=0.0; g_deferLvl[1]=0.0;
    g_revFails=0; g_revHard=0; g_nextRevMs=0; g_failCount=0; g_nextPlaceMs=0; g_blockReason="";
    g_state=YT_IDLE;
@@ -6575,7 +6590,45 @@ void CycleEndByUser(const string src)
    GS("CANCELEND",0.0);
    SaveState();
    g_dirty=true;
-   TgQueue("🛑 CYCLE #"+IntegerToString((int)id)+" ENDED (cancelled by you)\nCycle net: $"+D2(cnet)+" | trades "+IntegerToString(trades)+"\nEverything was deleted. The next cycle starts from ZERO when you send /set BUY SELL [RISK].");
+   if(keepLevels) TgQueue("🆕 CYCLE #"+IntegerToString((int)id)+" CLOSED by your new command ("+src+")\nCycle net: $"+D2(cnet)+" | trades "+IntegerToString(trades)+"\nThe NEW cycle #"+IntegerToString((int)g_cycId)+" starts from ZERO: Seq 0, debt 0.00, initial risk $"+D2(g_initRisk)+".");
+   else TgQueue("🛑 CYCLE #"+IntegerToString((int)id)+" ENDED (cancelled by you)\nCycle net: $"+D2(cnet)+" | trades "+IntegerToString(trades)+"\nEverything was deleted. The next cycle starts from ZERO when you send /set BUY SELL [RISK].");
+  }
+
+//--- fix17: the user's rule. A cycle is born ONLY from a user command (/start, /set). That command ALWAYS gives an EMPTY ledger: no debt, no sequence,
+//--- no lot growth, no reverse plan of the cycle before. Returns 0 = the new cycle is in place (or the ledger was already empty),
+//--- 1 = a trade of the current cycle is still open (nothing is touched: the open trade keeps its own ledger), 2 = wait a moment (old orders / unbooked results).
+int UserNewCycle(const string src,string &why)
+  {
+   why="";
+   if(CycFresh() && g_cycTrades==0 && g_seq==0) return 0;          // already empty: nothing to carry, nothing to clear
+   ulong rp[];
+   if(OwnPositions(rp)>0)
+     {
+      why="a trade of cycle #"+IntegerToString((int)g_cycId)+" is still open - its result must be booked first";
+      YLog("NEW CYCLE POSTPONED ("+src+"): "+why);
+      LogOrder("NEW_CYCLE_POSTPONED",-1,0.0,0.0,0,0,why);
+      return 1;
+     }
+   RecoverHistory();                                               // trades closed while offline are booked into the OLD cycle first (never into the new one)
+   CheckClosures();
+   const int pc=PendingClosedRecords();
+   if(pc>0)
+     {
+      why=IntegerToString(pc)+" closed trade(s) of the old cycle are not booked yet - try again in a few seconds";
+      return 2;
+     }
+   ulong od[];
+   if(OwnOrders(od)>0)
+     {
+      CleanupOrders("New cycle ("+src+"): pending orders of the previous cycle deleted");
+      if(OwnOrders(od)>0) { why="the pending orders of the previous cycle are still being deleted - try again in a few seconds"; return 2; }
+     }
+   const long oldId=g_cycId; const double oldNet=g_cycNet; const int oldSeq=g_seq;
+   YLog("NEW_CYCLE_BEGIN ("+src+"): cycle #"+IntegerToString((int)oldId)+" closed with net "+D2(oldNet)+", seq "+IntegerToString(oldSeq)+" - the new cycle starts from ZERO");
+   LogOrder("NEW_CYCLE_BEGIN",-1,0.0,0.0,0,0,"src "+src+" | old cycle #"+IntegerToString((int)oldId)+" net "+D2(oldNet)+" seq "+IntegerToString(oldSeq));
+   CycleEndByUser("New cycle by user ("+src+")",true);
+   LogOrder("NEW_CYCLE_COMMIT",-1,0.0,0.0,0,0,"cycle #"+IntegerToString((int)g_cycId)+" ver "+IntegerToString((int)g_ledgerVer)+" net "+D2(g_cycNet)+" debt "+D2(g_accLoss)+" seq "+IntegerToString(g_seq)+" risk "+D2(g_curRisk));
+   return 0;
   }
 
 //--- tries to finish a user cancel: only when no order and no position of this EA is left and every closed result is booked (nothing can leak into the next cycle)
@@ -6771,7 +6824,7 @@ void TgCommand(const string text,const long chat,const long from)
       double r=(argc==4)?ParseNum(a[3]):0.0;
       if(argc==4 && r<=0.0) { TgQueue("❌ Invalid Price Configuration\nRisk must be a positive number.",chat); return; }
       string err;
-      if(ApplyLevels(b,s,r,"Telegram",err)) TgQueue(LevelsAcceptedText(),chat);
+      if(ApplyLevels(b,s,r,"Telegram",err,true)) TgQueue(LevelsAcceptedText()+"\n"+CycleStatusLine(),chat);
       else TgQueue("❌ Invalid Price Configuration\n"+err,chat);
      }
    else if(cmd=="/del")
