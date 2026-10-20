@@ -1,3 +1,7 @@
+## fix18b — Mini App: APPLY begins a new cycle, CLOSE ends it (EA 2.46, `ea/Yetimmm.mq5` only)
+
+Root cause of "new cycle starts with 0.12": fix17 wired `UserNewCycle` only to Telegram `/set` and START. The Mini App `apply` called `ApplyLevels` without `newCycle`, and the Mini App `close` only closed the trade (no `CANCELEND`, pending reverse order kept, debt kept). History: #49 Close -0.06 -> #50 0.11; #53 Close +0.72 -> APPLY -> #54 0.12. Fix: `close` -> `ExecCancel(true)` (orders deleted, trade closed, cycle ended); `apply` -> `ApplyLevels(..., newCycle=true)` and the reply states NEW CYCLE; `settings` unchanged. 4 new tests (452 total). Not compiled / not tested on MT5.
+
 ## fix18 — the reverse order is never fired undersized (EA 2.46, `ea/Yetimmm.mq5` only)
 
 See `docs/FIX18-REVERSE-RESIZE.md`. Evidence: `CycleLife.csv` / `Orders.csv` of 20/10 (cycle #1, trade #9: SELL fired 0.14 although 0.15 was planned, TP 28.00 < needed 28.43). Root cause: the transient closing order of a stop-loss execution was listed by `OwnOrders`, its delete failed (retcode 10013) and armed the 2 s `g_nextDelMs` cooldown, which blocked the delete+create that resizes the reverse order. Fixes: `OwnOrders` ignores market-type orders; the reverse clean-up has its own cooldown (`g_revCleanMs`); `ReconcileSide` ignores the generic cooldown for the reverse order (retry 250 ms); a kept reverse order stores its plan (`PAO/PAR/PAA/PCY/PLV`) so its fill is booked as REVERSE_PREARM with the true risk/debt. No new input, no change to the lot formula. Not compiled / not tested on MT5.

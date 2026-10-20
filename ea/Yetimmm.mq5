@@ -8327,10 +8327,11 @@ string BrExec(const string cmd,const string seg)
    if(cmd=="close")
      {
       if(OwnPositions(tk)==0) return "ℹ️ No open Yetimmm position.";
-      bool p=CleanupPositions(3);
-      CheckClosures();
+      //--- fix18b: a position closed BY THE USER ends the cycle (same rule as Telegram CANCEL + CLOSE and MANUAL_CLOSE_CYCLE_END). Before, the Mini App Close only closed the
+      //--- trade: the debt stayed, the pre-armed reverse order stayed on the server and the next trade came with the old lot (#49 -> #50 0.11, #53 -> #54 0.12).
+      string rc=ExecCancel(true);
       g_dirty=true;
-      return p?"✅ Open position closed.":"❌ Could not close the open position.";
+      return rc;
      }
    if(cmd=="delete")
      {
@@ -8451,13 +8452,16 @@ string BrExec(const string cmd,const string seg)
       string res="";
       if(hb && hs)
         {
-         if(!ApplyLevels(b,s,(hr?r:0.0),"MiniApp",err))
+         //--- fix18b: levels sent from the Mini App with APPLY are a user command exactly like Telegram /set: they begin a NEW cycle from ZERO (lot = initial risk).
+         //--- Only the cmd "apply" does it; "settings" (target / RR edits) never touches the cycle.
+         if(!ApplyLevels(b,s,(hr?r:0.0),"MiniApp",err,(cmd=="apply")))
            {
             g_target=oldT; g_rr=oldR;
             return "❌ Invalid Price Configuration: "+err;
            }
          GS("LVSRC",1.0);
          res=LevelsAcceptedText();
+         if(cmd=="apply") res+="\n"+CycleStatusLine();
         }
       else res="✅ Settings updated.";
       if(tradeChanged)
