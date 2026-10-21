@@ -9,6 +9,7 @@
 
 #include <Trade\Trade.mqh>
 
+//--- FIX19 (SYMBOL NAMES): the EA no longer insists on the literal text "XAUUSD" in the chart symbol. Brokers name gold differently (XM: GOLDm#, others: GOLD, XAUUSD.pro, XAU/USD ...), and the old name check made OnInit return INIT_FAILED (code 1) on e.g. GOLDm#. A single classifier, YtClassifySymbol(), now decides from the broker's own symbol data (base currency, name, path, description, calc mode) and is used by OnInit AND DoStart (previously two different, inconsistent checks). New input InpSymbolPolicy: AUTO (default) | STRICT_GOLD (old behaviour) | ANY. Every accept/reject is logged to Experts with the reason. No entry / lot / SL / TP / ledger code changed.
 //--- v2.46 (NETWORK = OLD BEHAVIOUR): new input InpNetSilence=false. The v2.30 "hot market" network silence (NetHot) made the Mini App show "EA offline" every few seconds whenever the price sat near the levels (always the case with Buy/Sell Stop). With the default the EA again sends the heartbeat every second and polls Telegram every InpTgPollMs, never silenced - same as EA 2.30. The silence code is kept intact behind InpNetSilence=true. No entry / lot / SL / TP / ledger code changed.
 //--- fix15 (CYCLE END IS FINAL): Cancel with a KEPT position now also ends the cycle (flag CANCELEND stays until that position's result is booked, TryPlace sends nothing meanwhile, so no recovery order of the old debt is ever armed); Mini App Cancel works on a STOPPED bot. A new cycle never inherits the old accumulated loss.
 //--- fix13 (CANCEL ENDS THE CYCLE): a full /cancel from the Telegram bot is the second way a cycle ends (the first is CycleNet >= target). Ledger zeroed, levels deleted, state IDLE: the next /set starts from ZERO and inherits nothing. STOP stays a pause. See CycleEndByUser / CancelEndTry.
@@ -185,6 +186,14 @@ enum ENUM_YT_RISKPOL
    YT_RISK_CLAMP_MIN=1   // use the broker minimum volume and SAY SO: Requested Risk / Effective Risk are both shown and logged
   };
 
+//--- FIX19: how the chart symbol is validated (the labels below are what the Inputs dropdown shows)
+enum ENUM_YT_SYMPOL
+  {
+   YT_SYM_AUTO=0,        // AUTO (default) - recognise gold from the broker's symbol data (GOLDm#, GOLD, XAUUSD.pro ...)
+   YT_SYM_GOLD_STRICT=1, // STRICT_GOLD - the symbol name must contain XAUUSD (old behaviour)
+   YT_SYM_ANY=2          // ANY - guard OFF (you are sure the symbol is gold; money scale is read from the broker)
+  };
+
 #define YT_VER "2.46"
 #define YT_REAL_ORDERS_ONLY true   // v2.33: the EA NEVER opens a trade at market by its own decision. Every entry is a REAL Buy Stop / Sell Stop order on the server, created only from the levels the user sent (Telegram / Mini App). Virtual entry, Fast Catch and Market Reversal are disabled.
 #define YT_DUP_HALT_SEC 30     // v2.29: the Worker keeps reporting another live copy for this long -> this copy halts
@@ -210,6 +219,9 @@ input double InpInitialRisk    = 1.0;     // Initial Risk ($) - lot is rounded D
 input double InpTargetProfit   = 20.0;    // Recovery Target ($) - extra profit the NEXT trade must earn on top of the accumulated loss (sizes the next risk; does NOT stop the EA)
 input double InpRiskReward     = 20.0;    // Risk/Reward (TP = SL distance x this)
 input bool   InpResetRiskOnStart = false; // v2.43 DEFAULT false. Even when true it NEVER clears an open debt: START / levels after STOP keep the cycle ledger. A debt is cleared ONLY by the explicit, confirmed Reset / New Cycle command from the Mini App
+
+input group "=== Symbol (FIX19) ==="
+input ENUM_YT_SYMPOL InpSymbolPolicy = YT_SYM_AUTO; // AUTO = smart gold detection (accepts GOLDm#, GOLD, XAUUSD.c ...) | STRICT_GOLD = name must contain XAUUSD | ANY = no symbol guard (use only if you are sure it is gold)
 
 input group "=== Risk / Broker engine (v2.23) ==="
 input ENUM_YT_RISKPOL InpRiskPolicy = YT_RISK_STRICT; // STRICT = never exceed the requested risk (WAITING_VOLUME when the broker minimum lot risks more) | CLAMP_TO_MIN = use the broker minimum lot and report the Effective Risk
@@ -314,6 +326,10 @@ struct SStats
 //+------------------------------------------------------------------+
 CTrade        g_trade;
 string        g_sym;
+bool          g_symOk=false;            // FIX19: result of the symbol check (gold recognised)
+string        g_symClass="other";       // FIX19: "gold" | "other" - sent to the Worker / Mini App
+string        g_symWhy="";              // FIX19: reason text of the last check (always logged)
+string        g_symChgMsg="";           // FIX19: set when the saved cycle belongs to another symbol name
 long          g_magic=0;
 int           g_digits=2;
 int           g_lotDigits=2;
@@ -6332,7 +6348,7 @@ string LevelsAcceptedText()
 string DoStart(const string src)
   {
    if(GV("CANCELEND",0.0)>0.5 && !CancelEndTry("Telegram CANCEL (completed)")) return "⏳ The cancelled cycle is still closing its last trade. Try again in a few seconds.";
-   if(StringFind(g_sym,"XAUUSD")<0) return "❌ START FAILED\nReason: Symbol is not XAUUSD.";
+   if(InpSymbolPolicy!=YT_SYM_ANY && !g_symOk) return "❌ START FAILED\nReason: Symbol "+g_sym+" is not recognised as gold ("+g_symWhy+"). If it is gold, set InpSymbolPolicy = ANY in the EA inputs.";
    if(g_recHold) return "❌ START FAILED\nReason: REQUIRED_RECOVERY - "+g_recWhy+"\nSend /cancel (removes the pending orders) or /stop first, then /set BUY SELL and START.";
    if(!g_connected) return "❌ START FAILED\nReason: No connection to the trade server.";
    if(!TerminalInfoInteger(TERMINAL_TRADE_ALLOWED) || !MQLInfoInteger(MQL_TRADE_ALLOWED)) return "❌ START FAILED\nReason: AutoTrading is disabled.";
@@ -8224,7 +8240,7 @@ string BsJson()
    string j="{\"vmin\":"+JNum8(vmin)+",\"vmax\":"+JNum8(vmax)+",\"vstep\":"+JNum8(vst)+",\"vlimit\":"+JNum8(vlm)+",\"vdig\":"+IntegerToString(g_lotDigits);
    j+=",\"contract\":"+JNum8(contract)+",\"tick\":"+JNum8(g_tick)+",\"tvl\":"+JNum8(tvl)+",\"tvp\":"+JNum8(tvp)+",\"point\":"+JNum8(g_point)+",\"digits\":"+IntegerToString(g_digits);
    j+=",\"stops\":"+IntegerToString((int)stops)+",\"freeze\":"+IntegerToString((int)frz)+",\"exe\":"+IntegerToString((int)exe)+",\"fill\":"+IntegerToString((int)fil)+",\"expm\":"+IntegerToString((int)exm)+",\"tmode\":"+IntegerToString((int)tm);
-   j+=",\"ccy\":\""+JEsc(AccCcy())+"\",\"pccy\":\""+JEsc(SymbolInfoString(g_sym,SYMBOL_CURRENCY_PROFIT))+"\",\"hedge\":"+(AccountInfoInteger(ACCOUNT_MARGIN_MODE)==ACCOUNT_MARGIN_MODE_RETAIL_HEDGING?"true":"false");
+   j+=",\"ccy\":\""+JEsc(AccCcy())+"\",\"pccy\":\""+JEsc(SymbolInfoString(g_sym,SYMBOL_CURRENCY_PROFIT))+"\",\"bccy\":\""+JEsc(SymbolInfoString(g_sym,SYMBOL_CURRENCY_BASE))+"\",\"cls\":\""+g_symClass+"\",\"hedge\":"+(AccountInfoInteger(ACCOUNT_MARGIN_MODE)==ACCOUNT_MARGIN_MODE_RETAIL_HEDGING?"true":"false");
    j+=",\"bid\":"+DoubleToString(bid,g_digits)+",\"ask\":"+DoubleToString(ask,g_digits)+",\"spr\":"+DoubleToString((ask>=bid&&bid>0.0)?ask-bid:0.0,g_digits)+",\"maxSpr\":"+IntegerToString(InpMaxSpread)+"}";
    return j;
   }
@@ -9129,6 +9145,69 @@ void StartupAudit()
       YLog("Startup audit - differences between the saved state and the broker: "+diff);
       RaiseAlert("STARTAUD","Startup audit: "+diff,false,true);
      }
+   if(StringLen(g_symChgMsg)>0) RaiseAlert("SYMCHG",g_symChgMsg,false,true);   // FIX19
+  }
+
+//+------------------------------------------------------------------+
+//| FIX19 - symbol classification (single source of truth)           |
+//| Evidence-based: broker data first, the NAME is only a supporting |
+//| clue. Used by OnInit and DoStart so both always agree.           |
+//+------------------------------------------------------------------+
+struct SSymClass { bool ok; int score; string why; };
+
+string YtNorm(const string src)               // UPPER-CASE letters and digits only: "#GOLDm" -> "GOLDM", "XAU/USD" -> "XAUUSD"
+  {
+   string t=src;
+   StringToUpper(t);
+   string o="";
+   const int n=StringLen(t);
+   for(int i=0;i<n;i++)
+     {
+      const ushort c=StringGetCharacter(t,i);
+      if((c>='A' && c<='Z') || (c>='0' && c<='9')) o+=ShortToString(c);
+     }
+   return o;
+  }
+
+SSymClass YtClassifySymbol(const string sym)
+  {
+   SSymClass r;
+   r.ok=false; r.score=0; r.why="";
+   SymbolSelect(sym,true);
+   const ENUM_SYMBOL_CALC_MODE cm=(ENUM_SYMBOL_CALC_MODE)SymbolInfoInteger(sym,SYMBOL_TRADE_CALC_MODE);
+   const string base=YtNorm(SymbolInfoString(sym,SYMBOL_CURRENCY_BASE));
+   const string path=YtNorm(SymbolInfoString(sym,SYMBOL_PATH));
+   const string desc=YtNorm(SymbolInfoString(sym,SYMBOL_DESCRIPTION));
+   const string nm  =YtNorm(sym);
+   const string info="base='"+base+"' path='"+path+"' desc='"+desc+"' calc="+IntegerToString((int)cm);
+
+   //--- hard rejections first (a share called GOLD, silver, a company ...)
+   if(cm==SYMBOL_CALC_MODE_EXCH_STOCKS || cm==SYMBOL_CALC_MODE_EXCH_STOCKS_MOEX)
+     { r.why="rejected: exchange STOCK calculation mode | "+info; return r; }
+   if(base=="XAG" || StringFind(nm,"XAG")==0 || StringFind(nm,"SILVER")==0)
+     { r.why="rejected: silver, not gold | "+info; return r; }
+   if(StringFind(nm,"GOLDMAN")==0)
+     { r.why="rejected: not gold (name) | "+info; return r; }
+
+   //--- evidence
+   if(base=="XAU")                                         r.score+=3;   // strong: the broker says the base currency is gold
+   if(StringFind(nm,"XAUUSD")>=0)                          r.score+=3;   // the previous rule is never lost: any name containing XAUUSD
+   if(StringFind(nm,"XAU")==0 || StringFind(nm,"GOLD")==0) r.score+=2;   // name starts with XAU / GOLD (GOLDm#, GOLD.a, XAU/USD)
+   if(StringFind(path,"GOLD")>=0 || StringFind(path,"METAL")>=0) r.score+=1;
+   if(StringFind(desc,"GOLD")>=0)                          r.score+=1;
+
+   r.ok=(r.score>=3);                                      // the name alone (2) is never enough: base currency, path or description must agree
+   r.why="score="+IntegerToString(r.score)+" "+info;
+   return r;
+  }
+
+//--- FIX19: stable numeric fingerprint of the symbol name (global variables hold numbers only)
+double YtSymHash(const string sym)
+  {
+   long h=7;
+   const int n=StringLen(sym);
+   for(int i=0;i<n;i++) h=(h*31+(long)StringGetCharacter(sym,i))%2147483629;
+   return (double)h;
   }
 
 int OnInit()
@@ -9138,13 +9217,28 @@ int OnInit()
    g_magic=InpMagic;
    g_instId=StringFormat("%I64d-%I64d-%d",(long)TimeLocal(),(long)ChartID(),(int)(GetTickCount64()%100000));
    g_dupSince=0;
-   string up=g_sym;
-   StringToUpper(up);
-   if(StringFind(up,"XAUUSD")<0)
+   //--- FIX19: one classifier for OnInit and DoStart; the decision and its reason always reach the Experts log
+   SSymClass sc=YtClassifySymbol(g_sym);
+   YLog("Symbol check | "+g_sym+" | policy "+EnumToString(InpSymbolPolicy)+" | "+(sc.ok?"GOLD":"NOT gold")+" | "+sc.why);
+   if(InpSymbolPolicy==YT_SYM_AUTO && !sc.ok)
      {
-      Alert("Yetimmm works on XAUUSD only. Current symbol: ",g_sym);
+      const string sm="Yetimmm: '"+g_sym+"' was not recognised as gold ("+sc.why+"). If this IS your broker's gold symbol, set Inputs > Symbol > InpSymbolPolicy = ANY and re-attach.";
+      YLog("INIT REFUSED: "+sm);
+      Alert(sm);
       return INIT_FAILED;
      }
+   if(InpSymbolPolicy==YT_SYM_GOLD_STRICT && StringFind(YtNorm(g_sym),"XAUUSD")<0)
+     {
+      const string sm2="Yetimmm (STRICT_GOLD): the symbol name must contain XAUUSD. Current symbol: "+g_sym+". Use InpSymbolPolicy = AUTO to accept your broker's gold name.";
+      YLog("INIT REFUSED: "+sm2);
+      Alert(sm2);
+      return INIT_FAILED;
+     }
+   if(InpSymbolPolicy==YT_SYM_ANY)
+      YLog("WARNING: InpSymbolPolicy=ANY - the gold guard is OFF for '"+g_sym+"'. Lot / risk sizing still uses the broker's real contract data.");
+   g_symOk=(InpSymbolPolicy==YT_SYM_GOLD_STRICT ? (StringFind(YtNorm(g_sym),"XAUUSD")>=0) : sc.ok);
+   g_symClass=(sc.ok?"gold":"other");
+   g_symWhy=sc.why;
    if(InpRiskReward<=0.0 || InpTargetProfit<0.0 || InpInitialRisk<=0.0 || InpMaxDeviation<0 || InpWarnSpread<0 || InpProtectCloseSec<0)
      {
       Alert("Yetimmm: invalid inputs (Initial Risk and Risk/Reward must be > 0; Target, Deviation and Spread must be >= 0).");
@@ -9196,6 +9290,16 @@ int OnInit()
      }
 
    LoadState();
+   //--- FIX19: the saved cycle is keyed by Magic only, so a different symbol name (XAUUSD.c -> GOLDm#) inherits the debt - make that visible
+   {
+    const double savedH=GV("SYMH",0.0), curH=YtSymHash(g_sym);
+    if(savedH>0.0 && MathAbs(savedH-curH)>0.5 && (g_accLoss>0.0 || g_seq>0))
+      {
+       g_symChgMsg="Symbol changed since the last run (the saved cycle was started on a different symbol name; now '"+g_sym+"'). The open cycle ledger (accumulated loss "+D2(g_accLoss)+", sequence "+IntegerToString(g_seq)+") is CARRIED to this symbol. If that is not what you want, use Reset / New Cycle from the Mini App before START.";
+       YLog("SYMBOL CHANGE | "+g_symChgMsg);
+      }
+    GS("SYMH",curH);
+   }
    TrkLoad();                          // real tickets + last server-verified snapshot survive a restart
    UncLoad();                          // v2.40: an order request without a confirmed outcome survives a restart and is verified first
    ReqJournalRecover();                // v2.42: a request that was SENT without a recorded result becomes an unresolved request (verified, never re-sent blindly)

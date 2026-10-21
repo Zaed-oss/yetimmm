@@ -43,7 +43,7 @@ const mhm=ts=>{if(N.moff==null)return hm(ts,N.mtz);const d=new Date(ts+N.moff*10
 const mlab=()=>N.moff==null?N.mtz:gmtl(N.moff);
 const mdiff=n=>N.moff==null?tzOff(N.mtz,n)!==tzOff(dtz(),n):N.moff*1000!==tzOff(dtz(),n);
 /* currencies of the symbol this account trades (XAUUSD -> USD): events that move it get a tag */
-const symCur=()=>{const y=String((typeof S!=="undefined"&&S.sym)||"XAUUSD").toUpperCase().replace(/[^A-Z]/g,"");return[y.slice(0,3),y.slice(3,6)].filter(c=>FLG[c])};
+const symCur=()=>{let y=String((typeof S!=="undefined"&&S.sym)||"XAUUSD").toUpperCase().replace(/[^A-Z]/g,"");if(/^(XAU|GOLD)/.test(y)&&!/^GOLDMAN/.test(y))y="XAUUSD";return[y.slice(0,3),y.slice(3,6)].filter(c=>FLG[c])};   /* FIX19: broker gold names (GOLDm#, GOLD, XAU/USD) -> XAU + USD */
 const loc=()=>L()?"en-US":"ar-u-nu-latn";
 const dname=(key,o)=>new Date(key+"T12:00:00Z").toLocaleDateString(loc(),{timeZone:"UTC",...o});
 const cd=ms=>{ms=Math.max(0,Math.floor(ms/1000));const d=Math.floor(ms/86400),h=Math.floor(ms%86400/3600),m=Math.floor(ms%3600/60),s=ms%60,z=n=>String(n).padStart(2,"0");return(d?d+(L()?"d ":"ي "):"")+z(h)+":"+z(m)+":"+z(s)};
