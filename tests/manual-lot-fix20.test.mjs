@@ -76,9 +76,9 @@ test("EA: RiskCompute uses the manual lot BEFORE any risk-based sizing, floors i
   assert.match(b, /if\(lot>vmax\+1e-9\)/);
   assert.match(b, /RISK_NO_MARGIN/);
 });
-test("EA: LotValidate accepts only 0 (AUTO) or a lot inside [min,max] on the broker step and under the Max Lot cap", () => {
+test("EA: LotValidate requires a lot > 0 inside [min,max] on the broker step and under the Max Lot cap", () => {
   const b = fnBody("bool LotValidate(");
-  for (const need of ["v<0.0", "SYMBOL_VOLUME_MIN", "SYMBOL_VOLUME_MAX", "SYMBOL_VOLUME_STEP", "InpMaxLot", "MathRound(k)"]) assert.ok(b.includes(need), need);
+  for (const need of ["v<=0.0", "SYMBOL_VOLUME_MIN", "SYMBOL_VOLUME_MAX", "SYMBOL_VOLUME_STEP", "InpMaxLot", "MathRound(k)"]) assert.ok(b.includes(need), need);
 });
 test("EA: a lot change is committed (cfg + log + LOT_CHANGED + SyncAll) so waiting orders are replaced now; an open position is never touched", () => {
   const b = fnBody("void LotCommit(");
@@ -171,12 +171,12 @@ test("model: a losing sequence with the manual lot keeps the SAME lot at every s
 test("app: the settings form has the lot field, wired to input / apply / refresh from the EA state", () => {
   assert.match(html, /id="in_lot"/);
   assert.match(html, /run\("apply",\{buy:b,sell:s,risk:r,target:tg,rr,lot:lt\}\)/);
-  assert.match(html, /\["in_b","in_s","in_lot","in_r","in_t","in_rr"\]\.forEach/);
+  assert.match(html, /\["in_b","in_s","in_lot","in_rr"\]\.forEach/);
   assert.match(html, /in_lot:S\.mlot/);
 });
 test("app: lot is validated against the broker spec before sending (negative / below min / above max / off-step)", () => {
   const f = html.slice(html.indexOf("function lotErr("), html.indexOf("function lotErr(") + 600);
-  for (const need of ["e_lotNeg", "e_lotMin", "e_lotMax", "e_lotStep"]) assert.ok(f.includes(need), need);
+  for (const need of ["e_lotReq", "e_lotMin", "e_lotMax", "e_lotStep"]) assert.ok(f.includes(need), need);
 });
 test("app: the simulation no longer multiplies the risk after a loss and uses the manual lot", () => {
   assert.match(html, /const nextRisk=L=>S\.risk;/);
@@ -185,7 +185,8 @@ test("app: the simulation no longer multiplies the risk after a loss and uses th
 });
 test("app: the wording no longer promises recovery growth (target note, stop-loss toast)", () => {
   assert.ok(!/Next risk = \(accumulated loss/.test(html.split("Object.assign(D,{\nlotL")[1] || ""));
-  assert.match(html, /never sets a lot and never multiplies anything/);
+  assert.ok(!/id="in_r"|id="in_t"/.test(html), "risk / target fields removed");
+  assert.match(html, /e_lotReq/);
 });
 
 // ---------------------------------------------------------------- Worker: the lot reaches the EA, bad values never do
@@ -213,5 +214,5 @@ test("worker: apply / settings with a lot are queued for the EA with the lot; ne
   assert.equal((await call("/command", { headers: h, body: { cmd: "settings", lot: -1 } })).s, 400);
   assert.equal((await call("/command", { headers: h, body: { cmd: "settings", lot: 5000 } })).s, 400);
   assert.equal((await call("/command", { headers: h, body: { cmd: "settings", lot: "abc" } })).s, 400);
-  assert.equal((await call("/command", { headers: h, body: { cmd: "settings", lot: 0 } })).s, 200);   // 0 = AUTO-FIXED is a valid choice
+  assert.equal((await call("/command", { headers: h, body: { cmd: "settings", lot: 0 } })).s, 200);   // the Worker only relays; the EA refuses lot 0 (a lot is required)
 });

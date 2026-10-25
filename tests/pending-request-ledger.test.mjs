@@ -76,8 +76,8 @@ test("SOURCE 2.40 Netting stays on the safe path: no pre-armed reverse order, do
 
 test("SOURCE 2.40 no input of the strategy was added or changed (entry / lot / TP / SL / slippage / zone gate)", () => {
   const orig = readFileSync(new URL("./fixtures/ea-2.39-inputs.txt", import.meta.url), "utf8").trim().split("\n");
-  const now = ea.split("\n").filter((l) => /^\s*input\s/.test(l) && !/FIX19|InpSymbolPolicy|InpManualLot/.test(l)).map((l) => l.trim());   // FIX19 added only the symbol-VALIDATION input; fix20 added only the MANUAL LOT input (the user's lever - no strategy input; 3 input comments were reworded, defaults unchanged)
-  assert.deepEqual(now, orig.map((l) => l.trim()));
+  const now = ea.split("\n").filter((l) => /^\s*input\s/.test(l) && !/FIX19|InpSymbolPolicy|InpManualLot|InpInitialRisk/.test(l)).map((l) => l.trim());   // FIX19 added only the symbol-VALIDATION input; fix22 only reworded the InpInitialRisk COMMENT (legacy, no longer sizes a lot; type and value unchanged); fix20 added only the MANUAL LOT input (the user's lever - no strategy input; 3 input comments were reworded, defaults unchanged)
+  assert.deepEqual(now, orig.filter((l) => !/InpInitialRisk/.test(l)).map((l) => l.trim()));
 });
 
 // ---------------------------------------------------------------- MODEL

@@ -221,10 +221,10 @@ test("5.15 costs: the cycle net is made of NET results (profit + commission + sw
 test("3.1 explicit cycle ledger: id, net, losses, target, state, last closing deal - all saved", () => {
   for (const s of ["long          g_cycId=1;", "double        g_cycNet=0.0;", "double        g_cycLosses=0.0;", "int           g_cycState=YC_IDLE;", "YC_IDLE=0,", "YC_ACTIVE=1,", "YC_COMPLETING=2,", "YC_WAITING_USER=3,", "YC_ERROR=4"])
     assert.ok(raw.includes(s), s);
-  assert.match(code, /void ResetRisk\(\)[\s\S]*?g_cycNet=0\.0; g_cycLosses=0\.0; g_cycTrades=0;\s*g_cycId\+\+;/);   // a new cycle starts EMPTY with a NEW id
+  assert.match(code, /void ResetRisk\(\)[\s\S]*?g_cycNet=0\.0; g_cycLosses=0\.0; g_cycTrades=0;\s*GS\("CTPH",0\.0\);[^\n]*\n\s*g_cycId\+\+;/);   // a new cycle starts EMPTY with a NEW id
 });
 test("3.2 ONE completion rule: strict target, no 98% tolerance, no ResetRisk in any closing path, ONE call site", () => {
-  assert.match(code, /bool CycleMet\(const double cycNet\) \{ return cycNet>=g_target-YT_MONEY_EPS; \}/);
+  assert.match(code, /bool CycleMet\(const double cycNet\) \{ return GV\("CTPH",0\.0\)>0\.5; \}/);   // fix22: the cycle target is a TP, not a money net
   assert.match(code, /#define YT_MONEY_EPS 1e-6/);
   assert.ok(!/g_target\s*\*\s*0\.98/.test(code), "no 98% target tolerance may remain");
   assert.ok(!code.includes("LedgerApplyNet"), "the old premature-reset ledger function is gone");

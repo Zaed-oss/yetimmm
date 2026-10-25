@@ -137,8 +137,8 @@ test("readout: a safety-cap breach is shown as a warning next to the number", ()
 
 // ------------------------------------------------------------------ 5) wiring in the page
 test("page: the readout sits directly under the lot field and refreshes on every input + EA update", () => {
-  assert.match(html, /id="in_lot"[^>]*><div class="lr" id="lotRisk" role="status" aria-live="polite"><\/div><div class="nt"[^>]*id="lotNote"/);
-  assert.match(html, /\["in_b","in_s","in_lot","in_r","in_t","in_rr"\]\.forEach\(i=>\{\$\(i\)\.addEventListener\("input",\(\)=>\{Bridge\.dirty=true;prevCalc\(\)\}\)/);
+  assert.match(html, /id="in_lot"[^>]*><div class="lr" id="lotRisk" role="status" aria-live="polite"><\/div>/);
+  assert.match(html, /\["in_b","in_s","in_lot","in_rr"\]\.forEach\(i=>\{\$\(i\)\.addEventListener\("input",\(\)=>\{Bridge\.dirty=true;prevCalc\(\)\}\)/);
   assert.match(html, /function prevCalc\(\)\{[\s\S]*renderLotRisk\(/);
   assert.match(html, /if\(!this\.dirty\)fillInputs\(\);else prevCalc\(\);/);
 });
