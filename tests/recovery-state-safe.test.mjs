@@ -68,7 +68,7 @@ test("SOURCE 2.42 the startup alert about an idle mid-cycle bot and the StartupA
 
 test("SOURCE 2.42 no input of the strategy / risk was added or changed", () => {
   const orig = readFileSync(new URL("./fixtures/ea-2.39-inputs.txt", import.meta.url), "utf8").trim().split("\n");
-  const now = ea.split("\n").filter((l) => /^\s*input\s/.test(l) && !/FIX19|InpSymbolPolicy/.test(l)).map((l) => l.trim());   // FIX19 added only the symbol-VALIDATION input (no strategy input)
+  const now = ea.split("\n").filter((l) => /^\s*input\s/.test(l) && !/FIX19|InpSymbolPolicy|InpManualLot/.test(l)).map((l) => l.trim());   // FIX19 added only the symbol-VALIDATION input; fix20 added only the MANUAL LOT input (the user's lever - no strategy input; 3 input comments were reworded, defaults unchanged)
   assert.deepEqual(now, orig.map((l) => l.trim()));
 });
 

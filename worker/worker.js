@@ -314,7 +314,7 @@ export default {
   },
 };
 
-const CMD_MAX = { buy: 1e7, sell: 1e7, price: 1e7, risk: 1e7, target: 1e9, rr: 100, confirm: 1, ticket: 9007199254740991 };
+const CMD_MAX = { buy: 1e7, sell: 1e7, price: 1e7, risk: 1e7, target: 1e9, rr: 100, lot: 1000, confirm: 1, ticket: 9007199254740991 };   // fix20: lot = the MANUAL LOT (0 = AUTO-FIXED); the EA validates it against the broker min / step / max
 export class Hub {
   constructor(ctx, env) { this.ctx = ctx; this.env = env || {}; this.c = cfg(env || {}); this.st = null; this.ts = 0; this.oa = null; this.miss = {}; this.hxSig = ""; this.wkc = null; this.dseen = new Set(); this.net = null; }
   age() { return this.ts ? (Date.now() - this.ts) / 1000 : null; }
@@ -703,7 +703,7 @@ export class Hub {
       return json({ ok: true, id: id2, orders: Array.isArray(st0.orders) ? st0.orders.length : 0 });
     }
     const c = { id: crypto.randomUUID().replace(/-/g, "").slice(0, 16), cmd: String(b.cmd) };   // id first: the EA parser relies on it
-    for (const k of ["buy", "sell", "risk", "target", "rr", "ticket", "price", "confirm"]) {
+    for (const k of ["buy", "sell", "risk", "target", "rr", "lot", "ticket", "price", "confirm"]) {
       if (b[k] === undefined || b[k] === null || b[k] === "") continue;
       const n = Number(b[k]), mx = CMD_MAX[k];
       if (!Number.isFinite(n) || n < 0 || n > mx) return json({ error: "bad number: " + k }, 400);   // v4.22: no negative / absurd values reach the EA

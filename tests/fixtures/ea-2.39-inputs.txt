@@ -2,8 +2,8 @@ input group "=== Trading Levels ==="
 input double InpBuyStop        = 0.0;     // (DEPRECATED v2.27 - IGNORED) orders come ONLY from the Telegram Mini App
 input double InpSellStop       = 0.0;     // (DEPRECATED v2.27 - IGNORED) orders come ONLY from the Telegram Mini App
 input group "=== Risk Management ==="
-input double InpInitialRisk    = 1.0;     // Initial Risk ($) - lot is rounded DOWN to the broker step: real risk <= requested
-input double InpTargetProfit   = 20.0;    // Recovery Target ($) - extra profit the NEXT trade must earn on top of the accumulated loss (sizes the next risk; does NOT stop the EA)
+input double InpInitialRisk    = 1.0;     // Initial Risk ($) - used ONLY when Manual Lot = 0 (AUTO-FIXED): lot = risk / loss-per-lot, rounded DOWN to the broker step. It never grows
+input double InpTargetProfit   = 20.0;    // Cycle Target ($) - the cycle ledger ends when its net reaches this. fix20: it NO LONGER sizes any lot (no recovery growth); it does NOT stop the EA
 input double InpRiskReward     = 20.0;    // Risk/Reward (TP = SL distance x this)
 input bool   InpResetRiskOnStart = false; // v2.43 DEFAULT false. Even when true it NEVER clears an open debt: START / levels after STOP keep the cycle ledger. A debt is cleared ONLY by the explicit, confirmed Reset / New Cycle command from the Mini App
 input group "=== Risk / Broker engine (v2.23) ==="
@@ -15,7 +15,7 @@ input bool   InpTpResetNetOnly = true;    // (DEPRECATED v2.38 - IGNORED) a cycl
 input group "=== Recovery Plan Guard (v2.24) ==="
 input int    InpMaxSeqLosses   = 0;       // v2.43 DEFAULT 0 = OFF (the cycle never stops by a loss COUNT; it ends only when the cycle NET reaches the target). Optional cap: when reached, NEW orders wait (WAITING_SEQCAP) and the debt is KEPT; open trades are never touched
 input double InpMaxLot         = 0.0;     // v2.31 Max lot allowed for ONE trade (hard safety cap for recovery sizing). 0 = broker maximum only. Above it NEW orders wait (WAITING_VOLUME) - the lot is never forced beyond it
-input bool   InpRecoveryRoundUp = true;   // v2.31 In a recovery cycle the lot is rounded UP to the broker step so the TP repays ALL accumulated losses + the Recovery Target (otherwise rounding down leaves a small debt)
+input bool   InpRecoveryRoundUp = true;   // (fix20 - IGNORED: the lot is never rounded UP because of a debt; the manual lot / fixed initial-risk lot is used as is)
 input double InpRoundUpMaxOverPct = 0.0;  // v2.47 Broker-neutral guard for the recovery round-up: the lot is rounded UP one step only if its risk stays within this % above the requested risk (0 = no limit, the previous behaviour). With a coarse lot step a limit keeps the growth smooth; the ledger carries the shortfall to the next step
 input double InpMaxRiskPctBal  = 0.0;     // Max risk of ONE trade as % of the account balance. 0 = off. If the next planned risk is above it, NEW orders wait (WAITING_RISKCAP). Report recommendation: 2-3
 input bool   InpPlanLog        = true;    // Print the exact recovery plan (risk / target / cumulative loss / balance needed) in the Experts log at start AND write the full per-trade table (lot, margin, net at TP) to Yetimmm_<magic>_Plan.csv

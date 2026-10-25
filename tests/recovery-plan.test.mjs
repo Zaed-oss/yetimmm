@@ -1,3 +1,4 @@
+// NOTE fix20: the JS models of the (loss + target) / RR recurrence below document the RETIRED recovery sizing. The EA no longer sizes any lot from a debt (see tests/manual-lot-fix20.test.mjs).
 // Reference model of the Recovery Plan (PDF "risk multiplication system") and of EA v2.24 RecoveryGuardBlocks().
 // It proves the ARITHMETIC and the guard LOGIC. It does NOT run MQL5: compile (F7) and test in the Strategy Tester.
 import test from "node:test";
@@ -78,7 +79,7 @@ test("guard: risk-% cap blocks only when the next risk exceeds the share of the 
   assert.equal(guard({ seq: 0, accLoss: 0, curRisk: 1, balance: 0, maxPct: 2 }), "WAITING_RISKCAP");     // no balance -> never arm
 });
 test("EA v2.24 contains the exact recurrence, the guard, both inputs, both wait codes and both hooks", () => {
-  assert.match(ea, /double rem=g_target-net;[\s\S]*double r=rem\/g_rr;/);   // v2.38: (L+target)/RR for a debt, planned from the net still needed
+  assert.match(ea, /double NextRiskForNet\(const double net\)\s*\{\s*return g_initRisk;\s*\}/);   // fix20: the (L+target)/RR recurrence is RETIRED - the next risk is always the fixed initial risk
   assert.match(ea, /double NextRiskFor\(const double L\) \{ return NextRiskForNet\(-L\); \}/);
   for (const need of ["bool RecoveryGuardBlocks(", "void PrintRecoveryPlan(", "input int    InpMaxSeqLosses", "input double InpMaxRiskPctBal", "WAITING_SEQCAP", "WAITING_RISKCAP"]) assert.ok(ea.includes(need), need);
   assert.equal((ea.match(/RecoveryGuardBlocks\(rgw,rgc\)/g) || []).length, 2);

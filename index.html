@@ -68,7 +68,11 @@ header{display:flex;justify-content:space-between;align-items:center;gap:8px;pad
 .auto{display:flex;justify-content:space-between;gap:8px;font-size:11px;color:var(--mute);margin-top:7px;padding:7px 10px;border-radius:10px;background:var(--surf2);border:1px dashed var(--line)}.auto:empty{display:none}.auto b{font-weight:700}
 .chips{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px}
 .chip{padding:8px 12px;border-radius:99px;background:var(--surf2);border:1px solid var(--line);font-size:12px;font-weight:600;transition:transform .12s}.chip:active{transform:scale(.95)}
-#prev{white-space:pre-line}.note{font-size:12px;color:var(--mute);background:var(--surf2);border-radius:12px;padding:10px 12px;margin:2px 0 12px;text-align:center}.note.er{color:var(--dn);background:color-mix(in srgb,var(--dn) 10%,transparent)}
+#prev{white-space:pre-line}#prev:empty{display:none}
+.lr{margin-top:8px;padding:10px 12px;border-radius:12px;background:var(--surf2);border:1px solid var(--line);border-inline-start:3px solid var(--gold);font-size:12px}.lr:empty{display:none}.lr.er{border-inline-start-color:var(--dn);background:color-mix(in srgb,var(--dn) 8%,var(--surf2))}
+.lr-top{display:flex;justify-content:space-between;align-items:flex-end;gap:10px}.lr-top small{display:block;color:var(--mute);font-size:11px;font-weight:600}.lr-big{font-size:26px;font-weight:700;line-height:1.15}.lr-lot{font-size:15px;font-weight:700;color:var(--gold2);white-space:nowrap}.lr-lot small{display:inline;color:var(--mute);font-weight:500}
+.lr-f{margin:6px 0 6px;color:var(--mute);font-size:11px}.lr-r{display:flex;justify-content:space-between;gap:10px;padding:5px 0;border-top:1px solid var(--line)}.lr-r span{color:var(--mute)}.lr-r b{white-space:nowrap;direction:ltr;unicode-bidi:isolate}.lr .ltr{direction:ltr;unicode-bidi:isolate;display:inline-block}
+.lr-w{margin-top:6px;padding:7px 9px;border-radius:9px;color:var(--dn);background:color-mix(in srgb,var(--dn) 10%,transparent)}.lr-s{margin-top:7px;font-size:10.5px;color:var(--mute);line-height:1.5}.lr-m{color:var(--dn);font-weight:600}.lr-m .num{direction:ltr;unicode-bidi:isolate}.note{font-size:12px;color:var(--mute);background:var(--surf2);border-radius:12px;padding:10px 12px;margin:2px 0 12px;text-align:center}.note.er{color:var(--dn);background:color-mix(in srgb,var(--dn) 10%,transparent)}
 .hi{display:flex;justify-content:space-between;align-items:center;padding:12px 14px;background:var(--surf2);border-radius:14px;margin-top:8px}
 .hi small{display:block;color:var(--mute);font-size:11px}.hi b.p{font-size:15px}
 .rw{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:13px 0;border-top:1px solid var(--line)}.rw:first-of-type{border-top:0;padding-top:0}
@@ -274,6 +278,7 @@ body.loading .pr,body.loading .kv b{color:transparent;border-radius:8px;backgrou
     <h3><span class="hl"><svg class="ic"><use href="#i-chart"/></svg><span data-t="ordT"></span></span></h3>
     <div class="fld"><label><span class="hl"><svg class="ic up"><use href="#i-up"/></svg><span data-t="buyL"></span></span><span class="up" data-t="abv"></span></label><div class="stp"><button class="sm" data-n="b-1">−</button><input class="inp" id="in_b" type="number" step="any" inputmode="decimal"><button class="sm" data-n="b1">+</button></div><div class="auto" id="aB"></div></div>
     <div class="fld"><label><span class="hl"><svg class="ic dn"><use href="#i-dn"/></svg><span data-t="sellL"></span></span><span class="dn" data-t="blw"></span></label><div class="stp"><button class="sm" data-n="s-1">−</button><input class="inp" id="in_s" type="number" step="any" inputmode="decimal"><button class="sm" data-n="s1">+</button></div><div class="auto" id="aS"></div></div>
+    <div class="fld"><label><span class="hl"><svg class="ic"><use href="#i-scale"/></svg><span data-t="lotL"></span></span></label><input class="inp" id="in_lot" type="number" step="any" min="0" inputmode="decimal"><div class="lr" id="lotRisk" role="status" aria-live="polite"></div><div class="nt" style="margin-top:5px" id="lotNote" data-t="lotN"></div></div>
     <div class="fld"><label><span data-t="riskL"></span></label><input class="inp" id="in_r" type="number" step="any" inputmode="decimal"></div>
     <div class="fld"><label><span class="hl"><svg class="ic"><use href="#i-target"/></svg><span data-t="tgt"></span></span></label><input class="inp" id="in_t" type="number" step="any" inputmode="decimal"><div class="nt" style="margin-top:5px" data-t="tgtN"></div></div>
     <div class="fld"><label><span class="hl"><svg class="ic"><use href="#i-scale"/></svg><span data-t="rrL"></span></span></label><input class="inp" id="in_rr" type="number" step="any" inputmode="decimal"><div class="nt" style="margin-top:5px" data-t="rrN"></div></div>
@@ -418,7 +423,7 @@ const f=(v,d=2)=>Number(v).toLocaleString("en-US",{minimumFractionDigits:d,maxim
 const sg=v=>(v>=0?"+":"−")+f(Math.abs(v)),cl=v=>v>=0?"up":"dn",r2=v=>Math.round(v*100)/100;
 const num=v=>{const n=parseFloat(String(v).replace(",","."));return isNaN(n)?0:n};
 const fp=v=>f(v,pd()),fv=v=>f(v,vd());
-let S={price:4137.5,run:false,state:"STOPPED",msg:"",buy:4138,sell:4137,risk:1,cur:1,acc:0,seq:0,no:0,pend:null,pos:null,hist:[],target:20,rr:20,maxDev:30,warn:60,breach:"WAIT",orders:[],cmds:[]},prev,T,tab=0,UI={};
+let S={price:4137.5,run:false,state:"STOPPED",msg:"",buy:4138,sell:4137,risk:1,cur:1,mlot:0.01,acc:0,seq:0,no:0,pend:null,pos:null,hist:[],target:20,rr:20,maxDev:30,warn:60,breach:"WAIT",orders:[],cmds:[]},prev,T,tab=0,UI={};
 /*RISK-CORE-BEGIN*/
 /* v4.8: the UI NEVER assumes contract / step / min / max / digits / currency. Live mode reads the BrokerSpec the EA publishes (S.bs) and shows the EA's own RiskResult (S.rk).
    The same arithmetic is used here ONLY for the preview and for the simulation, against an explicit, selectable broker profile. */
@@ -430,20 +435,53 @@ const SIM_PROFILES={
   "XAU-100-LIMIT1":{contract:100,tick:.01,tvl:1,vmin:.01,vstep:.01,vmax:100,vlimit:1,vdig:2,digits:2,ccy:"USD",stops:0,point:.01,spr:0}
 };
 let SIMP="XAU-100-0.01";
-function perLotLoss(bs,d){return bs.tvl>0&&bs.tick>0?d/bs.tick*bs.tvl:d*bs.contract}
-function calcRisk(bs,risk,entry,sl,policy){
+function perLotLoss(bs,d){
+  if(bs.plu>0)return d*bs.plu;                                  /* fix21: the EA's OrderCalcProfit figure (loss of 1 lot per 1.00 of price) - the broker's own number */
+  return bs.tvl>0&&bs.tick>0?d/bs.tick*bs.tvl:d*bs.contract}    /* older EA / simulation: tick size x tick value */
+function calcRisk(bs,risk,entry,sl,policy,mlot){
   const d=Math.abs(entry-sl),o={ok:false,status:"NO_SPEC",req:risk,raw:0,vol:0,vmin:bs.vmin,eff:0,minRisk:0,perLot:0,clamped:false,policy:policy==="CLAMP_TO_MIN"?"CLAMP_TO_MIN":"STRICT",ccy:bs.ccy||""};
   if(!(d>1e-12)||!(bs.vstep>0)||!(bs.vmin>0))return o;
   const pl=perLotLoss(bs,d);if(!(pl>0))return o;
   o.perLot=pl;o.minRisk=bs.vmin*pl;o.raw=risk/pl;
   let lot;
-  if(o.raw<bs.vmin-1e-9){if(o.policy==="CLAMP_TO_MIN"){lot=bs.vmin;o.clamped=true}else{o.status="BELOW_MIN";return o}}
+  if(mlot>0){                                                   /* fix20 MANUAL LOT: the user's volume, floored to the broker step, never derived from a loss or a risk */
+    o.raw=mlot;if(mlot<bs.vmin-1e-9){o.status="BELOW_MIN";return o}
+    lot=bs.vmin+Math.floor((mlot-bs.vmin)/bs.vstep+1e-7)*bs.vstep;
+  }
+  else if(o.raw<bs.vmin-1e-9){if(o.policy==="CLAMP_TO_MIN"){lot=bs.vmin;o.clamped=true}else{o.status="BELOW_MIN";return o}}
   else lot=bs.vmin+Math.floor((o.raw-bs.vmin)/bs.vstep+1e-7)*bs.vstep;
   lot=Number(lot.toFixed(bs.vdig==null?8:bs.vdig));
   if(lot>bs.vmax+1e-9){o.status="ABOVE_MAX";return o}
   if(bs.vlimit>0&&lot>bs.vlimit+1e-9){o.status="ABOVE_LIMIT";return o}
   o.vol=lot;o.eff=lot*pl;o.ok=true;o.status=o.clamped?"CLAMPED":"OK";return o;
 }
+/* fix21 LOT RISK QUOTE - what a typed lot means in money, from the broker's numbers. Pure: no DOM, no text.
+   d = |Buy level - Sell level| (the SL distance of both orders) · rr = TP/SL ratio · x = {bal, fm} account context (0 = unknown).
+   The lot must be exactly what the EA accepts (min / max / Max-Lot cap / step / volume limit); anything else returns a code and the nearest valid lots. */
+function lotQuote(bs,lot,d,rr,x){
+  x=x||{};
+  const q={ok:false,code:"NO_SPEC",exact:false,req:lot,lot:0,d:d,perLot:0,loss:0,profit:0,comm:0,total:0,net:0,margin:0,pct:0,max:0,near:[],warns:[]};
+  if(!bs||!(d>1e-12)||!(bs.vstep>0)||!(bs.vmin>0))return q;
+  const pl=perLotLoss(bs,d);if(!(pl>0))return q;
+  q.perLot=pl;q.exact=bs.plu>0;
+  const dg=bs.vdig==null?8:bs.vdig,rd=v=>Number(v.toFixed(dg));
+  if(!(lot>0)){q.code="NO_LOT";return q}
+  if(lot<bs.vmin-1e-9){q.code="BELOW_MIN";q.near=[rd(bs.vmin)];return q}
+  const vmax=bs.capLot>0&&bs.capLot<bs.vmax?bs.capLot:bs.vmax;
+  if(lot>vmax+1e-9){q.code="ABOVE_MAX";q.max=vmax;return q}
+  const k=(lot-bs.vmin)/bs.vstep,kr=Math.round(k);
+  if(Math.abs(k-kr)>1e-6){const lo=rd(bs.vmin+Math.floor(k+1e-7)*bs.vstep),hi=rd(lo+bs.vstep);q.code="OFF_STEP";q.near=[lo,hi].filter(v=>v>=bs.vmin-1e-9&&v<=vmax+1e-9);return q}
+  const L=rd(bs.vmin+kr*bs.vstep);
+  if(bs.vlimit>0&&L>bs.vlimit+1e-9){q.code="ABOVE_LIMIT";q.max=bs.vlimit;return q}
+  q.lot=L;q.loss=L*pl;q.profit=q.loss*rr;
+  q.comm=bs.cpl>0?L*bs.cpl:0;q.total=q.loss+q.comm;q.net=q.profit-q.comm;
+  q.margin=bs.mpl>0?L*bs.mpl:0;q.pct=x.bal>0?q.total/x.bal*100:0;
+  /* the EA's own safety caps judge the FINAL lot and make NEW orders wait when breached -> shown as a warning, never hidden */
+  if(bs.capPct>0&&x.bal>0&&q.loss>x.bal*bs.capPct/100+1e-9)q.warns.push({k:"capPct",a:[bs.capPct,x.bal*bs.capPct/100]});
+  if(bs.capUsd>0&&q.loss>bs.capUsd+1e-9)q.warns.push({k:"capUsd",a:[bs.capUsd]});
+  if(bs.capDay>0&&(bs.dayLoss||0)+q.loss>bs.capDay+1e-9)q.warns.push({k:"capDay",a:[bs.capDay,bs.dayLoss||0]});
+  if(q.margin>0&&x.fm>0&&q.margin>x.fm+1e-9)q.warns.push({k:"noMargin",a:[q.margin,x.fm]});
+  q.ok=true;q.code="OK";return q}
 /*RISK-CORE-END*/
 const spec=()=>live()?(S.bs||null):SIM_PROFILES[SIMP];
 const ccyL=()=>{const b=spec();return(b&&b.ccy)||(S.acct&&S.acct.cur)||""};
@@ -595,7 +633,7 @@ const Bridge={ok:null,auth:false,at:0,okAt:0,failSince:0,fails:0,err:"",nextAt:0
 /* ── command log helpers: every command issued from this app is shown in the log ── */
 const esc=x=>String(x==null?"":x).replace(/[&<>"']/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
 function detOf(c,p){
-  if(c==="apply"||c==="settings"){const a=[];if(p.buy!=null)a.push("Buy "+p.buy);if(p.sell!=null)a.push("Sell "+p.sell);if(p.risk!=null)a.push("Risk $"+p.risk);return a.join(" / ")}
+  if(c==="apply"||c==="settings"){const a=[];if(p.buy!=null)a.push("Buy "+p.buy);if(p.sell!=null)a.push("Sell "+p.sell);if(p.risk!=null)a.push("Risk $"+p.risk);if(p.lot!=null)a.push("Lot "+(p.lot>0?p.lot:"AUTO"));return a.join(" / ")}
   if(c==="modify"||c==="place")return (p.side?p.side+" Stop ":"")+(p.ticket?"#"+p.ticket+" ":"")+"@ "+p.price;
   if(c==="delete")return (p.side?p.side+" Stop ":"")+"#"+p.ticket;
   return "";
@@ -610,11 +648,11 @@ function logRows(){const seen=new Set();return (S.hist||[]).filter(x=>{const k=x
 
 /* ═════════════ 7) TRADING RULES + ENGINE (sim mode) ═════════════ */
 const rkText=r=>r.status==="BELOW_MIN"?t("rk_BELOW_MIN",cs()+f(r.req),cs()+f(r.minRisk),fv(r.vmin)):r.status==="ABOVE_MAX"?t("rk_ABOVE_MAX"):r.status==="ABOVE_LIMIT"?t("rk_ABOVE_LIMIT"):r.status==="CLAMPED"?t("rk_CLAMPED",cs()+f(r.req),cs()+f(r.eff)):"";
-function lotFor(risk,entry,sl){
+function lotFor(risk,entry,sl,mlot){
   const d=Math.abs(entry-sl);if(d<1e-9)return{e:t("e_lot0")};
   const bs=spec();
   if(!bs)return{pending:true};                       /* live, no BrokerSpec yet (old EA / first sync): the EA decides, the UI never guesses */
-  const r=calcRisk(bs,risk,entry,sl,(S.rk&&S.rk.policy==="CLAMP_TO_MIN")?"CLAMP_TO_MIN":"STRICT");
+  const r=calcRisk(bs,risk,entry,sl,(S.rk&&S.rk.policy==="CLAMP_TO_MIN")?"CLAMP_TO_MIN":"STRICT",mlot);
   if(live())return{lot:r.vol,est:r.eff,r,warn:r.ok&&!r.clamped?"":rkText(r)};   /* a volume condition is a WAIT shown as a note, never a blocking error */
   if(!r.ok)return{e:r.status==="BELOW_MIN"?t("e_lotMin",fv(bs.vmin)):t("e_lotMax"),r};
   return{lot:r.vol,est:r.eff,r};
@@ -622,8 +660,16 @@ function lotFor(risk,entry,sl){
 function rkRows(k){
   const r=live()?S.rk:null;if(!r)return"";
   const bad=r.status!=="OK"&&r.status!=="CLAMPED",mn=cs()+f(r.minRisk);
-  return `<div class="kv" style="margin-top:8px">${k(t("rkReq"),cs()+f(r.req))}${k(t("rkMin"),r.minRisk>0?mn:"—")}${k(t("rkEff"),r.vol>0?cs()+f(r.eff):"—",r.clamped?"dn":"")}${k(t("rkPol"),r.policy)}</div>`+(bad||r.clamped?`<div class="note${bad?"":" er"}" style="margin-top:8px">${bad?"⏳ ":"⚠️ "}${esc(rkText({status:r.status,req:r.req,minRisk:r.minRisk,vmin:r.vmin,eff:r.eff}))}</div>`:"");
+  return `<div class="kv" style="margin-top:8px">${S.mlot>0?k(t("lotMode"),fv(S.mlot),"gd"):k(t("rkReq"),cs()+f(r.req))}${k(t("rkMin"),r.minRisk>0?mn:"—")}${k(t("rkEff"),r.vol>0?cs()+f(r.eff):"—",r.clamped?"dn":"")}${k(t("rkPol"),r.policy)}</div>`+(bad||r.clamped?`<div class="note${bad?"":" er"}" style="margin-top:8px">${bad?"⏳ ":"⚠️ "}${esc(rkText({status:r.status,req:r.req,minRisk:r.minRisk,vmin:r.vmin,eff:r.eff}))}</div>`:"");
 }
+/* fix21: the dashboard risk card shows the same exact money as the lot field, for the lot the NEXT orders will use */
+function qRows(k,L){
+  const bs=spec();if(!bs||!(S.buy>S.sell&&S.sell>0))return"";
+  const lot=S.mlot>0?S.mlot:(L&&L.lot>0?L.lot:0),A=S.acct||{};
+  const q=lotQuote(bs,lot,S.buy-S.sell,S.rr,{bal:A.bal>0?A.bal:0,fm:A.fm>0?A.fm:0});
+  if(!q.ok)return"";
+  const tot=q.comm>0?k(t("lr_tot"),mny(q.total),"dn"):k(t("lr_pct"),q.pct>0?f(q.pct,q.pct<0.1?3:2)+"%":"—");
+  return `<div class="kv" style="margin-top:8px">${k(t("lr_loss"),mny(q.loss),"dn")}${k(t("lr_tp",f(S.rr,S.rr%1?2:0)),"+"+mny(q.profit),"up")}${tot}</div>`}
 function pairErr(b,s){const x=spec();if(!live()||!x||S.entry==="VIRTUAL"||!(b>s))return"";const need=2*(x.stops||0)*(x.point||0)+(x.spr||0);return b-s<need-1e-9?t("e_pair",fp(need)):""}
 function vLevels(b,s){if(!(b>0&&s>0))return t("e_pos");if(b<=s)return t("e_ord");return""}
 const r2c=x=>{const k=tickSz();return Number((Math.round(x/k)*k).toFixed(pd()))};
@@ -650,10 +696,10 @@ function trEA(x){x=String(x==null?"":x);if(LG)return x;if(x.indexOf(" | ")>0&&/w
   if(/AutoTrading is disabled/i.test(x))return t("ea_at");
   if(TECH.test(x))return t("e_generic");
   return x.replace(/^Invalid Price Configuration:\s*/i,"")}
-const nextRisk=L=>r2((L+S.target)/S.rr);
+const nextRisk=L=>S.risk;   /* fix20: NO martingale - a loss never changes the risk or the lot (the manual lot is the only lever, and only the user moves it) */
 const floating=()=>{const x=S.pos;if(!x)return 0;if(live()&&x.profit!=null)return x.profit;return(isB(x.side)?S.price-x.entry:x.entry-S.price)*x.lot*CS()};
 function openPos(side,entry){
-  const b=side==="BUY",sl=b?S.sell:S.buy,d=Math.abs(entry-sl),L=lotFor(S.cur,entry,sl);
+  const b=side==="BUY",sl=b?S.sell:S.buy,d=Math.abs(entry-sl),L=lotFor(S.cur,entry,sl,S.mlot);
   if(L.e){S.state="ERROR";S.msg=L.e;return}
   S.pos={side,entry:r2(entry),sl,tp:r2(b?entry+d*S.rr:entry-d*S.rr),lot:L.lot,est:L.est,risk:S.cur,no:++S.no};
   S.state=b?"BUY_ACTIVE":"SELL_ACTIVE";S.msg="";toast(t("t_exec",t(b?"t_ob":"t_os"),f(entry)));Bus.emit("open",S.pos);
@@ -672,11 +718,11 @@ function engine(){
     const b=isB(x.side);
     if(b?p<=x.sl:p>=x.sl){
       const pnl=closeTrade("SL",x.sl);S.acc=r2(S.acc-pnl);S.seq++;S.cur=nextRisk(S.acc);S.state="WAITING_REENTRY";
-      toast(t("t_sl",sg(pnl),f(S.cur)));
+      toast(t("t_sl",sg(pnl),fv(x.lot)));
       if(S.breach==="MARKET")openPos(b?"SELL":"BUY",S.price);
     }else if(b?p>=x.tp:p<=x.tp){
       const pnl=closeTrade("TP",x.tp);S.acc=0;S.seq=0;S.cur=S.risk;toast(t("t_tp",sg(pnl)));
-      if(S.pend){S.buy=S.pend.buy;S.sell=S.pend.sell;S.risk=S.pend.risk;if(S.pend.rr)S.rr=S.pend.rr;if(S.pend.target!=null)S.target=S.pend.target;S.cur=S.risk;S.pend=null;S.state="ARMED"}else S.state="TP_RESET";
+      if(S.pend){S.buy=S.pend.buy;S.sell=S.pend.sell;S.risk=S.pend.risk;if(S.pend.lot!=null)S.mlot=S.pend.lot;if(S.pend.rr)S.rr=S.pend.rr;if(S.pend.target!=null)S.target=S.pend.target;S.cur=S.risk;S.pend=null;S.state="ARMED"}else S.state="TP_RESET";
     }
   }
 }
@@ -687,6 +733,7 @@ const ACT={
   stop(){if(S.pos)closeTrade("MANUAL",S.price);S.run=false;S.state="STOPPED";S.pos=null;S.pend=null;S.msg="";Bus.emit("stop");toast(t("t_stop"))},
   close(){closeTrade("MANUAL",S.price);S.state="IDLE"},
   apply(p){
+    if(p.lot!=null)S.mlot=p.lot;                                  /* fix20: the lot changes at once, even with a trade open (the open trade keeps its own lot) */
     if(S.pos){S.pend={buy:p.buy,sell:p.sell,risk:p.risk,target:p.target,rr:p.rr};toast(t("t_pend"))}
     else{S.buy=p.buy;S.sell=p.sell;S.risk=p.risk;S.target=p.target;S.rr=p.rr;S.cur=S.acc>0?nextRisk(S.acc):p.risk;if(S.run&&(S.state==="TP_RESET"||S.state==="IDLE"))S.state="ARMED";toast(t("t_applied"))}
   },
@@ -764,11 +811,23 @@ function fillMkt(silent){
   Bridge.dirty=true;prevCalc();if(silent)toast(t("fillA"));
 }
 function applyLevels(){
-  const b=num($("in_b").value),s=num($("in_s").value),r=num($("in_r").value),tg=num($("in_t").value),rr=num($("in_rr").value);
-  let e=vLevels(b,s)||pairErr(b,s)||(r>0?"":t("e_risk"))||(tg<0?t("e_tneg"):"")||(rr>0?"":t("e_rr"))||(live()?"":lotFor(r,b,s).e)||"";
+  const b=num($("in_b").value),s=num($("in_s").value),r=num($("in_r").value),tg=num($("in_t").value),rr=num($("in_rr").value),lt=lotIn();
+  let e=vLevels(b,s)||pairErr(b,s)||lotErr(lt)||(r>0?"":t("e_risk"))||(tg<0?t("e_tneg"):"")||(rr>0?"":t("e_rr"))||(live()?"":lotFor(r,b,s,lt).e)||"";
   if(!e&&!live()&&S.state==="ARMED"&&!S.pos)e=placeErr(b,s);
   if(e)return toast("❌ "+e);
-  run("apply",{buy:b,sell:s,risk:r,target:tg,rr});
+  run("apply",{buy:b,sell:s,risk:r,target:tg,rr,lot:lt});
+}
+/* fix20 MANUAL LOT: an empty field means 0 = AUTO-FIXED; the lot is validated against the broker spec here and again by the EA */
+function lotIn(){const v=num($("in_lot").value);return v>0?v:0}
+function lotErr(lt){
+  if(!(lt>=0))return t("e_lotNeg");
+  if(!(lt>0))return"";
+  const bs=spec();if(!bs)return"";
+  if(lt<bs.vmin-1e-9)return t("e_lotMin",fv(bs.vmin));
+  if(lt>bs.vmax+1e-9)return t("e_lotMax");
+  if(bs.capLot>0&&lt>bs.capLot+1e-9)return t("lr_capLot",fv(bs.capLot));
+  const q=(lt-bs.vmin)/bs.vstep;if(Math.abs(q-Math.round(q))>1e-6)return t("e_lotStep",fv(bs.vstep));
+  return"";
 }
 
 /* link diagnostics: "bot offline" is NOT one problem — show EA / Bridge / MT5 / Trading separately so the user knows what to fix */
@@ -874,8 +933,8 @@ function renderDash(){
   if(live()&&link()==="ok"&&!(parseFloat(S.ver)>=2.18))h=`<div class="note er">${t("oldEA")}</div>`+h;
   h+=layersHtml(dis);
   h+=acctCard(k);
-  const L=lotFor(S.cur,S.buy,S.sell);
-  h+=`<div class="card"><h3><span class="hl">${ic("shield")}${t("rmT")}</span><span style="display:flex;gap:8px;align-items:center"><span class="num">${t("seq",S.seq+1)}</span><button class="ib" style="width:30px;height:30px" aria-label="${t("reset")}" onclick="resetUI()"${dis}>${ic("refresh")}</button><button class="ib" style="width:30px;height:30px" aria-label="${t("cyc_btn")}" title="${t("cyc_btn")}" onclick="newCycleUI()">${ic("xc")}</button></span></h3><div class="kv">${k(t("curR"),cs()+f(S.cur),"gd")}${k(t("accL"),cs()+f(S.acc),S.acc>0?"dn":"")}${k(t("lot"),L.e||(!x&&!(L.lot>0))?"—":fv(x?x.lot:L.lot))}</div>${rkRows(k)}</div>`;
+  const L=lotFor(S.cur,S.buy,S.sell,S.mlot);
+  h+=`<div class="card"><h3><span class="hl">${ic("shield")}${t("rmT")}</span><span style="display:flex;gap:8px;align-items:center"><span class="num">${t("seq",S.seq+1)}</span><button class="ib" style="width:30px;height:30px" aria-label="${t("reset")}" onclick="resetUI()"${dis}>${ic("refresh")}</button><button class="ib" style="width:30px;height:30px" aria-label="${t("cyc_btn")}" title="${t("cyc_btn")}" onclick="newCycleUI()">${ic("xc")}</button></span></h3><div class="kv">${k(t("curR"),cs()+f(S.cur),"gd")}${k(t("accL"),cs()+f(S.acc),S.acc>0?"dn":"")}${k(t("lot"),L.e||(!x&&!(L.lot>0))?"—":fv(x?x.lot:L.lot))}</div>${rkRows(k)}${qRows(k,L)}</div>`;
   setDash(h);
 }
 function renderHist(){
@@ -894,8 +953,8 @@ function rsn(r){r=String(r||"");const l=r.toLowerCase();
   return k?t(k):esc(r)}   /* v4.22: unmapped reason text is server data -> escaped */
 function fillInputs(force){
   const a=document.activeElement;if(!force&&a&&a.tagName==="INPUT")return;
-  const m={in_b:S.buy,in_s:S.sell,in_r:S.risk,in_t:S.target,in_rr:S.rr};
-  for(const id in m){const v=m[id];if(v==null||isNaN(v))continue;const s=(v>0||id==="in_t")?String(v):"";if($(id).value!==s)$(id).value=s}
+  const m={in_b:S.buy,in_s:S.sell,in_lot:S.mlot,in_r:S.risk,in_t:S.target,in_rr:S.rr};
+  for(const id in m){const v=m[id];if(v==null||isNaN(v))continue;const s=(v>0||id==="in_t"||id==="in_lot")?String(v):"";if($(id).value!==s)$(id).value=s}
   prevCalc();
 }
 const ago=s=>{s=Math.max(0,Math.round(s));return s<60?s+(LG?"s":"ث"):Math.floor(s/60)+(LG?"m":"د")};
@@ -940,21 +999,56 @@ $("t0").addEventListener("click",e=>{
   const n=e.target.dataset.n;
   if(n){vib();const k=n[0]==="b"?"in_b":"in_s";$(k).value=r2(num($(k).value)+parseFloat(n.slice(1)));Bridge.dirty=true;prevCalc()}
 });
-["in_b","in_s","in_r","in_t","in_rr"].forEach(i=>{$(i).addEventListener("input",()=>{Bridge.dirty=true;prevCalc()});$(i).addEventListener("keydown",e=>{if(e.key==="Enter"){e.preventDefault();applyLevels()}})});
+["in_b","in_s","in_lot","in_r","in_t","in_rr"].forEach(i=>{$(i).addEventListener("input",()=>{Bridge.dirty=true;prevCalc()});$(i).addEventListener("keydown",e=>{if(e.key==="Enter"){e.preventDefault();applyLevels()}})});
 /* auto stops: Buy Stop's SL = Sell Stop price · Sell Stop's SL = Buy Stop price */
 function autoSL(b,s,ok,rr){
   const d=b-s,row=(sl,tp)=>`<span>${t("aSL")}: <b class="num dn">${f(sl)}</b></span><span>${t("aTP")}: <b class="num up">${f(tp)}</b></span>`;
   $("aB").innerHTML=ok?row(s,b+d*rr):"";
   $("aS").innerHTML=ok?row(b,s-d*rr):"";
 }
+/* fix21: the money meaning of the typed lot, shown directly under the lot field and refreshed on every keystroke / every EA update */
+const mny=v=>cs()+(v>0&&v<0.01?f(v,4):f(v));
+function renderLotRisk(b,s,rr,lt,L){
+  const el=$("lotRisk");if(!el)return;
+  if(!(b>0&&s>0&&b>s)){el.className="lr";el.innerHTML="";return}        /* the levels error is already shown by the note below */
+  const bs=spec();
+  if(!bs){el.className="lr";el.innerHTML=`<div class="lr-s">${t("lr_wait")}</div>`;return}
+  const d=b-s,A=S.acct||{},x={bal:A.bal>0?A.bal:0,fm:A.fm>0?A.fm:0},auto=!(lt>0);
+  const q=lotQuote(bs,auto?(L&&L.lot>0?L.lot:0):lt,d,rr,x);
+  if(!q.ok){
+    let m="";
+    if(q.code==="NO_LOT")m=(L&&(L.warn||L.e))||t("lr_nolot");
+    else if(q.code==="BELOW_MIN")m=t("e_lotMin",fv(bs.vmin));
+    else if(q.code==="ABOVE_MAX"||q.code==="ABOVE_LIMIT")m=t("lr_max",fv(q.max));
+    else if(q.code==="OFF_STEP")m=t("e_lotStep",fv(bs.vstep));
+    else m=t("lr_wait");
+    const near=q.near.length&&q.perLot>0?`<div class="lr-r"><span>${t("lr_near")}</span><b class="num">${q.near.map(v=>fv(v)+" → "+mny(v*q.perLot)).join(" · ")}</b></div>`:"";
+    el.className="lr er";el.innerHTML=`<div class="lr-m">${esc(m)}</div>${near}`;return}
+  const row=(l,v,c)=>`<div class="lr-r"><span>${l}</span><b class="num ${c||""}">${v}</b></div>`,pu=q.perLot/q.d;
+  let h=`<div class="lr-top"><div><small>${t(auto?"lr_lossA":"lr_loss")}</small><div class="lr-big num dn">${mny(q.loss)}</div></div><div class="lr-lot num">${fv(q.lot)} <small>${t("lots")}</small></div></div>`
+    +`<div class="lr-f"><span class="ltr num">${fv(q.lot)} × ${fp(q.d)} × ${cs()}${f(pu,pu<1?4:2)}</span></div>`
+    +row(t("lr_tp",f(rr,rr%1?2:0)),"+"+mny(q.profit),"up");
+  if(q.comm>0)h+=row(t("lr_comm"),"~"+mny(q.comm))+row(t("lr_tot"),mny(q.total),"dn")+row(t("lr_net"),"+"+mny(q.net),"up");
+  if(q.pct>0)h+=row(t("lr_pct"),f(q.pct,q.pct<0.1?3:2)+"%");
+  if(q.margin>0)h+=row(t("lr_mg"),mny(q.margin))+(x.fm>0?row(t("lr_fm"),mny(x.fm)):"");
+  h+=q.warns.map(w=>`<div class="lr-w">⏳ ${esc(t("lr_w_"+w.k,...(w.k==="capPct"?[f(w.a[0]),mny(w.a[1])]:w.a.map(mny))))}</div>`).join("");
+  h+=`<div class="lr-s">${live()?t(q.exact?"lr_src_ok":"lr_src_est"):t("lr_src_sim",esc(SIMP))}</div>`;
+  el.className="lr";el.innerHTML=h}
 function prevCalc(){
-  const b=num($("in_b").value),s=num($("in_s").value),r=num($("in_r").value),e=vLevels(b,s),p=$("prev"),rr=num($("in_rr").value)||S.rr;
+  const b=num($("in_b").value),s=num($("in_s").value),r=num($("in_r").value),e=vLevels(b,s),p=$("prev"),rr=num($("in_rr").value)||S.rr,lt=lotIn();
   autoSL(b,s,!e,rr);
-  if(e){p.className="note er";p.textContent=e;return}
-  const L=lotFor(r,b,s),me=mktNote(b,s),pe=pairErr(b,s);p.className="note"+(L.e||pe?" er":"");
+  if(e){renderLotRisk(b,s,rr,lt,null);p.className="note er";p.textContent=e;return}
+  const L=lotFor(r,b,s,lt),me=mktNote(b,s),pe=pairErr(b,s);
+  renderLotRisk(b,s,rr,lt,L);
+  p.className="note"+(L.e||pe?" er":"");
   if(L.e||pe){p.textContent=L.e||pe;return}
   if(L.pending){p.textContent=t("pvEA");return}
-  p.textContent=(L.lot>0?t("pv",fv(L.lot),cs()+f(L.est),cs()+f(L.est*rr)):"")+(L.warn?(L.lot>0?"\n":"")+"⏳ "+L.warn:"")+(S.pos?t("pvA"):"")+(me?"\n"+me:"")+(rr>=10?"\n"+t("rrHi",f(rr,0),fp(b-s),fp(b+(b-s)*rr),fp(s-(b-s)*rr)):"");
+  const ln=[];
+  if(L.warn)ln.push("⏳ "+L.warn);
+  if(S.pos)ln.push(t("pvA").replace(/^[\s·]+/,""));
+  if(me)ln.push(me);
+  if(rr>=10)ln.push(t("rrHi",f(rr,0),fp(b-s),fp(b+(b-s)*rr),fp(s-(b-s)*rr)));
+  p.textContent=ln.join("\n");
 }
 $("applyB").onclick=applyLevels;
 
@@ -1122,7 +1216,37 @@ $("vfGo").onclick=()=>{vib&&vib();Verify.tries=0;Verify.run(true)};
 $("vfAlt").onclick=()=>Login.out(true);
 window.addEventListener("load",()=>TG.init());
 setTheme(UI.th||(matchMedia("(prefers-color-scheme: light)").matches?"light":"dark"));
-$("in_b").value=S.buy;$("in_s").value=S.sell;$("in_r").value=S.risk;$("in_t").value=S.target;$("in_rr").value=S.rr;
+Object.assign(D,{
+lotL:["حجم اللوت (يدوي) — الحقل الذي تتحكم به أنت","Lot size (manual) — the field YOU control"],
+lotN:["هذا هو حجم كل أمر Buy Stop / Sell Stop. البوت لا يرفعه ولا يضاعفه ولا يخفضه أبداً — أنت فقط تغيّره، في أي وقت. الصفقة المفتوحة تحتفظ بلوتها حتى تغلقها بنفسك. اتركه 0 = لوت تلقائي ثابت من المخاطرة (لا يكبر أبداً).","This is the size of every Buy Stop / Sell Stop. The bot never raises, doubles or lowers it — only you change it, any time. An open trade keeps its own lot until you close it. Leave 0 = fixed automatic lot from the risk (it never grows)."],
+lotMode:["اللوت اليدوي","Manual lot"],
+e_lotNeg:["اللوت يجب أن يكون صفراً أو رقماً موجباً","Lot must be zero or a positive number"],
+e_lotStep:["اللوت لا يطابق خطوة الوسيط ({0})","The lot does not fit the broker lot step ({0})"],
+riskL:["المخاطرة الأولية (Risk $) — تُستخدم فقط عندما يكون اللوت = 0","Initial risk (Risk $) — used only when Lot = 0"],
+tgtN:["هدف إغلاق الدورة في الدفتر فقط — لا يحدّد أي لوت ولا يُضاعف شيئاً","Cycle-ledger end target only — it never sets a lot and never multiplies anything"],
+t_sl:["وقف الخسارة {0}$ · اللوت ثابت {1}","Stop loss {0}$ · lot unchanged {1}"],
+lr_wait:["بانتظار مواصفات الوسيط من الـ EA لحساب المخاطرة بدقة","Waiting for the broker specification from the EA to calculate the exact risk"],
+lr_nolot:["اللوت = 0 (تلقائي): يُحسب من حقل المخاطرة بعد إدخال المستويين","Lot = 0 (auto): sized from the Risk field once the levels are valid"],
+lr_loss:["الخسارة عند وقف الخسارة (SL)","Loss if the SL is hit"],
+lr_lossA:["الخسارة عند SL (لوت تلقائي)","Loss at SL (auto lot)"],
+lr_tp:["ربح الهدف TP (1:{0})","Profit at TP (1:{0})"],
+lr_comm:["العمولة (ذهاب وإياب)","Commission (round trip)"],
+lr_tot:["إجمالي الخسارة مع العمولة","Total loss incl. commission"],
+lr_net:["صافي ربح TP بعد العمولة","Net profit at TP after commission"],
+lr_pct:["نسبة من الرصيد","Share of the balance"],
+lr_mg:["الهامش المطلوب","Margin required"],
+lr_fm:["الهامش الحر","Free margin"],
+lr_near:["أقرب لوت صالح","Nearest valid lot"],
+lr_max:["أكبر لوت مسموح {0}","Largest allowed lot {0}"],
+lr_capLot:["اللوت يتجاوز سقف Max Lot في الـ EA ({0})","The lot exceeds the EA Max Lot cap ({0})"],
+lr_w_capPct:["المخاطرة تتجاوز سقف {0}% من الرصيد ({1}) — لن تُرسل أوامر حتى تخفض اللوت","The risk exceeds the {0}% of balance cap ({1}) — no orders are sent until you lower the lot"],
+lr_w_capUsd:["المخاطرة تتجاوز سقف الصفقة ({0}) — لن تُرسل أوامر حتى تخفض اللوت","The risk exceeds the per-trade cap ({0}) — no orders are sent until you lower the lot"],
+lr_w_capDay:["خسارة اليوم ({1}) + هذه المخاطرة تتجاوز حد اليوم ({0}) — الأوامر تنتظر اليوم التالي","Today's loss ({1}) + this risk exceeds the daily limit ({0}) — orders wait for the next day"],
+lr_w_noMargin:["الهامش المطلوب ({0}) أكبر من الهامش الحر ({1}) — الأوامر تنتظر","Required margin ({0}) is above the free margin ({1}) — orders wait"],
+lr_src_ok:["حساب الوسيط مباشرة (OrderCalcProfit) · أرقام اسمية بلا انزلاق سعري أو سواب","Broker figure (OrderCalcProfit) · nominal: no slippage or swap"],
+lr_src_est:["تقدير من مواصفات الرمز (Tick × قيمة Tick) — أعد ترجمة الـ EA (F7) للحصول على حساب الوسيط الدقيق","Estimate from the symbol spec (tick × tick value) — recompile the EA (F7) for the exact broker figure"],
+lr_src_sim:["محاكاة — ملف الوسيط: {0}","Simulation — broker profile: {0}"]});
+$("in_b").value=S.buy;$("in_s").value=S.sell;$("in_lot").value=S.mlot;$("in_r").value=S.risk;$("in_t").value=S.target;$("in_rr").value=S.rr;
 const phoneLang=()=>{try{const w=TG.wa||(window.Telegram&&Telegram.WebApp),u=w&&w.initDataUnsafe&&w.initDataUnsafe.user,l=String((u&&u.language_code)||navigator.language||(navigator.languages&&navigator.languages[0])||"ar").toLowerCase();return l.indexOf("ar")===0?0:1}catch(e){return 0}};
 setLang(UI.lgManual?(UI.lg||0):phoneLang());   // phone language (Telegram / system) unless the user switched manually with the language button
 window.addEventListener("load",()=>{if(!UI.lgManual){const v=phoneLang();if(v!==LG)setLang(v)}});   // the Telegram script loads async: re-check once it is there

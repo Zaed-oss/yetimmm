@@ -8,3 +8,8 @@ node_modules/
 *.ex5
 ea/Yetimmm.cfg
 TERMINAL.local.md
+
+ea/
+tools/
+
+.github/

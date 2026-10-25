@@ -18,7 +18,7 @@ test("source: helper, input (default 0 = previous behaviour) and LOTCHAIN log ex
   assert.match(ea, /double QuantizeLot\(/);
   assert.match(ea, /input double InpRoundUpMaxOverPct\s*=\s*0\.0;/);
   assert.match(ea, /YLog\("LOTCHAIN risk /);
-  assert.match(ea, /QuantizeLot\(raw,vmin,step,risk,perSz,\(g_accLoss>1e-9 \|\| g_cycNet>1e-9\),how\)/);
+  assert.match(ea, /QuantizeLot\(raw,vmin,step,risk,perSz,false,how\)/);   // fix20: a debt no longer rounds the lot UP (no hidden growth)
 });
 test("limit 0 keeps the old behaviour for every step", () => {
   for (const step of [0.01, 0.1, 1]) {

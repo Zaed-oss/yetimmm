@@ -92,9 +92,9 @@ test("SOURCE: DoStart and the Telegram /set call it; the single-side modify and 
   assert.ok(!fnBody("string ExecModifySide(").includes("UserNewCycle"));
   assert.ok(!fnBody("void LoadState(").includes("UserNewCycle") && !fnBody("void LedgerSelfCheck(").includes("UserNewCycle"));
 });
-test("SOURCE: the lot of a cycle comes only from the cycle ledger (NextRiskForNet(g_cycNet)); no history / general-loss variable is read", () => {
+test("SOURCE (fix20): the risk of a trade no longer comes from the ledger at all - NextRiskForNet is the fixed initial risk; no history / general-loss variable is read", () => {
   const n = fnBody("double NextRiskForNet(");
-  assert.ok(/g_target-net/.test(n) && !/History|g_stats|StatsAdd|DayNet/.test(n));
+  assert.ok(/return g_initRisk;/.test(n) && !/g_target|g_rr|History|g_stats|StatsAdd|DayNet/.test(n));
   const cb = fnBody("string CycleBook(");
   assert.ok(cb.includes("g_curRisk=NextRiskForNet(g_cycNet);"));
 });
