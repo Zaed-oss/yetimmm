@@ -42,8 +42,8 @@ test("forced logout (expired session) keeps its own message and makes no server 
   let called = 0; const r = await run(false, async () => { called++; return { ok: true }; });
   assert.equal(called, 0); assert.equal(r.cleared.length, 1);
 });
-test("both new messages exist in the dictionary (ar/en)", () => {
-  assert.match(html, /D\.out_ok=\["[^"]+","[^"]+"\]/); assert.match(html, /D\.out_warn=\["[^"]+","[^"]+"\]/);
+test("both new messages exist in the dictionary (Arabic only)", () => {
+  assert.match(html, /D\.out_ok="[^"]*[\u0600-\u06FF][^"]*";/); assert.match(html, /D\.out_warn="[^"]*[\u0600-\u06FF][^"]*";/);
 });
 test("EA: default keyboard is opt-in, /menu and commands remain", () => {
   assert.match(ea, /input\s+bool\s+InpTgMenu\s*=\s*false/);

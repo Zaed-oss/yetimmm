@@ -1,4 +1,4 @@
-// Minimal Cloudflare Durable Object + Workers runtime mock for testing worker.js / news.js offline.
+// Minimal Cloudflare Durable Object + Workers runtime mock for testing worker.js / notify.js offline.
 export class Storage {
   constructor(){ this.m=new Map(); this.alarm=null; }
   async get(k){ if(Array.isArray(k)){const o=new Map();for(const x of k) if(this.m.has(x)) o.set(x,this.m.get(x));return o;} const v=this.m.get(k); return v===undefined?undefined:structuredClone(v); }

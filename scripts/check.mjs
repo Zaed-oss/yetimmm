@@ -11,7 +11,7 @@ const fail = (m) => { bad++; console.log("  FAIL " + m); };
 const read = (p) => readFileSync(join(root, p), "utf8");
 
 // 1) JavaScript syntax
-for (const f of ["worker/worker.js", "worker/news.js", "news/yt-news.js", "anim/yt-anim.js"]) {
+for (const f of ["worker/worker.js", "worker/notify.js", "anim/yt-anim.js"]) {
   try { execFileSync(process.execPath, ["--check", join(root, f)], { stdio: "pipe" }); ok(f + " syntax"); } catch (e) { fail(f + " syntax: " + String(e.stderr).split("\n")[0]); }
 }
 // 2) inline script of index.html

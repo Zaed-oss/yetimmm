@@ -8,7 +8,6 @@ import { fileURLToPath } from "node:url";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const ea = readFileSync(join(root, "ea", "Yetimmm.mq5"), "utf8");
-const news = readFileSync(join(root, "news", "yt-news.js"), "utf8");
 
 // mirrors YtNorm / YtClassifySymbol (calc: "stocks" = SYMBOL_CALC_MODE_EXCH_STOCKS[_MOEX])
 const norm = (s) => String(s || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
@@ -86,14 +85,4 @@ test("EA: a changed symbol name with an open cycle is reported (state is keyed b
 test("EA -> Worker: the heartbeat carries bccy and cls next to pccy", () => {
   assert.match(ea, /\\"bccy\\":\\""\+JEsc\(SymbolInfoString\(g_sym,SYMBOL_CURRENCY_BASE\)\)/);
   assert.match(ea, /\\"cls\\":\\""\+g_symClass/);
-});
-
-test("Mini App news: a broker gold name still gets the USD tag (symCur)", () => {
-  const src = news.match(/const symCur=\(\)=>\{[^\n]*\};/)[0];
-  const FLG = { USD: 1, EUR: 1, GBP: 1, JPY: 1 };
-  const run = (sym) => new Function("S", "FLG", src + "; return symCur();")({ sym }, FLG);
-  assert.deepEqual(run("GOLDm#"), ["USD"]);
-  assert.deepEqual(run("XAUUSD"), ["USD"]);
-  assert.deepEqual(run("GOLD"), ["USD"]);
-  assert.deepEqual(run("EURUSD"), ["EUR", "USD"]);
 });

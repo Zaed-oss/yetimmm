@@ -7890,19 +7890,9 @@ string JEsc(const string s)
   }
 
 //+------------------------------------------------------------------+
-//| v2.20: MT5 built-in economic calendar -> Worker                   |
-//| The logged-in MT5 account is the news source: it carries the REAL |
-//| Actual values and the broker's own server time. The EA sends only |
-//| a tiny content hash every sync; the full table travels only when  |
-//| the content changed (or the Worker asks for it). Times are UTC.   |
+//| Broker time offset -> Worker (sent on every sync as "tzo")        |
+//| Used for the weekly window and for the times in order alerts.     |
 //+------------------------------------------------------------------+
-string   g_calJson="";           // rows array (JSON) of this week
-string   g_calHash="";           // content hash of g_calJson
-string   g_calSent="";           // last hash the Worker received
-bool     g_calNeed=false;        // the Worker asked for the table
-bool     g_calHot=false;         // an event is due / just released and still has no Actual -> refresh fast
-datetime g_calBuilt=0;
-
 // broker server time minus GMT, rounded to 15 min (DST of the broker is followed automatically)
 int BrTzOffset()
   {
@@ -7910,97 +7900,6 @@ int BrTzOffset()
    long r=(long)MathRound((double)d/900.0)*900;
    if(r>50400 || r<-50400) r=0;
    return (int)r;
-  }
-
-string CalHash(const string s)
-  {
-   ulong h=5381;
-   int n=StringLen(s);
-   for(int i=0;i<n;i++) h=((h<<5)+h)+(ulong)StringGetCharacter(s,i);
-   return StringFormat("%I64x",h);
-  }
-
-string CalFmt(const double v,const MqlCalendarEvent &ev)
-  {
-   if(!MathIsValidNumber(v)) return "";
-   string suf="";
-   switch(ev.multiplier)
-     {
-      case CALENDAR_MULTIPLIER_THOUSANDS: suf="K"; break;
-      case CALENDAR_MULTIPLIER_MILLIONS:  suf="M"; break;
-      case CALENDAR_MULTIPLIER_BILLIONS:  suf="B"; break;
-      case CALENDAR_MULTIPLIER_TRILLIONS: suf="T"; break;
-      default: break;
-     }
-   if(ev.unit==CALENDAR_UNIT_PERCENT) suf+="%";
-   int dg=(int)ev.digits;
-   if(dg>6) dg=6;
-   return DoubleToString(v,dg)+suf;
-  }
-
-bool CalBuild()
-  {
-   string cur[]={"USD","EUR","GBP","JPY","AUD","CAD","CHF","NZD","CNY"};
-   datetime st=TimeTradeServer();
-   MqlDateTime dt;
-   TimeToStruct(st,dt);
-   datetime day0=st-(datetime)(dt.hour*3600+dt.min*60+dt.sec);
-   datetime mon=day0-(datetime)(((dt.day_of_week+6)%7)*86400);      // Monday 00:00 (server time) of this week
-   datetime from=mon, to=mon+7*86400;
-   if(dt.day_of_week==0 || dt.day_of_week==6) to=mon+14*86400;     // weekend: also show next week so "next event" is never empty
-   int off=BrTzOffset();
-   string rows="";
-   int cnt=0;
-   bool hot=false;
-   for(int c=0;c<ArraySize(cur) && cnt<450;c++)
-     {
-      MqlCalendarValue vals[];
-      ResetLastError();
-      int n=CalendarValueHistory(vals,from,to,NULL,cur[c]);
-      if(n<=0) continue;
-      for(int i=0;i<n && cnt<450;i++)
-        {
-         MqlCalendarEvent ev;
-         if(!CalendarEventById(vals[i].event_id,ev)) continue;
-         MqlCalendarCountry co;
-         if(!CalendarCountryById(ev.country_id,co)) continue;
-         string imp="";
-         if(ev.type==CALENDAR_TYPE_HOLIDAY) imp="holiday";
-         else if(ev.importance==CALENDAR_IMPORTANCE_HIGH) imp="high";
-         else if(ev.importance==CALENDAR_IMPORTANCE_MODERATE) imp="medium";
-         else if(ev.importance==CALENDAR_IMPORTANCE_LOW) imp="low";
-         else continue;
-         if(ev.type!=CALENDAR_TYPE_HOLIDAY && (ev.time_mode==CALENDAR_TIMEMODE_NOTIME || ev.time_mode==CALENDAR_TIMEMODE_TENTATIVE)) continue;   // no exact time: an alert would be a guess
-         bool euCountry=(cur[c]=="EUR" && co.code!="EU");
-         if(euCountry && (imp=="low" || imp=="holiday")) continue;   // keep the euro list readable: member-state noise only when it matters
-         string a="",f="",p="";
-         if(vals[i].HasActualValue())   a=CalFmt(vals[i].GetActualValue(),ev);
-         if(vals[i].HasForecastValue()) f=CalFmt(vals[i].GetForecastValue(),ev);
-         if(vals[i].HasRevisedValue())       p=CalFmt(vals[i].GetRevisedValue(),ev);
-         else if(vals[i].HasPreviousValue()) p=CalFmt(vals[i].GetPreviousValue(),ev);
-         if(imp!="holiday" && a=="" && vals[i].time>=st-1800 && vals[i].time<=st+180) hot=true;
-         string nm=ev.name;
-         if(euCountry) nm=co.code+" "+nm;
-         if(StringLen(nm)>90) nm=StringSubstr(nm,0,90);
-         long utc=(long)vals[i].time-(long)off;
-         rows+=(cnt>0?",":"")+"{\"t\":\""+JEsc(nm)+"\",\"c\":\""+cur[c]+"\",\"s\":"+IntegerToString(utc)+",\"m\":\""+imp+"\",\"p\":\""+JEsc(p)+"\",\"f\":\""+JEsc(f)+"\",\"a\":\""+JEsc(a)+"\"}";
-         cnt++;
-        }
-     }
-   g_calHot=hot;
-   if(cnt==0) return false;                      // calendar not synchronised yet / no data: keep what we had
-   g_calJson="["+rows+"]";
-   g_calHash=CalHash(g_calJson);
-   return true;
-  }
-
-void CalTick()
-  {
-   if(MQLInfoInteger(MQL_TESTER)) return;
-   int every=g_calHot?4:60;                      // fast only around a release, so Actual reaches the app within seconds
-   if(g_calBuilt!=0 && TimeLocal()-g_calBuilt<every) return;
-   g_calBuilt=TimeLocal();
-   if(!CalBuild() && StringLen(g_calHash)==0) g_calBuilt=TimeLocal()-50;   // first data not ready: retry in ~10 s
   }
 
 bool JDbl(const string seg,const string key,double &v)
@@ -8396,7 +8295,7 @@ string BsJson()
    long stops=SymbolInfoInteger(g_sym,SYMBOL_TRADE_STOPS_LEVEL), frz=SymbolInfoInteger(g_sym,SYMBOL_TRADE_FREEZE_LEVEL);
    long exe=SymbolInfoInteger(g_sym,SYMBOL_TRADE_EXEMODE), fil=SymbolInfoInteger(g_sym,SYMBOL_FILLING_MODE), exm=SymbolInfoInteger(g_sym,SYMBOL_EXPIRATION_MODE), tm=SymbolInfoInteger(g_sym,SYMBOL_TRADE_MODE);
    double contract=SymbolInfoDouble(g_sym,SYMBOL_TRADE_CONTRACT_SIZE);
-   //--- change detection: brokers may change these (news, session switch) - log it once, the next calculation already uses the new values
+   //--- change detection: brokers may change these (session switch) - log it once, the next calculation already uses the new values
    string sig=JNum8(vmin)+"|"+JNum8(vmax)+"|"+JNum8(vst)+"|"+JNum8(vlm)+"|"+IntegerToString((int)stops)+"|"+IntegerToString((int)frz)+"|"+JNum8(tvl)+"|"+JNum8(contract)+"|"+IntegerToString((int)exe)+"|"+IntegerToString((int)exm)+"|"+IntegerToString((int)tm);
    if(sig!=g_bsSig)
      {
@@ -8706,17 +8605,9 @@ void BridgeSync()
 
    if(!g_brCvLoaded) { g_brCv=(int)StringToInteger(CfgGet("brcv","0")); g_brCvLoaded=true; }
    if(!g_brPairLoaded) { g_brPairNeed=(CfgGet("brpaired","0")!="1"); g_brPairLoaded=true; }
-   //--- v2.20: broker time offset every sync; calendar hash every sync; full table only when it changed / was requested
-   CalTick();
-   string calPart=",\"tzo\":"+IntegerToString(BrTzOffset());
-   bool   calSending=false;
-   string calHashSent=g_calHash;
-   if(StringLen(g_calHash)>0)
-     {
-      calPart+=",\"calv\":\""+g_calHash+"\"";
-      if(g_calHash!=g_calSent || g_calNeed) { calPart+=",\"cal\":"+g_calJson; calSending=true; }
-     }
-   string body="{\"login\":\""+IntegerToString((long)AccountInfoInteger(ACCOUNT_LOGIN))+"\",\"srv\":\""+JEsc(AccountInfoString(ACCOUNT_SERVER))+"\",\"fresh\":"+(g_brFresh?"true":"false")+",\"reset\":"+(InpBrResetPw?"true":"false")+",\"cv\":"+IntegerToString(g_brCv)+calPart+",\"inst\":\""+g_instId+"\",\"state\":"+BrStateJson()+",\"ack\":[";
+   //--- broker time offset every sync
+   string tzPart=",\"tzo\":"+IntegerToString(BrTzOffset());
+   string body="{\"login\":\""+IntegerToString((long)AccountInfoInteger(ACCOUNT_LOGIN))+"\",\"srv\":\""+JEsc(AccountInfoString(ACCOUNT_SERVER))+"\",\"fresh\":"+(g_brFresh?"true":"false")+",\"reset\":"+(InpBrResetPw?"true":"false")+",\"cv\":"+IntegerToString(g_brCv)+tzPart+",\"inst\":\""+g_instId+"\",\"state\":"+BrStateJson()+",\"ack\":[";
    for(int i=0;i<ArraySize(g_brAck);i++) body+=(i>0?",":"")+"\""+g_brAck[i]+"\"";
    body+="],\"ev\":"+EvJson()+",\"net\":"+BrNetJson()+"}";
    string url=g_brUrl;
@@ -8810,8 +8701,6 @@ void BridgeSync()
    ArrayResize(g_brAck,0);              // the acks in this request were delivered
    g_netAckWait=false;
    EvAckFrom(resp);                     // v2.23: events the Worker accepted (or already had) leave the outbox
-   if(calSending) { g_calSent=calHashSent; g_calNeed=false; }
-   if(StringFind(resp,"\"calNeed\":true")>=0) g_calNeed=true;   // the Worker lost / never had the table: send it on the next sync
 
    //--- v2.19b: Telegram Bot Token / Chat IDs pushed by the Worker (no manual entry, survives restarts)
    int fpos=StringFind(resp,"\"cfg\":{");

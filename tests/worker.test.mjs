@@ -143,30 +143,14 @@ test("CORS: restricted origin is honoured", async () => {
   assert.equal(ok.h.get("Access-Control-Allow-Origin"), "https://me.github.io");
 });
 
-test("notifications: dedupe, list, and mark-all-read with more than 128 items", async () => {
+test("Notify engine: one trigger = one record (dedupe); the removed notification-center routes do not exist any more", async () => {
   const b = boot({ BOT_TOKEN: "" });
   const n = b.env.NOTIFY.get("main");
   const post = async (p, body) => (await n.fetch("https://n" + p, { method: "POST", body: JSON.stringify(body) })).json();
-  assert.equal((await post("/emit", { uid: "a1", title: "x", event_id: "e0", alert_type: "n0" })).ok, true);
-  assert.equal((await post("/emit", { uid: "a1", title: "x", event_id: "e0", alert_type: "n0" })).dup, true);   // same trigger twice = once
-  for (let i = 1; i < 150; i++) await post("/emit", { uid: "a1", title: "t" + i, event_id: "e" + i, alert_type: "n0" });
-  const l = await post("/notifs", { uid: "a1", limit: 100 });
-  assert.equal(l.items.length, 100);
-  assert.equal((await post("/read", { uid: "a1", all: true })).ok, true);
-  assert.equal((await post("/notifs", { uid: "a1", limit: 100 })).unread, 0);
-});
-
-test("MT5 calendar feed: EA pushes rows, calendar serves them with Actual", async () => {
-  const b = boot();
-  const soon = Math.floor(Date.now() / 1000) + 3600;
-  const rows = [{ t: "Non-Farm Payrolls", c: "USD", s: soon, m: "high", p: "150K", f: "180K", a: "" }];
-  const r = await b.sync("123456", { tzo: 10800, calv: "abc123", cal: rows });
-  assert.equal(r.j.ok, true);
-  await b.sync("123456");
-  const sess = (await b.signIn()).j.sess;
-  const cal = await b.call("/news/calendar", { headers: b.auth("123456", sess), body: {} });
-  assert.equal(cal.s, 200); assert.equal(cal.j.events.length, 1); assert.equal(cal.j.events[0].title, "Non-Farm Payrolls");
-  assert.equal(cal.j.market_off, 10800); assert.equal(cal.j.has_actual, true);
+  assert.equal((await post("/emit", { uid: "a1", title: "x", event_id: "e0", alert_type: "n0", type: "ea" })).ok, true);
+  assert.equal((await post("/emit", { uid: "a1", title: "x", event_id: "e0", alert_type: "n0", type: "ea" })).dup, true);   // same trigger twice = once
+  for (let i = 1; i < 150; i++) await post("/emit", { uid: "a1", title: "t" + i, event_id: "e" + i, alert_type: "n0", type: "ea" });
+  for (const p of ["/notifs", "/read"]) assert.equal((await n.fetch("https://n" + p, { method: "POST", body: "{}" })).status, 404, p);
 });
 
 // ═════════════ v4.6 — audit fixes ═════════════
@@ -226,7 +210,7 @@ test("STALE: the server is the single source of the offline timeout (/state and 
   assert.equal(st.j.eaStaleSec, 25); assert.equal(st.j.eaOnline, true);
 });
 
-test("SLIDING SESSION: authenticated activity (state / command / news) extends the session, idle time does not", async () => {
+test("SLIDING SESSION: authenticated activity (state / command) extends the session, idle time does not", async () => {
   const b = boot();
   await b.sync("123456");
   const sess = (await b.signIn()).j.sess, h = b.auth("123456", sess), hub = b.hubOf("123456");
@@ -237,7 +221,6 @@ test("SLIDING SESSION: authenticated activity (state / command / news) extends t
   assert.equal((await b.call("/state", { method: "GET", headers: h })).s, 200);
   assert.ok(Date.now() - t0() < 120000, "/state must slide the session");
   age(29); assert.equal((await b.call("/command", { headers: h, body: { cmd: "stop" } })).s, 200); assert.ok(Date.now() - t0() < 120000, "/command must slide it");
-  age(29); assert.equal((await b.call("/news/calendar", { headers: h, body: {} })).s, 200); assert.ok(Date.now() - t0() < 120000, "/news must slide it");
   age(31); assert.equal((await b.call("/state", { method: "GET", headers: h })).s, 401);   // really idle for > 30 days: expired
 });
 
@@ -250,23 +233,73 @@ test("SLIDING SESSION: writes are throttled (touch window) so /state polling nev
   assert.equal(puts, 0);
 });
 
-test("NEWS SHARDS: two broker servers keep separate calendars / time offsets; NEWS_SCOPE=global restores the single shard", async () => {
-  const soon = Math.floor(Date.now() / 1000) + 3600;
-  const rowA = [{ t: "Broker A event", c: "USD", s: soon, m: "high", p: "1", f: "2", a: "" }], rowB = [{ t: "Broker B event", c: "USD", s: soon, m: "high", p: "1", f: "2", a: "" }];
+test("NOTIFY SHARDS: two broker servers keep their Telegram delivery journals apart; the broker time offset is stored per account", async () => {
+  await withTelegramMock(async () => {
+    const b = boot();
+    await b.sync("111111", { srv: "BrokerA-Live", tzo: 7200, state: { evp: 1 } });
+    await b.sync("222222", { srv: "BrokerB-Live", tzo: 10800, state: { evp: 1 } });
+    assert.equal(b.hubOf("111111").__st.m.get("acc").tzo, 7200);
+    assert.equal(b.hubOf("222222").__st.m.get("acc").tzo, 10800);
+    await registerChat(b, "111111", "55501234"); await registerChat(b, "222222", "55505678");
+    const r1 = await b.sync("111111", { srv: "BrokerA-Live", state: { evp: 1 }, ev: [{ id: "111111:1:1", k: "ev", t: "A", b: "" }] });
+    const r2 = await b.sync("222222", { srv: "BrokerB-Live", state: { evp: 1 }, ev: [{ id: "222222:1:1", k: "ev", t: "B", b: "" }] });
+    assert.deepEqual(r1.j.evack, ["111111:1:1"]); assert.deepEqual(r2.j.evack, ["222222:1:1"]);
+    assert.ok(b.env.NOTIFY.inst.size >= 2);                            // one Notify shard per broker server
+  });
+});
+
+test("REMOVED: the economic-calendar routes no longer exist and old EAs that still send a calendar table are simply ignored", async () => {
   const b = boot();
-  await b.sync("111111", { srv: "BrokerA-Live", tzo: 7200, calv: "aaa1", cal: rowA });
-  await b.sync("222222", { srv: "BrokerB-Live", tzo: 10800, calv: "bbb1", cal: rowB });
-  await b.sync("111111", { srv: "BrokerA-Live" }); await b.sync("222222", { srv: "BrokerB-Live" });
-  const la = (await b.signIn("111111")).j.sess, lb = (await b.signIn("222222")).j.sess;
-  const ca = await b.call("/news/calendar", { headers: b.auth("111111", la), body: {} });
-  const cb = await b.call("/news/calendar", { headers: b.auth("222222", lb), body: {} });
-  assert.deepEqual(ca.j.events.map((e) => e.title), ["Broker A event"]); assert.equal(ca.j.market_off, 7200);
-  assert.deepEqual(cb.j.events.map((e) => e.title), ["Broker B event"]); assert.equal(cb.j.market_off, 10800);
-  const g = boot({ NEWS_SCOPE: "global" });
-  await g.sync("111111", { srv: "BrokerA-Live", tzo: 7200, calv: "aaa1", cal: rowA });
-  await g.sync("222222", { srv: "BrokerB-Live", tzo: 10800, calv: "bbb1", cal: rowB });
-  assert.equal(g.env.NOTIFY.inst.size, 1);                           // legacy behaviour: one shared shard
-  assert.ok(b.env.NOTIFY.inst.size >= 2);
+  const r = await b.sync("123456", { tzo: 10800, calv: "abc123", cal: [{ t: "x", c: "USD", s: 1, m: "high" }] });
+  assert.equal(r.s, 200); assert.equal(r.j.ok, true); assert.equal(r.j.calNeed, undefined);
+  const sess = (await b.signIn()).j.sess;
+  for (const path of ["/cal" + "endar", "/alert", "/pref"]) assert.equal((await b.call("/notify" + path, { headers: b.auth("123456", sess), body: {} })).s, 404);
+  assert.equal(b.hubOf("123456").__st.m.get("acc").tzo, 10800);        // the broker time offset still arrives
+});
+
+test("REMOVED: the first request to a Notify shard wipes the data of the removed features (old alerts, bell records) but keeps the EA-event delivery journal", async () => {
+  const b = boot({ BOT_TOKEN: "" });
+  const n = b.env.NOTIFY.get("main"), st = n.__o.__st;
+  const keep = { id: "k1", user_id: "ea1", type: "ea", title: "SL", body: "x", created_at: 5, status: "Retrying" };
+  const bell = { id: "b1", user_id: "a1", type: "order", title: "Order Activated", body: "x", created_at: 6, status: "Sent" };
+  const old = { id: "o1", user_id: "a1", type: "legacy", title: "old", body: "x", created_at: 7, status: "Sent" };
+  st.m.set("purged", 1);                                              // a shard already cleaned by the previous release still gets the new cleanup
+  st.m.set("h:ea1:keep", keep); st.m.set("rt:k1", "h:ea1:keep"); st.m.set("h:a1:bell", bell); st.m.set("rt:b1", "h:a1:bell"); st.m.set("h:a1:old", old); st.m.set("rt:o1", "h:a1:old");
+  await n.fetch("https://n/anything", { method: "POST", body: "{}" });
+  for (const k of ["h:a1:bell", "rt:b1", "h:a1:old", "rt:o1"]) assert.equal(st.m.has(k), false, k + " must be gone");
+  assert.equal(st.m.has("h:ea1:keep"), true); assert.equal(st.m.has("rt:k1"), true);
+  assert.equal(st.m.get("purged"), 2);
+  const b2 = boot({ BOT_TOKEN: "" }), n2 = b2.env.NOTIFY.get("main"), st2 = n2.__o.__st;     // a shard from the oldest releases
+  st2.m.set("al:a1:ev1", { enabled: true }); st2.m.set("pref:a1", { tz: "UTC" }); st2.m.set("cal", { events: [] }); st2.m.set("mt5", { rows: [] });
+  await n2.fetch("https://n/anything", { method: "POST", body: "{}" });
+  for (const k of ["al:a1:ev1", "pref:a1", "cal", "mt5"]) assert.equal(st2.m.has(k), false, k + " must be gone");
+});
+
+test("REMOVED: the bell (order alerts) and the notification center have no routes, no state field and no stored records; old records are wiped once", async () => {
+  const b = boot({ BOT_TOKEN: "" });
+  await b.sync("123456", { state: { orders: [{ ticket: 111, side: "BUY STOP", price: 4138, lot: 0.1, sl: 4137, tp: 4158 }] } });
+  const hub = b.hubOf("123456");
+  hub.__st.m.set("oa:a123456:t111", { id: "x", status: "armed", enabled: true });            // a record left by the removed feature
+  const acc = hub.__st.m.get("acc"); delete acc.oaGone; hub.__st.m.set("acc", acc);
+  const r = await b.sync("123456");
+  assert.equal(r.s, 200); assert.equal(hub.__st.m.has("oa:a123456:t111"), false);
+  assert.equal(hub.__st.m.get("acc").oaGone, 1);
+  const h = b.auth("123456", (await b.signIn()).j.sess);
+  for (const p of ["/order-alert", "/notify/list", "/notify/read"]) assert.equal((await b.call(p, { headers: h, body: { key: "t111", enabled: true } })).s, 404, p);
+  const st = await b.call("/state", { method: "GET", headers: h });
+  assert.equal(st.s, 200); assert.equal("oalerts" in st.j, false);
+});
+
+test("EA 'act' events are delivered through the normal EA-event path (there is no Order Alert that replaces them any more)", async () => {
+  await withTelegramMock(async (sent) => {
+    const t = boot();
+    await t.sync("123456", { state: { evp: 1 } });
+    await registerChat(t, "123456", "55501234");
+    const ev = { id: "123456:20260101:9", k: "act", t: "Order activated", b: "BUY 4138" };
+    const r = await t.sync("123456", { state: { evp: 1 }, ev: [ev] });
+    assert.deepEqual(r.j.evack, [ev.id]);
+    assert.equal(sent.length, 1);
+  });
 });
 
 test("CORS: several origins (comma separated) and a trailing slash are accepted", async () => {
@@ -280,60 +313,6 @@ test("CORS: several origins (comma separated) and a trailing slash are accepted"
   assert.equal(none.j.corsOpen, false); assert.equal(none.j.corsConfigured, false);
   assert.equal(none.h.get("Access-Control-Allow-Origin"), "null");
   const open = await boot({ ALLOWED_ORIGIN: "*" }).call("/", { method: "GET" }); assert.equal(open.j.corsOpen, true);
-});
-
-// ───────── order-activation alerts over the REAL cycle (gold 4138 / 4137) ─────────
-const ord = (ticket, side, price) => ({ ticket, side, price, lot: 0.1, sl: side.startsWith("B") ? 4137 : 4138, tp: side.startsWith("B") ? 4158 : 4117 });
-const base = { price: 4138, orders: [], waits: [], pos: null, hist: [], tick: 0.01, pt: 0.01, maxDev: 30, sym: "XAUUSD" };
-async function cycleRig() {
-  const b = boot({ BOT_TOKEN: "" });
-  await b.sync("123456", { state: { ...base, orders: [ord(111, "BUY STOP", 4138), ord(112, "SELL STOP", 4137)] } });
-  const h = b.auth("123456", (await b.signIn()).j.sess);
-  const arm = (key) => b.call("/order-alert", { headers: h, body: { key, enabled: true } });
-  const push = async (state, n = 3) => { for (let i = 0; i < n; i++) await b.sync("123456", { state: { ...base, ...state } }); };   // the watcher needs 3 consecutive syncs to call an order "gone"
-  const notifs = async () => (await b.call("/news/notifs", { headers: h, body: { limit: 50 } })).j.items || [];
-  return { b, h, arm, push, notifs };
-}
-
-test("ALERT CYCLE: Buy fills (position id = order ticket) -> ONE 'activated'; the deleted opposite Sell Stop alert stays silent", async () => {
-  const r = await cycleRig();
-  assert.equal((await r.arm("t111")).j.ok, true); assert.equal((await r.arm("t112")).j.ok, true);
-  await r.push({ pos: { side: "BUY", entry: 4138.12, sl: 4137, tp: 4158, lot: 0.1, no: 1, pid: 111, profit: 0 }, orders: [] });   // slipped fill + opposite deleted
-  const n = (await r.notifs()).filter((x) => /Activated|تفعيل/.test(x.title));
-  assert.equal(n.length, 1); assert.match(n[0].body, /BUY/);
-  const st = await r.b.call("/state", { method: "GET", headers: r.h });
-  const keys = Object.fromEntries(st.j.oalerts.map((o) => [o.key, o.status]));
-  assert.equal(keys.t111, "fired"); assert.equal(keys.t112, undefined);   // sell alert is "gone" (cancelled), never "fired"
-});
-
-test("ALERT CYCLE: a MANUAL trade near the level (old 0.1% tolerance = 4.1 USD) must NOT fire the alert of a cancelled order", async () => {
-  const r = await cycleRig();
-  await r.arm("t111");
-  await r.push({ pos: { side: "BUY", entry: 4134.0, sl: 4130, tp: 4180, lot: 1, no: 9, pid: 9999, profit: 0 }, orders: [ord(112, "SELL STOP", 4137)] });   // order 111 removed; someone opened a BUY 4 USD lower
-  assert.equal((await r.notifs()).filter((x) => /Activated|تفعيل/.test(x.title)).length, 0);
-});
-
-test("ALERT CYCLE: without a position id (older EA) the match is symbol-tight: 3 ticks / Max Deviation, not 0.1%", async () => {
-  const r = await cycleRig();
-  await r.arm("t111");
-  await r.push({ pos: { side: "BUY", entry: 4134.0, sl: 4130, tp: 4180, lot: 1, no: 9, profit: 0 }, orders: [] });           // 4 USD away -> not this order
-  assert.equal((await r.notifs()).filter((x) => /Activated|تفعيل/.test(x.title)).length, 0);
-  const r2 = await cycleRig();
-  await r2.arm("t111");
-  await r2.push({ pos: { side: "BUY", entry: 4138.25, sl: 4137, tp: 4158, lot: 0.1, no: 1, profit: 0 }, orders: [] });       // 0.25 slippage <= 30 pts * 0.01
-  assert.equal((await r2.notifs()).filter((x) => /Activated|تفعيل/.test(x.title)).length, 1);
-});
-
-test("ALERT CYCLE: full loop Buy -> SL -> re-armed Sell Stop -> Sell fills -> TP: one alert per armed order, none duplicated across syncs", async () => {
-  const r = await cycleRig();
-  await r.arm("t111");
-  await r.push({ pos: { side: "BUY", entry: 4138, sl: 4137, tp: 4158, lot: 0.1, no: 1, pid: 111, profit: 0 }, orders: [] });
-  await r.push({ pos: null, orders: [ord(113, "SELL STOP", 4137)], hist: [{ no: 1, side: "BUY", entry: 4138, exit: 4137, profit: -1 }] });     // SL hit, Sell Stop re-armed
-  assert.equal((await r.arm("t113")).j.ok, true);
-  await r.push({ pos: { side: "SELL", entry: 4136.9, sl: 4138, tp: 4115, lot: 0.1, no: 2, pid: 113, profit: 0 }, orders: [], hist: [{ no: 1, side: "BUY", entry: 4138, exit: 4137, profit: -1 }] });
-  await r.push({ pos: { side: "SELL", entry: 4136.9, sl: 4138, tp: 4115, lot: 0.1, no: 2, pid: 113, profit: 0.5 }, orders: [] }, 5);          // many more syncs: still one message
-  const n = (await r.notifs()).filter((x) => /Activated|تفعيل/.test(x.title));
-  assert.equal(n.length, 2); assert.ok(/BUY/.test(n[1].body) !== /BUY/.test(n[0].body));
 });
 
 // ───────────── v4.7: public Mini App vs internal diagnostics, weekly history, guarded cycle reset ─────────────

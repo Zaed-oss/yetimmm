@@ -6,8 +6,8 @@ compatibility_date = "2025-06-01"
 enabled = true
 
 # — Durable Objects ————————————————————————————————
-# HUB    : one isolated hub per MT5 account (EA state, sessions, commands, order alerts)
-# NOTIFY : economic calendar + unified notifications (news alerts, order alerts, Telegram delivery)
+# HUB    : one isolated hub per MT5 account (EA state, sessions, commands)
+# NOTIFY : Telegram delivery of EA events (dedupe + retry). No in-app notification center.
 [[durable_objects.bindings]]
 name = "HUB"
 class_name = "Hub"
@@ -35,7 +35,6 @@ tag = "v4"
 #   wrangler secret put APP_PASSWORD   REQUIRED  the app password. Login is refused until it exists.
 #   wrangler secret put PAIR_CODE      REQUIRED  EA <-> account PAIRING code: at least 8 chars, strong, different from APP_PASSWORD (weak values such as 123123 are refused). `npm run setup` generates it and writes the same value to Yetimmm.cfg for the EA. No fallback unless the legacy opt-in ALLOW_PAIR_FALLBACK="1" is set (NOT recommended).
 #   wrangler secret put ADMIN_KEY      optional  enables GET /admin/diag (internal diagnostics: raw EA command log, technical failures, archive summary). Unset = the endpoint does not exist. Never shown in the Mini App.
-#   wrangler secret put TE_KEY         optional  Trading Economics key (only used when no EA is online)
 #
 # — Optional settings: uncomment the lines you need under [vars] above (an env value always wins over worker.js CONFIG) —
 [vars]
@@ -49,12 +48,8 @@ ALLOWED_ORIGIN = "https://zaed-oss.github.io"
 # MAX_ATTEMPTS   = "8"        # wrong passwords before the lock
 # SESSION_DAYS   = "30"       # sliding session lifetime (any authenticated request extends it)
 # EA_STALE_SEC   = "30"       # seconds without an EA sync before it counts as offline (the app reads this value from the server)
-# NEWS_SCOPE     = "server"   # server = calendar/notifications per broker server (default) | global = one shared shard (v4.5 behaviour)
 # SESSION_EPOCH  = "1"        # bump 1 -> 2 to sign EVERYBODY out at once
 # REQUIRE_TG     = "1"        # "0" = allow sign-in from a normal browser (default: only inside Telegram)
-# MT5_FEED       = "1"        # "0" = ignore the MT5 calendar and use only the external feeds
-# NEWS_PROVIDER  = "auto"     # auto | ff | te
-# MARKET_TZ      = "UTC"      # fallback platform time zone (the EA reports the real broker offset itself)
 # OWNER_TG       = "123456789"  # Telegram numeric id(s) (comma separated) that sign in WITHOUT a password (identity is proven by Telegram initData)
 # FAIL_WINDOW_SEC = "600"     # wrong attempts older than this are forgotten
 # PAIR_LOCKOUT   = "1"        # "0" turns off the wrong-pairing-code throttle (NOT recommended: allows brute force of PAIR_CODE)

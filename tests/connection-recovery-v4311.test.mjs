@@ -157,7 +157,7 @@ test("App FIX-D: a network / server failure never signs the user out (only a rea
 
 test("App FIX-D: a short failure shows 'reconnecting', a long one 'server unreachable', the phone being offline is named", () => {
   assert.match(html, /return Date\.now\(\)-\(Bridge\.failSince\|\|Date\.now\(\)\)<20000\?"rec":"srv"/);
-  for (const k of ["l_rec", "l_recS", "l_net", "l_netS"]) assert.ok(html.includes(k + ":["), k);
+  for (const k of ["l_rec", "l_recS", "l_net", "l_netS"]) assert.ok(html.includes(k + ':"'), k);
   assert.match(html, /navigator\.onLine===false/);
 });
 

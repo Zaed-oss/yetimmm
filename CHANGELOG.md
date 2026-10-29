@@ -1,3 +1,31 @@
+## fix25 — Arabic only, language switch + bell/notification center DELETED (app + Worker) — see `docs/FIX25-ARABIC-ONLY-NO-BELL.md`
+
+- **Removed (deleted, not hidden):** EN button and the whole language system; bell button, notification center, history, unread badge, per-order bell; `notify/` folder; Worker routes `/notify/list`, `/notify/read`, `/order-alert`, Hub `oalert` / `watch` / `/auth` / `oalerts` field; Notify `/notifs` and `/read`.
+- **Arabic fixed:** `lang="ar" dir="rtl"`; dictionary entries are plain Arabic strings (401 `[ar, en]` pairs converted); stored `lg` / `lgManual` are erased on load; Telegram `/start` caption and `setup-bot` profile are Arabic only.
+- **Kept:** Telegram delivery of EA events (Notify: dedupe, journal, retry, alarms; Hub `events` / `evack`), `act` events now always go through this path. `.app{max-width:760px}` (>=700px) moved from the old stylesheet to `index.html`.
+- **Data cleanup:** Hub deletes `oa:*` once (flag `acc.oaGone`, folded into an existing account write); Notify (`purged` = 2) deletes non-`ea` journal records once.
+- **Not touched:** `ea/Yetimmm.mq5` (byte-identical), `InpBrPollSec = 1`, command delivery / ack / results / ownership.
+- **Tests:** `tests/arabic-only-fix25.test.mjs` (6 new); 3 alert-cycle tests removed, notification tests rewritten. 542 tests in total.
+
+## fix24 — Durable Object WRITE reduction, sync stays at 1 second (Worker only) — see `docs/FIX24-DO-WRITES.md`
+
+- **Request:** stop writing unchanged data inside the Hub Durable Object **without** touching the 1 s EA poll, command delivery, acknowledgements, retries, notifications, instance ownership or any timeout.
+- **`cmdResults`:** the same command id appears in `lastCmd` (short text) and in `cmds` (detailed text, `st: "wait"`). The two copies were compared with the stored row one after the other and overwrote each other, so the row "changed" on every sync -> one `cmdst` write per second. The copies are now collapsed per id first (the detailed `cmds` entry still wins) and only the final value is compared. A real change is still stored.
+- **`acc.seen`:** a whole-account write every 15 s that nothing reads (Worker, app, EA, tests, scripts checked). Removed. Liveness still comes from `this.ts` and the `inst` record.
+- **`inst`:** the live ownership decision (5 s refresh, 20 s window) is unchanged but runs on an in-memory copy; the stored copy (needed only after a Hub restart) is refreshed every ~12 s instead of ~6 s (`INST_PERSIST_MS = 10000`; worst-case stored age ~13 s, window 20 s).
+- **`cmdNote` / `diagFrom`:** no storage write when the stage + text are identical / when every failure was already recorded.
+- **Not touched:** `InpBrPollSec`, the poll interval, `/api/ea/sync` response, `cmds` queue, ack / handed / delivered / expired / unknown stages, dupInst rules, Notify DO, EA (`Yetimmm.mq5`), app (`index.html`).
+- **Calendar:** no calendar data exists in fix23 (removed in fix23), so there is nothing to reduce there.
+- **Tests:** `tests/storage-writes-v4312.test.mjs` (7 tests; 3 of them fail on fix23 and pass now). 538 tests in total.
+
+## fix23 — NEWS REMOVED COMPLETELY (app · Worker · EA)
+
+- **Removed:** the News tab (economic calendar, market sessions, news alerts), the whole `news/` folder, the `/news/*` Worker routes, the data providers (ForexFactory, Trading Economics, MT5 calendar), the calendar upload in `ea/Yetimmm.mq5`, and the settings `NEWS_SCOPE`, `MT5_FEED`, `NEWS_PROVIDER`, `MARKET_TZ`, `TE_KEY`.
+- **Kept:** order-activation alerts, the notification bell / center, EA events and Telegram delivery. They moved to `notify/yt-notify.js` + `notify/yt-notify.css` (app) and `worker/notify.js` (Durable Object `Notify`, same class name and shards, so no migration). Routes are now `/notify/list` and `/notify/read`. The broker time offset `tzo` stays: the weekly window and alert times use it.
+- **Cleanup on deploy:** the first request to each Notify shard deletes its leftover data (alerts, calendar preferences, the stored calendar table, old notification-history records). The Hub drops its stored calendar hash.
+- **Compatibility:** an old EA that still uploads a calendar is ignored by the Worker (no error). A new EA works with an old Worker.
+- **Tests:** the calendar test and the news-tag test were removed, the shard test now covers notification shards and `tzo`, one test proves the removed routes are gone and one proves the one-time data wipe keeps real notifications (531 tests in total).
+
 ## fix22  Lot is REQUIRED and matches the broker exactly; risk / recovery-target fields removed (EA + app)
 
 - **App:** removed the *Initial Risk* and *Recovery Profit Target* fields, the lot explanation text and the 'Prices must be positive numbers' box. The hidden risk (1) / target (20) are still relayed to the EA unchanged.
@@ -15,9 +43,9 @@ Request: typing the lot must show, right below the field, the exact money at ris
 
 Request ("تعديل" PDF): drop the lot doubling; the lot must be controlled by hand; everything else stays. **Done:** `NextRiskForNet()` = fixed initial risk (a loss / the ledger / the target never sizes a trade); a debt never rounds the lot UP; new input `InpManualLot` (default 0.01, 0 = AUTO-FIXED from the initial risk, never grows), stored in `Yetimmm.cfg`; Telegram `/lot [LOT|auto]`; Mini App settings field "Lot size (manual)" sent with `apply` / `settings` (validated against min / step / max in the app and again in the EA, allowed with a position open, orders replaced at once, open position keeps its lot); Worker passes `lot` (0..1000); state carries `mlot` / `lotMode` / `noMart`. **Unchanged:** Stop Buy / Stop Sell orders, strategy, SL (opposite level), TP (SL distance x RR), continuous trading, closing by the user, the cycle ledger (reports, optional caps, cycle end). Note: loss at SL = lot x level gap x contract, so a manual lot no longer forces "$1" — the app and `/lot` show the real figure. Tests: `tests/manual-lot-fix20.test.mjs` (23); 5 older tests that pinned the martingale source were updated. Not compiled / not tested on MT5 (F7 then Demo).
 
-## fix19 - gold symbol names: GOLDm# (XM) no longer fails with code 1 (EA 2.46, `ea/Yetimmm.mq5`, `news/yt-news.js`)
+## fix19 - gold symbol names: GOLDm# (XM) no longer fails with code 1 (EA 2.46, `ea/Yetimmm.mq5`)
 
-See `docs/FIX19-SYMBOL-NAMES.md`. Evidence: Experts journal of 22/10/2026, `initializing of Yetimmm (GOLDm#,H1) failed with code 1`. Root cause: `OnInit` required the literal text `XAUUSD` in the chart symbol (`INIT_FAILED` otherwise); `DoStart` had a second, different check. Fix: one classifier `YtClassifySymbol()` (broker base currency, name, path, description, calc mode; stocks / silver / GOLDMAN rejected) shared by `OnInit` and `DoStart`; new input `InpSymbolPolicy` = AUTO (default) / STRICT_GOLD (old behaviour) / ANY; every decision and its reason is logged (`Symbol check | ...`); a saved cycle that meets a different symbol name is reported (`SYMCHG`); the heartbeat carries `bccy` and `cls`; the news USD tag works for broker gold names. No entry / lot / SL / TP / ledger code changed. Tests: `tests/symbol-names-fix19.test.mjs` (11).
+See `docs/FIX19-SYMBOL-NAMES.md`. Evidence: Experts journal of 22/10/2026, `initializing of Yetimmm (GOLDm#,H1) failed with code 1`. Root cause: `OnInit` required the literal text `XAUUSD` in the chart symbol (`INIT_FAILED` otherwise); `DoStart` had a second, different check. Fix: one classifier `YtClassifySymbol()` (broker base currency, name, path, description, calc mode; stocks / silver / GOLDMAN rejected) shared by `OnInit` and `DoStart`; new input `InpSymbolPolicy` = AUTO (default) / STRICT_GOLD (old behaviour) / ANY; every decision and its reason is logged (`Symbol check | ...`); a saved cycle that meets a different symbol name is reported (`SYMCHG`); the heartbeat carries `bccy` and `cls`. No entry / lot / SL / TP / ledger code changed. Tests: `tests/symbol-names-fix19.test.mjs` (10).
 
 ## fix18b — Mini App: APPLY begins a new cycle, CLOSE ends it (EA 2.46, `ea/Yetimmm.mq5` only)
 
@@ -407,7 +435,7 @@ Tests: 125 pass (3 new + token test updated + lockout test now documents `PAIR_L
 - **الواجهة:** حذف `C=100/STEP/VMIN/VMAX` وكل افتراضات 2 خانة/`$` في وضع Live؛ ملفات محاكاة بالوسيط (`?profile=XAU-1-0.001` أو `YetimmmAPI.simProfile()`)؛ بطاقة المخاطرة المطلوبة/الأدنى/الفعلية/السياسة؛ بانر `WAITING_*`؛ مسافة Buy Stop−Ask وBid−Sell Stop؛ ملء المستويات يراعي tick size؛ لا تمنع الواجهة Start/Apply في Live بحسب حسابها هي.
 - **Worker:** يحفظ الدقة الحقيقية للأرقام (6 خانات بدل 2)، `GET /` يعيد `release/ea_protocol/pairConfigured`.
 - **الاختبارات:** 35 ← **43 اختبار Worker** + **13 اختبار محرك مخاطرة** (حالات التقرير 122–127/147) = 56. `npm run check` يتحقق من الإصدار الموحّد ومن عدم عودة الثوابت.
-- **لم يُنفَّذ / يحتاج MT5:** انظر `docs/AUDIT-v4.8.md` (إعادة هيكلة State Machine إلى 5 آلات، REPLACE atomic، زر Use minimum lot في الواجهة، فلتر الأخبار، المخاطرة كنسبة، أرشيف تزايدي، …). **الـ EA لم يُترجم هنا: F7 ثم Tester ثم Demo.**
+- **لم يُنفَّذ / يحتاج MT5:** انظر `docs/AUDIT-v4.8.md` (إعادة هيكلة State Machine إلى 5 آلات، REPLACE atomic، زر Use minimum lot في الواجهة، المخاطرة كنسبة، أرشيف تزايدي، …). **الـ EA لم يُترجم هنا: F7 ثم Tester ثم Demo.**
 
 ## v4.7.1 / EA 2.22 — إصلاح ميداني (الانعكاس بعد SL + الأمر المنفرد + تأخر السعر)
 - **الانعكاس بعد SL:** الافتراضي صار `BREACH_MARKET`. عند ضرب SL يكون السعر أصلاً عند/تحت مستوى الـ Sell Stop فلا يمكن وضعه، فكانت حركة الانعكاس تفوت كلياً (`BREACH_WAIT`). الآن يفتح الاتجاه المعاكس فوراً (مع فحص مسبق ولوت من السعر الفعلي). *إن كانت إعدادات الشارت محفوظة بـ WAIT فغيّرها يدوياً.*
@@ -460,14 +488,14 @@ Tests: 125 pass (3 new + token test updated + lockout test now documents `PAIR_L
 **أخطاء حقيقية مُصلحة**
 - **تنبيه تفعيل الأوردر**: كان يعتبر أي صفقة ضمن **0.1% من السعر** (≈ 4.1$ للذهب) هي الأوردر المراقَب، فيُرسل «Order Activated» خاطئاً لصفقة يدوية أو منزلقة. الآن: مطابقة **بالهوية** (معرّف الصفقة = رقم أمر الـ Stop الذي نُفّذ، `pid` يرسله الـ EA)، وعند غيابه (EA قديم) tolerance = `max(3 × tick, MaxDeviation × point)` من خصائص الرمز نفسها. اختبارات تثبت الخطأ القديم (تفشل إن أُعيد) والإصلاح.
 - **مهلة Offline متضاربة** (Worker 20 ث / التطبيق 12 ث): المصدر الآن واحد = السيرفر (`EA_STALE_SEC`، يعيدها `/state` كـ `eaStaleSec` وتحملها مزامنة الـ EA).
-- **الجلسة المنزلقة** كانت تتجدد في `/verify` فقط: الآن كل طلب موثّق (`/state` `/command` `/news` `/order-alert`) يمدّد الجلسة، مع تقييد الكتابة (`SESSION_TOUCH_SEC`) كي لا يُرهق التخزين.
+- **الجلسة المنزلقة** كانت تتجدد في `/verify` فقط: الآن كل طلب موثّق (`/state` `/command` `/notify` `/order-alert`) يمدّد الجلسة، مع تقييد الكتابة (`SESSION_TOUCH_SEC`) كي لا يُرهق التخزين.
 
 **أمان**
 - **ربط حقيقي (Pairing) بدل «أول EA يربح»**: حساب جديد لا يُربط إلا بـ EA يثبت `PAIR_CODE`. السيرفر يصدر سر الـ EA بـ CSPRNG ولا يخزّنه إلا مُجزّأً (SHA-256). لم يعد `MathRand` هو السر (بقي كقيمة أولية فقط، مع خلط عدة مصادر عبر SHA-256). قفل ضد تخمين الرمز، وإعادة ربط آمنة بعد إعادة تثبيت الـ EA. حسابات v4.5 تعمل وتُرقّى تلقائياً.
 - CORS: عدة أصول (فاصلة)، وتنبيه `corsOpen` في `GET /` ومن `npm run check` ما دام `ALLOWED_ORIGIN` غير مضبوط.
 
-**أخبار متعددة الوسطاء**
-- التقويم والإشعارات صارت **شريحة Notify لكل سيرفر وسيط** (`NEWS_SCOPE=server`) فلا يفسد وسيط توقيت/تقويم وسيط آخر. `global` يعيد سلوك v4.5.
+**إشعارات متعددة الوسطاء**
+- الإشعارات صارت **شريحة Notify لكل سيرفر وسيط** فلا تختلط سجلات وسيط بآخر.
 
 **الواجهة**
 - حالة الاتصال مفصولة: **EA / الجسر / MT5 / التداول** مع سبب تعطيل التداول (AutoTrading، إذن الـ EA، الحساب، السوق مغلق). الـ EA يرسل `mt` لذلك.
@@ -477,7 +505,7 @@ Tests: 125 pass (3 new + token test updated + lockout test now documents `PAIR_L
 - **اللغة تتبع لغة الهاتف** (تلجرام ثم النظام: عربي ← عربي، غيره ← إنجليزي) ما لم يغيّرها المستخدم يدوياً.
 
 **الاختبارات والفحوصات**
-- 15 ← **28 اختباراً**: ربط الـ EA (غريب، رمز خاطئ، قفل، إعادة ربط، ترقية v4.5)، مهلة Offline، الجلسة المنزلقة وتقييد الكتابة، شرائح الأخبار، CORS متعدد، و**دورة تنبيهات الأوردر الكاملة** (Buy → حذف المعاكس → SL → إعادة تسليح → Sell → TP) بأسعار 4138/4137.
+- 15 ← **28 اختباراً**: ربط الـ EA (غريب، رمز خاطئ، قفل، إعادة ربط، ترقية v4.5)، مهلة Offline، الجلسة المنزلقة وتقييد الكتابة، شرائح الإشعارات، CORS متعدد، و**دورة تنبيهات الأوردر الكاملة** (Buy → حذف المعاكس → SL → إعادة تسليح → Sell → TP) بأسعار 4138/4137.
 - `npm run check` يضيف فحوص منع الرجوع (الافتراضي BREACH_WAIT، لا tolerance نسبي، حقول الحالة، الربط، مصدر واحد للمهلة، تطابق نسخة الـ EA) ويذكّر أن «All checks passed» لا تعني صحة الاستراتيجية ولا ترجمة الـ EA.
 
 **لم يُنفّذ (بقرار، وللشفافية)**
@@ -503,44 +531,34 @@ Tests: 125 pass (3 new + token test updated + lockout test now documents `PAIR_L
 - `package.json` بأوامر `check` و`test` و`dev` و`deploy`.
 - `tests/`: 15 اختباراً للـ Worker على محاكي Durable Objects. `scripts/check.mjs`: فحص شامل للحزمة.
 
-## v4.4 — حساب MT5 هو مصدر الأخبار والتوقيت
+## v4.4 — حساب MT5 هو مصدر التوقيت
 
 ### ما الجديد
-- **الـ EA (v2.20):** يقرأ تقويم MT5 المدمج (`CalendarValueHistory`) للعملات الـ 9 ويرسله مع المزامنة. فيه قيمة **Actual** الحقيقية، و Forecast/Previous بوحداتها (%, K, M, B)، وأوقات تحوَّل إلى UTC بفرق توقيت وسيطك الفعلي.
-- **بروتوكول خفيف:** كل مزامنة تحمل بصمة صغيرة فقط (`calv`)؛ الجدول الكامل يُرسل عند تغيّر المحتوى أو عندما يطلبه الخادم (`calNeed`). حول وقت الصدور (من 30 دقيقة قبل إلى 3 دقائق بعد) يُفحص كل ~4 ثوانٍ فيصل الـ Actual للتطبيق خلال ثوانٍ.
-- **توقيت المنصة:** يأتي من الوسيط (`TimeTradeServer - TimeGMT`) ويظهر كـ GMT+3 مثلاً، ويتبع توقيته الصيفي تلقائياً. لا حاجة لـ `MARKET_TZ`.
-- **المصدر الاحتياطي:** إن توقف الـ EA أكثر من 20 دقيقة يعود الخادم تلقائياً إلى ForexFactory / Trading Economics، ويعود لـ MT5 فور رجوعه. لا حاجة لـ `TE_KEY` بعد الآن.
-- **إشعار صدور النتيجة:** إن فعّلت تنبيهاً لخبر، يصلك إشعار واحد عند صدور الرقم (Actual مقابل Forecast وهل هو أعلى/أقل/مطابق) دون أي توقع للسوق.
-- **ربط التنبيهات بالحساب:** كل تنبيه خبر يُخزَّن مع رقم حساب MT5. من يدخل من متصفح بلا تلجرام تصله الإشعارات على محادثات تلجرام المسجلة على حسابه. الإرسال لعدة محادثات يعيد المحاولة للمحادثة الفاشلة فقط دون تكرار.
+- **توقيت المنصة:** يأتي من الوسيط (`TimeTradeServer - TimeGMT`) ويظهر كـ GMT+3 مثلاً، ويتبع توقيته الصيفي تلقائياً.
+- **ربط التنبيهات بالحساب:** كل تنبيه يُخزَّن مع رقم حساب MT5. من يدخل من متصفح بلا تلجرام تصله الإشعارات على محادثات تلجرام المسجلة على حسابه. الإرسال لعدة محادثات يعيد المحاولة للمحادثة الفاشلة فقط دون تكرار.
 - **رسالة تفعيل الأوردر:** الوقت بتوقيت المنصة مع GMT.
-- **وسم الرمز:** أخبار عملات الرمز الذي يتداوله الحساب (XAUUSD ← USD) تظهر بوسم صغير. الـ EA يرسل الآن `sym`.
-- شارة خضراء "مباشر من حسابك" بجانب المصدر.
+- الـ EA يرسل الآن `sym`.
 
 ### خطوات النشر
 1. ثبّت `ea/Yetimmm.mq5` (v2.20) وأعد تشغيل الـ EA. لا روابط WebRequest جديدة.
 2. `wrangler deploy` من مجلد `worker` (لا ربط أو هجرة جديدة).
-3. ارفع `news/` و `index.html` كما هي.
+3. ارفع `index.html` كما هو.
 
 ### ملاحظة
-لم يُجرَّب الـ EA على منصة حقيقية (لا MT5 هنا). اختُبر الخادم بمحاكاة كاملة. إن ظهر خطأ ترجمة في الـ EA فهو في دالة `CalBuild` فقط، وأرسل لي نص الخطأ.
+لم يُجرَّب الـ EA على منصة حقيقية (لا MT5 هنا). اختُبر الخادم بمحاكاة كاملة.
 
-## v4.3 — الأخبار الاقتصادية + الجلسات + تنبيهات الأخبار والأوردرات + مركز الإشعارات
+## v4.3 — تنبيهات الأوردرات + مركز الإشعارات
 
 ### الملفات
-- `worker/news.js` (جديد): News Provider Adapter + Notify (Durable Object) = محرك التنبيهات والإشعارات على السيرفر.
-- `worker/worker.js` (معدّل): مسارات `/news/*` و`/order-alert`، تعريف هوية المستخدم، مراقبة تفعيل الأوردرات من حالة الـ EA.
+- `worker/notify.js` (جديد): Notify (Durable Object) = محرك التنبيهات والإشعارات على السيرفر.
+- `worker/worker.js` (معدّل): مسارات `/notify/*` و`/order-alert`، تعريف هوية المستخدم، مراقبة تفعيل الأوردرات من حالة الـ EA.
 - `worker/wrangler.toml`: ربط `NOTIFY` + migration `v2` (يلزم `wrangler deploy`).
-- `news/yt-news.js` + `news/yt-news.css` (جديد) وتعديلات بسيطة على `index.html` (تبويب الأخبار، جرس الإشعارات بالهيدر، جرس لكل أوردر معلق).
+- `notify/yt-notify.js` + `notify/yt-notify.css` (جديد) وتعديلات بسيطة على `index.html` (جرس الإشعارات بالهيدر، جرس لكل أوردر معلق).
 - `ea/Yetimmm.mq5`: لم يتغير.
-
-### المصدر
-- افتراضي مجاني بلا مفتاح: ForexFactory عبر FairEconomy (الدولة/الخبر/التأثير/السابق/المتوقع). هذا المصدر **لا يوفر Actual** فيظهر "—" أو N/A ولا تُخترع قيمة.
-- للحصول على Actual وتحديث لحظي عند الصدور: `wrangler secret put TE_KEY` (Trading Economics). يتحول تلقائياً، وإن فشل يرجع للمصدر الآخر.
-- `MARKET_TZ` (اختياري) = توقيت منصة وسيطك مثل `Europe/Athens` ليظهر "توقيت المنصة" بجانب توقيتك.
 
 ### التنبيهات
 - تُخزَّن في الـ Durable Object (وليس المتصفح) وتُرسل من السيرفر حتى لو أُغلق التطبيق. القناة: داخل التطبيق + تلجرام (حالات: Pending/Sent/Retrying/Failed).
-- تنبيهات الأخبار مرتبطة بالمستخدم (معرّف تلجرام). تنبيهات الأوردرات مرتبطة بالمستخدم + حساب MT5.
+- تنبيهات الأوردرات مرتبطة بالمستخدم + حساب MT5.
 - منع التكرار: مفتاح (event_id + user_id + alert_type) لا يُطلَق إلا مرة.
 
 ## v4.2 — Animated 3D UI layer (UI only)

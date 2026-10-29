@@ -142,11 +142,11 @@ test("page: the readout sits directly under the lot field and refreshes on every
   assert.match(html, /function prevCalc\(\)\{[\s\S]*renderLotRisk\(/);
   assert.match(html, /if\(!this\.dirty\)fillInputs\(\);else prevCalc\(\);/);
 });
-test("page: every readout text exists in Arabic and English", () => {
-  const keys = [...html.matchAll(/\b(lr_[A-Za-z_]+):\[("[^"]*"),("[^"]*")\]/g)].map((m) => m[1]);
+test("page: every readout text exists in Arabic (the only language)", () => {
+  const keys = [...html.matchAll(/\b(lr_[A-Za-z_]+):("[^"]*")/g)].map((m) => m[1]);
   for (const k of ["lr_wait", "lr_nolot", "lr_loss", "lr_lossA", "lr_tp", "lr_comm", "lr_tot", "lr_net", "lr_pct", "lr_mg", "lr_fm", "lr_near", "lr_max", "lr_capLot", "lr_w_capPct", "lr_w_capUsd", "lr_w_capDay", "lr_w_noMargin", "lr_src_ok", "lr_src_est", "lr_src_sim"])
     assert.ok(keys.includes(k), k + " missing");
-  for (const m of html.matchAll(/\b(lr_[A-Za-z_]+):\[("[^"]*"),("[^"]*")\]/g)) { assert.ok(m[2].length > 2 && m[3].length > 2, m[1]); }
+  for (const m of html.matchAll(/\b(lr_[A-Za-z_]+):("[^"]*")/g)) { assert.ok(m[2].length > 4 && /[\u0600-\u06FF]/.test(m[2]), m[1]); }
 });
 
 // ------------------------------------------------------------------ 6) EA source contract

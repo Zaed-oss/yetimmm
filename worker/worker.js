@@ -16,7 +16,7 @@
 //    • password changed  -> all old sessions die by themselves (each session is bound to a password fingerprint)
 //    • SESSION_EPOCH bumped -> everybody is signed out instantly (panic button)
 // ═════════════════════════════════════════════════════════════════════════
-import { Notify } from "./news.js";
+import { Notify } from "./notify.js";
 export const VERSION = "4.31.0", EA_PROTOCOL = "2.46";   // v4.8: the ONE place the release number lives (package.json / README / CHANGELOG / EA must match: npm run check enforces it)
 export { Notify };
 
@@ -31,7 +31,6 @@ const CONFIG = {
   ALLOWED_ORIGIN: "",        // v4.6.1: fail-closed. CORS origin of the web app, e.g. "https://you.github.io" (set in wrangler.toml [vars]; env wins). "*" = open, testing only
   REQUIRE_TG: true,          // true = login only from inside the Telegram bot (env REQUIRE_TG="0" allows browsers)
   SESSION_TOUCH_SEC: 600,    // v4.6: any authenticated request slides the session expiry (persisted at most once per this many seconds)
-  NEWS_SCOPE: "server",      // v4.6: "server" = one calendar/notification shard per broker server (multi-broker safe) | "global" = legacy single shard
 };
 
 // v4.22 SECURITY: a pairing code can re-bind ANY account number, so it must not be guessable.
@@ -56,12 +55,9 @@ function cfg(env) {
     pairLock: String(env.PAIR_LOCKOUT === undefined ? "1" : env.PAIR_LOCKOUT) !== "0",   // v4.22: wrong pairing codes are throttled by default; PAIR_LOCKOUT="0" restores the v4.15.1 "unlimited attempts" behaviour (not recommended)
     eaToken: String(env.ALLOW_EA_BOT_TOKEN || "") === "1",   // v4.22 SECURITY: the Bot Token is NEVER sent to an EA unless this legacy opt-in is set (a rogue/paired EA could otherwise read it)
     touchMs: num(env.SESSION_TOUCH_SEC, CONFIG.SESSION_TOUCH_SEC) * 1000,
-    newsScope: String(env.NEWS_SCOPE || CONFIG.NEWS_SCOPE).toLowerCase() === "global" ? "global" : "server",
   };
 }
 
-// "GMT+3", "GMT-5", "GMT+5:30" from an offset in seconds (the MT5 server time offset reported by the EA)
-function gmtLabel(off) { off = Math.round((Number(off) || 0) / 60); const sg = off < 0 ? "-" : "+", m = Math.abs(off), h = Math.floor(m / 60), mm = m % 60; return "GMT" + (off === 0 ? "" : sg + h + (mm ? ":" + String(mm).padStart(2, "0") : "")); }
 
 const json = (o, status = 200) =>
   new Response(JSON.stringify(o), { status, headers: { "Content-Type": "application/json", "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff" } });
@@ -88,10 +84,9 @@ async function pwEq(c, given, real) {
   const k = enc.encode("yt-pwc|" + c.salt);
   return safeEq(hex(await hmacRaw(k, String(given || ""))), hex(await hmacRaw(k, String(real || ""))));
 }
-// v4.6: the economic calendar + notifications live in ONE Notify shard per broker server, so two brokers (different server time / calendar)
-// never overwrite each other. NEWS_SCOPE="global" restores the old single shard ("main").
+// v4.6: Telegram delivery of EA events lives in ONE Notify shard per broker server, so two brokers never mix their records.
 async function nshard(c, srv) {
-  if (c.newsScope === "global" || !srv) return "main";
+  if (!srv) return "main";
   return "srv-" + (await sha("yt-srv|" + String(srv).toLowerCase())).slice(0, 16);
 }
 const notifyStub = async (env, c, srv) => env.NOTIFY.get(env.NOTIFY.idFromName(await nshard(c, srv)));
@@ -164,10 +159,7 @@ function weekStats(L) {
 
 // ── Telegram bot chat (v4.14): /start = banner + one centered Mini App button ───────────────────────────────────────────────
 // Webhook secret is derived from BOT_TOKEN (no extra secret to manage). scripts/setup-bot.mjs registers it with the same derivation.
-const TGW = {
-  ar: { cap: "<b>Yetimmm</b> · XAUUSD\nنظام إدارة مخاطر ذكي لمنصة MT5\n\n▫️ أوردرات Buy / Sell Stop بتسلسل مخاطرة محسوب\n▫️ متابعة مباشرة للأوردرات والصفقات والأرباح\n▫️ تنبيهات الأخبار والأوامر\n\nاضغط الزر بالأسفل لفتح التطبيق 👇", btn: "فتح Yetimmm" },
-  en: { cap: "<b>Yetimmm</b> · XAUUSD\nSmart risk-sequence manager for MT5\n\n▫️ Buy / Sell Stop cycles with calculated risk\n▫️ Live orders, trades and P/L\n▫️ News and order alerts\n\nTap the button below to open the app 👇", btn: "Open Yetimmm" },
-};
+const TGW = { cap: "<b>Yetimmm</b> · XAUUSD\nنظام إدارة مخاطر ذكي لمنصة MT5\n\n▫️ أوردرات Buy / Sell Stop بتسلسل مخاطرة محسوب\n▫️ متابعة مباشرة للأوردرات والصفقات والأرباح\n\nاضغط الزر بالأسفل لفتح التطبيق 👇", btn: "فتح Yetimmm" };   // Arabic only (no language selection)
 export async function tgWebhookSecret(token) {
   const d = await crypto.subtle.digest("SHA-256", new TextEncoder().encode("yt-webhook:" + token));
   return [...new Uint8Array(d)].map((b) => b.toString(16).padStart(2, "0")).join("").slice(0, 48);
@@ -192,7 +184,7 @@ async function tgWebhook(req, env) {
   let u; try { u = await req.json(); } catch { return new Response("ok"); }
   const m = u && u.message;
   if (!m || !m.chat || m.chat.type !== "private") return new Response("ok");
-  const L = String((m.from && m.from.language_code) || "").toLowerCase().startsWith("ar") ? TGW.ar : TGW.en;
+  const L = TGW;
   const app = String(env.MINI_APP_URL || "").trim() || await tgMenuUrl(token);   // optional override; otherwise = the Menu-Button URL set by setup-bot (single source of truth)
   const api = (method, body) => fetch("https://api.telegram.org/bot" + token + "/" + method, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
   const kb = app ? { inline_keyboard: [[{ text: "✦ " + L.btn, web_app: { url: app } }]] } : undefined;
@@ -225,7 +217,7 @@ export default {
         if (body.length > (P === "/login" ? 8192 : 2000000)) return done(json({ ok: false, error: "too_large" }, 413));
         let b = {}; try { b = JSON.parse(body); } catch (e) {}
         login = String(b.login || "").trim();
-      } else if (P === "/admin/diag" || P === "/state" || P === "/command" || P === "/logout" || P === "/verify" || P.startsWith("/news/") || P === "/order-alert") {
+      } else if (P === "/admin/diag" || P === "/state" || P === "/command" || P === "/logout" || P === "/verify") {
         login = (req.headers.get("X-Login") || "").trim();
         if (req.method === "POST") { body = await req.text(); if (body.length > 65536) return done(json({ ok: false, error: "too_large" }, 413)); }
       } else return done(json({ error: "not found" }, 404));
@@ -287,20 +279,6 @@ export default {
         return done(await call("/diag", {}));
       }
       const sess = (req.headers.get("X-Session") || "").trim();
-      if (P.startsWith("/news/") || P === "/order-alert") {          // news calendar + unified notifications (news.js) and per-account order alerts (Hub)
-        const au = await (await call("/auth", { sess, login })).json();
-        if (!au.ok) return done(json({ ok: false, error: "session", why: au.why }, 401));
-        let b = {}; try { b = JSON.parse(body || "{}"); } catch (e) {}
-        const nt = await notifyStub(env, c, au.srv);
-        const nc = (path, o) => nt.fetch("https://n" + path, { method: "POST", body: JSON.stringify({ ...o, uid: au.uid, login }) });
-        if (P === "/news/calendar") return done(await nc("/cal", {}));
-        if (P === "/news/alert") return done(await nc("/alert", { event_id: b.event_id, offsets: b.offsets, enabled: b.enabled }));
-        if (P === "/news/notifs") return done(await nc("/notifs", { limit: b.limit }));
-        if (P === "/news/read") return done(await nc("/read", { ids: b.ids, all: b.all }));
-        if (P === "/news/pref") return done(await nc("/pref", { tz: b.tz, lang: b.lang }));
-        if (P === "/order-alert") return done(await call("/oalert", { sess, login, key: b.key, enabled: b.enabled }));
-        return done(json({ error: "not found" }, 404));
-      }
       if (P === "/verify") {
         let b = {}; try { b = JSON.parse(body || "{}"); } catch (e) {}
         const tg = await tgUser(String(b.init || ""), env.BOT_TOKEN || "");
@@ -314,9 +292,10 @@ export default {
   },
 };
 
+const INST_PERSIST_MS = 10000;   // v4.31.2: max age tolerated for the STORED instance record (live decisions use the in-memory copy)
 const CMD_MAX = { buy: 1e7, sell: 1e7, price: 1e7, risk: 1e7, target: 1e9, rr: 100, lot: 1000, confirm: 1, ticket: 9007199254740991 };   // fix20: lot = the MANUAL LOT (0 = AUTO-FIXED); the EA validates it against the broker min / step / max
 export class Hub {
-  constructor(ctx, env) { this.ctx = ctx; this.env = env || {}; this.c = cfg(env || {}); this.st = null; this.ts = 0; this.oa = null; this.miss = {}; this.hxSig = ""; this.wkc = null; this.dseen = new Set(); this.net = null; }
+  constructor(ctx, env) { this.ctx = ctx; this.env = env || {}; this.c = cfg(env || {}); this.st = null; this.ts = 0; this.hxSig = ""; this.wkc = null; this.dseen = new Set(); this.net = null; this.inst = undefined; this.instP = 0; }
   age() { return this.ts ? (Date.now() - this.ts) / 1000 : null; }
   // v4.31.1: a gap between two accepted EA syncs longer than the stale window IS a real disconnection: record when it started, when it ended and what the EA reported
   // (the EA tells its last error code and failed-attempt count, so "EA / network was down" is told apart from "Worker was down": those have no EA-side failures).
@@ -332,9 +311,6 @@ export class Hub {
   bound(a) { return !!(a.eaSecretH || a.eaSecret); }
   // v4.6: every authenticated request slides the session (persisted at most once per SESSION_TOUCH_SEC so /state polling never hammers storage)
   async touch(a, s) { const now = Date.now(); if (now - s.t > this.c.touchMs) { s.t = now; await this.ctx.storage.put("acc", a); } }
-  // v4.6: order-match tolerance comes from the SYMBOL (tick size / point / Max Deviation reported by the EA), never from a % of price.
-  // No fixed fallback: an EA that does not report tick/point/maxDev (older than v2.21) gets tolerance 0 = exact price match only.
-  tolOf(st) { const tick = Number(st.tick) || 0, pt = Number(st.pt) || tick, dev = Number(st.maxDev) || 0; return Math.max(tick * 3, dev * pt); }
   async fetch(req) {
     const p = new URL(req.url).pathname;
     const b = await req.json().catch(() => ({}));
@@ -350,9 +326,7 @@ export class Hub {
     if (p === "/state") return this.state(b);
     if (p === "/command") return this.command(b);
     if (p === "/logout") return this.logout(b);
-    if (p === "/auth") return this.auth(b);
     if (p === "/diag") return this.diag();
-    if (p === "/oalert") return this.oalert(b);
     if (p === "/tgs") return json({ ok: true, tg: (await this.S()).tg });   // Telegram chats registered on this MT5 account (delivery target for browser users)
     return json({ error: "not found" }, 404);
   }
@@ -377,74 +351,14 @@ export class Hub {
   }
   deny(why) { return json({ ok: false, error: "session", why }, 401); }
 
-  // ---- user identity + order alerts (account-bound, stored here next to the EA state; delivery goes through the shared Notify engine) ----
-  uidOf(s, a) { return s && s.tg ? String(s.tg) : "a" + (a.login || ""); }
-  async auth(m) {
+  // ---- broker time offset: the EA reports its server-time offset from GMT (seconds) on every sync; the week windows use it ----
+  async tzSync(body) {
     const a = await this.S();
-    const r = await this.chk(a, m.sess);
-    if (r.s) { if (m.login && a.login !== String(m.login)) { a.login = String(m.login); await this.ctx.storage.put("acc", a); } await this.touch(a, r.s); }   // v4.22: never write storage for an unauthenticated caller
-    return json(r.s ? { ok: true, uid: this.uidOf(r.s, a), srv: a.srv || "" } : { ok: false, why: r.why });
-  }
-  async loadOa() { if (!this.oa) { this.oa = {}; for (const [k, v] of await this.ctx.storage.list({ prefix: "oa:" })) this.oa[k] = v; } return this.oa; }
-  async oaMine(uid) { const o = await this.loadOa(); return Object.values(o).filter((r) => r.user_id === uid && r.enabled && (r.status === "armed" || (r.status === "fired" && Date.now() - (r.fired_at || 0) < 86400000))).map((r) => ({ key: r.event_id, status: r.status })); }
-  hsig(h) { return h.no + "|" + h.entry + "|" + h.exit; }
-  async oalert(m) {
-    const a = await this.S(), r = await this.chk(a, m.sess); if (!r.s) return this.deny(r.why);
-    await this.touch(a, r.s);
-    const uid = this.uidOf(r.s, a), key = String(m.key || ""), st = this.st || {}, o = await this.loadOa(), sk = "oa:" + uid + ":" + key, old = o[sk];
-    if (m.enabled === false) { if (old && old.enabled) { old.enabled = false; old.status = "off"; old.updated_at = Date.now(); await this.ctx.storage.put(sk, old); } return json({ ok: true }); }
-    if (old && old.enabled && old.status === "armed") return json({ ok: true, dup: true });          // pressing Allow twice never creates a second alert
-    let src = null;
-    if (key[0] === "t") { const q = (st.orders || []).find((x) => String(x.ticket) === key.slice(1)); if (q) src = { side: String(q.side).toUpperCase().startsWith("B") ? "BUY" : "SELL", price: Number(q.price), lot: q.lot, sl: q.sl, tp: q.tp }; }
-    else if (key[0] === "w") { const q = (st.waits || []).find((x) => x.side === key.slice(1)); if (q) src = { side: q.side, price: Number(q.level) }; }
-    if (!src) return json({ ok: false, error: "order_gone" }, 404);
-    const now = Date.now(), rec = old || { id: crypto.randomUUID().replace(/-/g, "").slice(0, 16), user_id: uid, account_id: String(a.login || ""), type: "order", event_id: key, created_at: now };
-    Object.assign(rec, src, { enabled: true, kind: "activated", status: "armed", updated_at: now, sym: String(st.sym || ""), hseen: (st.hist || []).slice(0, 8).map((h) => this.hsig(h)), pos0: st.pos ? st.pos.entry + "|" + st.pos.no : "" });
-    delete rec.fired_at; o[sk] = rec; this.miss = {}; await this.ctx.storage.put(sk, rec);
-    return json({ ok: true });
-  }
-  // Stateless check against every EA sync: a pending order that vanished AND became a position (or a just-closed trade) = activated.
-  async watch(a) {
-    const o = await this.loadOa(), st = this.st; const recs = Object.entries(o).filter(([, r]) => r.enabled && r.status === "armed"); if (!recs.length) return;
-    const orders = st.orders || [], waits = st.waits || [], hist = st.hist || [], tol = this.tolOf(st);
-    for (const [k, r] of recs) {
-      const near = (x) => Math.abs(Number(x) - r.price) <= tol;
-      let live = null;
-      if (r.event_id[0] === "t") live = orders.find((x) => String(x.ticket) === r.event_id.slice(1));
-      else { live = waits.find((x) => x.side === r.side); const promoted = !live && orders.find((x) => String(x.side).toUpperCase().startsWith(r.side[0]) && near(x.price)); if (promoted) { r.event_id = "t" + promoted.ticket; live = promoted; r.updated_at = Date.now(); await this.ctx.storage.put(k, r); } }
-      if (live) { delete this.miss[k]; const px = Number(live.price != null ? live.price : live.level); if (px > 0 && px !== r.price) { r.price = px; r.updated_at = Date.now(); await this.ctx.storage.put(k, r); } continue; }
-      this.miss[k] = (this.miss[k] || 0) + 1; if (this.miss[k] < 3) continue;   // ignore a single incomplete sync
-      // a pending order that fills becomes a position whose identifier IS the order ticket: match by identity when the EA reports it, by symbol-tight price otherwise
-      const p = st.pos, tk = r.event_id[0] === "t" ? r.event_id.slice(1) : "", byId = !!(p && tk && p.pid !== undefined && p.pid !== null && String(p.pid) !== "" && String(p.pid) !== "0");
-      const act = p && String(p.side).toUpperCase().startsWith(r.side[0]) && (byId ? String(p.pid) === tk : near(p.entry)) && (p.entry + "|" + p.no) !== r.pos0;
-      const done = !act && hist.find((h) => String(h.side).toUpperCase().startsWith(r.side[0]) && near(h.entry) && !r.hseen.includes(this.hsig(h)));
-      if (!act && !done) { r.status = "gone"; r.updated_at = Date.now(); await this.ctx.storage.put(k, r); continue; }   // removed / cancelled: no activation message
-      const e = act ? p : done, off = Number(a.tzo) || 0, hh = new Date(Date.now() + off * 1000).toISOString().slice(11, 16) + " " + gmtLabel(off);
-      const res = await (await notifyStub(this.env, this.c, a.srv)).fetch("https://n/emit", { method: "POST", body: JSON.stringify({ uid: r.user_id, account_id: r.account_id, type: "order", event_id: r.id, alert_type: "activated", title: "Order Activated · تفعيل أوردر", body: `${r.side} ${r.sym}\nVolume: ${e.lot != null ? e.lot : r.lot}\nEntry: ${e.entry}\nTime: ${hh}` }) });
-      if (res.ok) { r.status = "fired"; r.fired_at = Date.now(); r.updated_at = r.fired_at; await this.ctx.storage.put(k, r); }   // if emit failed it stays armed and is retried on the next sync (dedupe makes that safe)
-    }
-  }
-
-  // ---- MT5 as the news source: broker time offset + economic calendar (EA sends a tiny hash every sync, the full table only when it changed) ----
-  async feed(body) {
-    const a = await this.S(), now = Date.now();
     const tz = Number(body.tzo), okTz = Number.isFinite(tz) && Math.abs(tz) <= 50400, tzo = okTz ? Math.round(tz / 900) * 900 : a.tzo;
-    const calv = typeof body.calv === "string" && /^[0-9a-f]{1,16}$/.test(body.calv) ? body.calv : "";
-    const rows = Array.isArray(body.cal) && calv ? body.cal.slice(0, 600) : null;
-    const tzChanged = okTz && a.tzo !== tzo, beat = !!calv && !rows && calv === a.calv && now - (a.calBeat || 0) > 300000;
-    let dirty = false, need = false;
-    if (tzChanged) { a.tzo = tzo; dirty = true; }
-    if (rows || tzChanged || beat) {
-      const res = await (await notifyStub(this.env, this.c, a.srv)).fetch("https://n/mt5", { method: "POST", body: JSON.stringify({ login: a.login || "", srv: a.srv || "", tzo: a.tzo, calv: rows || beat ? calv : undefined, rows }) });
-      const j = await res.json().catch(() => ({}));
-      if (j && j.ok) {
-        if (rows) a.calv = calv;
-        if (j.need) { a.calv = ""; need = true; }          // Notify lost the table (restart / data older than the heartbeat): ask the EA again
-        a.calBeat = now; dirty = true;
-      }
-    }
+    let dirty = false;
+    if (okTz && a.tzo !== tzo) { a.tzo = tzo; dirty = true; }
+    if ("calv" in a || "calBeat" in a) { delete a.calv; delete a.calBeat; dirty = true; }   // leftovers of a removed feature
     if (dirty) await this.ctx.storage.put("acc", a);
-    return need || (!!calv && !rows && calv !== a.calv);
   }
 
   // ---- EA side ----
@@ -480,26 +394,33 @@ export class Hub {
     const srv = String(body.srv || "").slice(0, 64);
     if (srv && a.srv !== srv) { if (a.srv && a.sessions.length) a.sessions = []; a.srv = srv; dirty = true; }
     if (body.reset && a.sessions.length) { a.sessions = []; dirty = true; }
-    if (!a.seen || now0 - a.seen > 15000) { a.seen = now0; dirty = true; }
+    // v4.31.2: "a.seen" (a whole-account write every 15 s) was never read by anything - liveness is this.ts (memory) + the inst record; the write is gone.
     // single shared bot: config v changes when the chat list or the token changes
     const tsig = hex(await hmacRaw(enc.encode("t"), m.tok || "")).slice(0, 8);
     if (a.tsig !== tsig) { a.tsig = tsig; a.cfgv = (a.cfgv || 0) + 1; dirty = true; }
+    if (!a.oaGone) {   // one-time cleanup of the stored records of the removed bell feature (nothing else ever read "oa:"); folded into the account write that is happening anyway
+      try { const ks = [...(await this.ctx.storage.list({ prefix: "oa:" })).keys()]; for (let i = 0; i < ks.length; i += 100) await this.ctx.storage.delete(ks.slice(i, i + 100)); a.oaGone = 1; dirty = true; } catch (e) { /* retried on the next sync; never breaks the EA sync */ }
+    }
     if (dirty) await this.ctx.storage.put("acc", a);
     // v4.15 SECOND-COPY DETECTION. The MT5 lock only covers copies inside ONE terminal; the Worker sees every EA that syncs this account
     // (another PC, a VPS ...). The first live instance id owns the account; a different id while the owner is fresh (< 20 s) is told dupInst,
     // gets no commands and its state is NOT stored, so two copies can never overwrite each other's view or execute the same command twice.
     const inst = String(body.inst || "").replace(/[^A-Za-z0-9_-]/g, "").slice(0, 64);
     if (inst) {
-      const cur = await this.ctx.storage.get("inst"), tn = Date.now();
+      if (this.inst === undefined) { this.inst = (await this.ctx.storage.get("inst")) || null; this.instP = this.inst ? this.inst.t : 0; }   // loaded once per Hub lifetime
+      const cur = this.inst, tn = Date.now();
       if (!cur || cur.id === inst || tn - cur.t > 20000) {
-        if (!cur || cur.id !== inst || tn - cur.t > 5000) await this.ctx.storage.put("inst", { id: inst, t: tn });
+        if (!cur || cur.id !== inst || tn - cur.t > 5000) {
+          this.inst = { id: inst, t: tn };                       // the live ownership decision uses exactly the same 5 s refresh / 20 s window as before
+          // v4.31.2: the stored copy only matters after a Hub restart; refreshing it every ~12 s (instead of ~6 s) keeps it far inside the 20 s window (worst case ~13 s old)
+          if (!cur || cur.id !== inst || tn - this.instP >= INST_PERSIST_MS) { await this.ctx.storage.put("inst", this.inst); this.instP = tn; }
+        }
       } else return json({ ok: true, dupInst: true, commands: [], staleSec: this.c.staleSec });
     }
-    if (body.state && typeof body.state === "object") { const gapFrom = this.ts; this.st = body.state; this.ts = Date.now(); try { await this.outage(gapFrom, this.ts, body.net); } catch (e) { /* diagnostics must never break the EA sync */ } try { await this.watch(a); } catch (e) { /* alerts must never break the EA sync */ } try { await this.archive(body.state, a); await this.diagFrom(body.state); } catch (e) { /* the internal archive / diagnostics must never break the EA sync */ } try { await this.cmdResults(body.state); } catch (e) { /* the command-result ledger must never break the EA sync */ } }
+    if (body.state && typeof body.state === "object") { const gapFrom = this.ts; this.st = body.state; this.ts = Date.now(); try { await this.outage(gapFrom, this.ts, body.net); } catch (e) { /* diagnostics must never break the EA sync */ } try { await this.archive(body.state, a); await this.diagFrom(body.state); } catch (e) { /* the internal archive / diagnostics must never break the EA sync */ } try { await this.cmdResults(body.state); } catch (e) { /* the command-result ledger must never break the EA sync */ } }
     let evack = [];
     if (Array.isArray(body.ev) && body.ev.length) { try { evack = await this.events(body.ev, a, String(m.login || "")); } catch (e) { /* notifications must never break the EA sync */ } }
-    let calNeed = false;
-    try { calNeed = await this.feed(body); } catch (e) { /* the news feed must never break the EA sync */ }
+    try { await this.tzSync(body); } catch (e) { /* the time-offset update must never break the EA sync */ }
     let q = (await this.ctx.storage.get("cmds")) || [];
     const ack = Array.isArray(body.ack) ? body.ack : [];
     const now = Date.now();
@@ -524,22 +445,19 @@ export class Hub {
     if (evack.length) out.evack = evack;
     if (issued) out.es = issued;
     if (paired) out.paired = true;
-    if (calNeed) out.calNeed = true;
     if (String(a.cfgv) !== String(body.cv !== undefined ? body.cv : 0)) out.cfg = { v: String(a.cfgv), tok: (this.c.eaToken && !(body.state && body.state.evp)) ? (m.tok || "") : "", auth: a.tg.join(",") };   // v4.8: an EA that routes notifications through the Worker never receives the Bot Token
     return json(out);
   }
 
   // ---- v4.8 EA notification events: ONE engine (Notify.emit) with a unique event id from the EA -> never delivered twice (even after EA / Worker / app restarts) ----
   async events(list, a, login) {
-    const ack = [], o = await this.loadOa(), now = Date.now();
-    const userAlert = Object.values(o).some((r) => r && r.enabled && (r.status === "armed" || (r.status === "fired" && now - (r.fired_at || 0) < 120000)));
+    const ack = [];
     const nt = await notifyStub(this.env, this.c, a.srv);
     for (const e of list.slice(0, 40)) {
       if (!e || typeof e !== "object") continue;
       const id = String(e.id || "");
       if (!/^\d{3,12}:\d{1,12}:\d{1,12}$/.test(id)) continue;
       const k = e.k === "act" ? "act" : "ev";
-      if (k === "act" && userAlert) { ack.push(id); continue; }   // the user's own Order Alert is the single source for the activation message
       const title = String(e.t || "").slice(0, 120), body = String(e.b || "").slice(0, 600);
       if (!title) { ack.push(id); continue; }
       const r = await nt.fetch("https://n/emit", { method: "POST", body: JSON.stringify({ uid: "ea" + (login || id.split(":")[0]), account_id: login || id.split(":")[0], type: "ea", event_id: id, alert_type: k, title, body }) });
@@ -625,8 +543,9 @@ export class Hub {
     if (!bad.length) return;
     if (this.dseen.size > 500) this.dseen.clear();
     const d = (await this.ctx.storage.get("diag")) || [], ids = new Set(d.map((r) => r.id));
-    for (const x of bad) { const id = String(x.id); this.dseen.add(id); if (ids.has(id)) continue; d.push({ id, rid: rid(id), t: Date.now(), src: "ea", cmd: String(x.cmd || "").slice(0, 16), cat: classify(x.text).cat || "user", raw: String(x.text || "").slice(0, 300) }); }
-    await this.ctx.storage.put("diag", d.slice(-300));   // diagnostics ring only (NOT trades)
+    let added = false;
+    for (const x of bad) { const id = String(x.id); this.dseen.add(id); if (ids.has(id)) continue; added = true; d.push({ id, rid: rid(id), t: Date.now(), src: "ea", cmd: String(x.cmd || "").slice(0, 16), cat: classify(x.text).cat || "user", raw: String(x.text || "").slice(0, 300) }); }
+    if (added) await this.ctx.storage.put("diag", d.slice(-300));   // diagnostics ring only (NOT trades); v4.31.2: never rewritten when every failure was already recorded (e.g. after a Hub restart)
   }
   async diag() {
     const a = await this.S(), weeks = [...(await this.ctx.storage.list({ prefix: "hx:" })).entries()].map(([k, v]) => ({ weekDay: Number(k.slice(3)), trades: v.length }));
@@ -639,7 +558,6 @@ export class Hub {
     await this.touch(a, r.s);
     const ag = this.age();
     const pub = publicOf(this.st || { price: 0, run: false, state: "STOPPED" });
-    const oal = await this.oaMine(this.uidOf(r.s, a));
     // v4.7: the Mini App sees the CURRENT WEEK's closed trades only (from the internal archive: unique ids, survives refresh / Worker restart);
     // the EA's own all-time stats and last-40 list are not forwarded. Older weeks stay in the archive untouched.
     const win = weekWin(a.tzo), wk = await this.weekList(win.key);
@@ -648,12 +566,13 @@ export class Hub {
     pub.week = { from: win.from, to: win.to, tzo: Number(a.tzo) || 0 };
     pub.cmdStatus = ((await this.ctx.storage.get("cmdst")) || []).slice(-20);   // v4.29: visible status of every command (queued / delivered / expired / rejected)
     const outs = ((await this.ctx.storage.get("outages")) || []).slice(-5);
-    return json({ ...pub, eaAge: ag, eaOnline: this.botUp(), eaStaleSec: this.c.staleSec, eaNet: this.net || null, outages: outs, oalerts: oal });
+    return json({ ...pub, eaAge: ag, eaOnline: this.botUp(), eaStaleSec: this.c.staleSec, eaNet: this.net || null, outages: outs });
   }
   // v4.29: persistent command status ledger (last 60): queued -> delivered | expired | rejected. The EA's own result (executed / failed) comes from its command log.
   async cmdNote(list) {
     if (!list || !list.length) return;
     const led = (await this.ctx.storage.get("cmdst")) || [], now = Date.now();
+    let ch = false;
     for (const [id, cmd, st, why, rid] of list) {
       const i = led.findIndex((x) => x.id === id);
       if (i >= 0) {
@@ -662,21 +581,26 @@ export class Hub {
         if (r.st === "delivered" && (st === "queued" || st === "handed")) continue;
         if (r.st === "handed" && st === "queued") continue;
         if ((st === "expired" || st === "unknown") && (r.res || r.st === "delivered")) continue;
-        r.st = st; r.why = why; r.u = now;
-      } else led.push({ id, cmd: String(cmd), st, why, t: now, u: now, ...(rid ? { rid } : {}) });
+        if (r.st === st && r.why === why) continue;   // v4.31.2: the same stage with the same text again is not a change
+        r.st = st; r.why = why; r.u = now; ch = true;
+      } else { ch = true; led.push({ id, cmd: String(cmd), st, why, t: now, u: now, ...(rid ? { rid } : {}) }); }
     }
-    await this.ctx.storage.put("cmdst", led.slice(-60));
+    if (ch) await this.ctx.storage.put("cmdst", led.slice(-60));   // v4.31.2: no write when nothing changed
   }
   // v4.30: the EXECUTION RESULT of every command, keyed by its id and stored in the persistent status ledger (not only "the last command"). Source: the EA's own command log
   // (it keeps every command with its id, ok/fail and wait state). Only commands this Worker issued are touched; a result is never invented: no EA entry = no result.
   async cmdResults(st) {
     const src = (st && st.lastCmd ? [st.lastCmd] : []).concat(Array.isArray(st && st.cmds) ? st.cmds : []);   // the detailed command log comes last, so it wins over the short lastCmd text
     if (!src.length) return;
+    // v4.31.2: the SAME command id appears in lastCmd (short text) AND in cmds (detailed text, status "wait"). The old loop compared each copy with the stored row one after the other,
+    // so the two copies overwrote each other and the row "changed" on EVERY sync (a cmdst write per second although the final result never changed).
+    // Now the copies are collapsed per id first (the detailed cmds entry still wins, exactly as before) and only that FINAL value is compared with the stored row.
+    const fin = new Map();
+    for (const x of src) { if (!x || x.id == null) continue; fin.set(String(x.id), x); }
     const led = (await this.ctx.storage.get("cmdst")) || [], now = Date.now();
     let ch = false;
-    for (const x of src) {
-      if (!x || x.id == null) continue;
-      const row = led.find((r) => r.id === String(x.id));
+    for (const [xid, x] of fin) {
+      const row = led.find((r) => r.id === xid);
       if (!row || row.st === "expired" || row.st === "rejected") continue;   // (an "unknown" row CAN still receive its real result later)
       const res = x.st === "fail" || x.ok === false ? "failed" : x.st === "wait" ? "waiting" : "executed", rt = classify(x.text).text.slice(0, 140);
       if (row.res !== res || row.rtext !== rt) { row.res = res; row.rtext = rt; row.ru = now; ch = true; }

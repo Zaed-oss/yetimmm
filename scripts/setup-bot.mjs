@@ -74,18 +74,15 @@ if (!me.ok) { console.error("[setup-bot] Telegram rejected the token."); process
 say("bot: @" + me.result.username);
 
 const secret = createHash("sha256").update("yt-webhook:" + token).digest("hex").slice(0, 48);
-const T = {
-  en: { name: "Yetimmm", about: "Smart risk-sequence manager for MT5 · XAUUSD", desc: "Yetimmm · XAUUSD\nSmart risk-sequence manager for MetaTrader 5.\n\n• Buy / Sell Stop cycles with calculated risk\n• Live orders, trades and P/L\n• News and order alerts\n\nTap Start to open the app.", cmds: [["start", "Open Yetimmm"], ["app", "Open the app"]] },
-  ar: { name: "Yetimmm", about: "نظام إدارة مخاطر ذكي لمنصة MT5 · الذهب XAUUSD", desc: "Yetimmm · XAUUSD\nنظام إدارة مخاطر ذكي لمنصة MetaTrader 5.\n\n• أوردرات Buy / Sell Stop بتسلسل مخاطرة محسوب\n• متابعة مباشرة للأوردرات والصفقات والأرباح\n• تنبيهات الأخبار والأوامر\n\nاضغط ابدأ لفتح التطبيق.", cmds: [["start", "فتح Yetimmm"], ["app", "فتح التطبيق"]] },
-};
-for (const [lang, t] of Object.entries(T)) {
-  const l = lang === "en" ? {} : { language_code: lang };
+const T = { name: "Yetimmm", about: "نظام إدارة مخاطر ذكي لمنصة MT5 · الذهب XAUUSD", desc: "Yetimmm · XAUUSD\nنظام إدارة مخاطر ذكي لمنصة MetaTrader 5.\n\n• أوردرات Buy / Sell Stop بتسلسل مخاطرة محسوب\n• متابعة مباشرة للأوردرات والصفقات والأرباح\n\nاضغط ابدأ لفتح التطبيق.", cmds: [["start", "فتح Yetimmm"], ["app", "فتح التطبيق"]] };   // Arabic only: the same Arabic profile is set as the default (every Telegram language) and for "ar"
+for (const l of [{}, { language_code: "ar" }]) {
+  const lang = l.language_code || "default";
   const cur = await apiGet("getMyName", l);                                   // v4.31.1: only call setMyName when the name really differs
-  if (cur.ok && cur.result && cur.result.name === t.name) say(`skip setMyName (${lang}) - already "${t.name}"`);
-  else await api("setMyName", { name: t.name, ...l });
-  await api("setMyDescription", { description: t.desc, ...l });
-  await api("setMyShortDescription", { short_description: t.about, ...l });
-  await api("setMyCommands", { commands: t.cmds.map(([command, description]) => ({ command, description })), ...l });
+  if (cur.ok && cur.result && cur.result.name === T.name) say(`skip setMyName (${lang}) - already "${T.name}"`);
+  else await api("setMyName", { name: T.name, ...l });
+  await api("setMyDescription", { description: T.desc, ...l });
+  await api("setMyShortDescription", { short_description: T.about, ...l });
+  await api("setMyCommands", { commands: T.cmds.map(([command, description]) => ({ command, description })), ...l });
 }
 await api("setChatMenuButton", { menu_button: { type: "web_app", text: "Yetimmm", web_app: { url: app } } });   // the Worker reads the button URL from here: no MINI_APP_URL var needed
 await api("setWebhook", { url: worker + "/tg/webhook", secret_token: secret, allowed_updates: ["message"], drop_pending_updates: true });

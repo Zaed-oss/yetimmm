@@ -18,6 +18,7 @@ button:focus-visible,input:focus-visible{outline:2px solid var(--gold);outline-o
 .num{direction:ltr;unicode-bidi:isolate;font-variant-numeric:tabular-nums;display:inline-block}
 .up{color:var(--up)}.dn{color:var(--dn)}.gd{color:var(--gold2)}.mu{color:var(--mute)}
 .app{max-width:520px;margin:auto}
+@media(min-width:700px){.app{max-width:760px}}
 header{display:flex;justify-content:space-between;align-items:center;gap:8px;padding:2px 2px 12px;border-bottom:1px solid transparent;border-image:linear-gradient(90deg,transparent,color-mix(in srgb,var(--gold) 55%,transparent),transparent) 1}
 .brand{display:flex;gap:11px;align-items:center;min-width:0}
 .logo{width:44px;height:44px;border-radius:14px;flex:none;background:linear-gradient(145deg,#1c1608,#3b2a08);border:1px solid color-mix(in srgb,var(--gold) 55%,transparent);display:grid;place-items:center;animation:pulse 3.2s ease-in-out infinite}
@@ -228,7 +229,6 @@ body.loading .pr,body.loading .kv b{color:transparent;border-radius:8px;backgrou
 @media(prefers-reduced-motion:reduce){#lg .box,#lg .er:not(:empty){animation:none!important}.btn,.card,.hi{transition:none}}
 </style>
 <link rel="stylesheet" href="anim/yt-anim.css">
-<link rel="stylesheet" href="news/yt-news.css">
 </head>
 <body>
 <svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs><symbol id="i-chart" viewBox="0 0 24 24"><path d="M7 4v3M7 17v3M17 3v4M17 15v5"/><rect x="5" y="7" width="4" height="10" rx="1"/><rect x="15" y="7" width="4" height="8" rx="1"/></symbol><symbol id="i-hist" viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5M12 7v5l3 2"/></symbol><symbol id="i-set" viewBox="0 0 24 24"><path d="M4 6h9M17 6h3M4 12h3M11 12h9M4 18h11M19 18h1"/><circle cx="15" cy="6" r="2"/><circle cx="9" cy="12" r="2"/><circle cx="17" cy="18" r="2"/></symbol><symbol id="i-play" viewBox="0 0 24 24"><path d="M7 4l13 8-13 8z"/></symbol><symbol id="i-stop" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2"/></symbol><symbol id="i-xc" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M9 9l6 6M15 9l-6 6"/></symbol><symbol id="i-up" viewBox="0 0 24 24"><path d="M7 17L17 7M9 7h8v8"/></symbol><symbol id="i-dn" viewBox="0 0 24 24"><path d="M7 7l10 10M17 9v8H9"/></symbol><symbol id="i-shield" viewBox="0 0 24 24"><path d="M12 3l8 3v6c0 5-3.5 8-8 9-4.5-1-8-4-8-9V6z"/><path d="M9 12l2 2 4-4"/></symbol><symbol id="i-target" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="5"/><circle cx="12" cy="12" r="1"/></symbol><symbol id="i-check" viewBox="0 0 24 24"><path d="M5 12.5l4.5 4.5L19 7.5"/></symbol><symbol id="i-alert" viewBox="0 0 24 24"><path d="M12 4l9 16H3z"/><path d="M12 10v4M12 17.5h0"/></symbol><symbol id="i-save" viewBox="0 0 24 24"><path d="M5 4h11l4 4v12H5z"/><path d="M8 4v5h7V4M8 20v-6h8v6"/></symbol><symbol id="i-refresh" viewBox="0 0 24 24"><path d="M20 11a8 8 0 0 0-14-4L4 9M4 4v5h5M4 13a8 8 0 0 0 14 4l2-2M20 20v-5h-5"/></symbol><symbol id="i-pause" viewBox="0 0 24 24"><path d="M8 5v14M16 5v14"/></symbol><symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></symbol><symbol id="i-bolt" viewBox="0 0 24 24"><path d="M13 3L5 14h6l-1 7 8-11h-6z"/></symbol><symbol id="i-scale" viewBox="0 0 24 24"><path d="M12 4v16M6 20h12M5 7h14"/><path d="M5 7l-3 7a3 3 0 0 0 6 0zM19 7l-3 7a3 3 0 0 0 6 0z"/></symbol><symbol id="i-dollar" viewBox="0 0 24 24"><path d="M12 3v18M16 7.5c0-1.7-1.8-3-4-3s-4 1.3-4 3 1.8 2.6 4 3 4 1.3 4 3-1.8 3-4 3-4-1.3-4-3"/></symbol><symbol id="i-trash" viewBox="0 0 24 24"><path d="M4 7h16M10 3h4M6 7l1 13h10l1-13M10 11v6M14 11v6"/></symbol><symbol id="i-edit" viewBox="0 0 24 24"><path d="M4 20h4L19 9l-4-4L4 16z"/><path d="M13.5 6.5l4 4"/></symbol><symbol id="i-power" viewBox="0 0 24 24"><path d="M12 3v8"/><path d="M6.3 6.8a8 8 0 1 0 11.4 0"/></symbol><symbol id="i-wifioff" viewBox="0 0 24 24"><path d="M3 3l18 18M5 10a10 10 0 0 1 4-2.3M19 10a10 10 0 0 0-3-2M8.5 14a5 5 0 0 1 3-1.5M15.5 14a5 5 0 0 0-1-.8M12 18h0"/></symbol><symbol id="i-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8h0"/></symbol></defs></svg>
@@ -259,9 +259,7 @@ body.loading .pr,body.loading .kv b{color:transparent;border-radius:8px;backgrou
   <div class="act">
     <span class="mode" id="mode"><i class="cd"></i><span id="modeT"></span></span>
     <div class="tools">
-      <button class="ib" id="ntB" aria-label="Notifications"><svg class="ic i3 i-bell"><use href="#i-bell"/></svg><span class="nbadge" id="ntN" hidden></span></button>
-      <button class="ib" id="lgB" aria-label="Language"></button>
-      <button class="ib" id="thB" aria-label="Theme">
+      <button class="ib" id="thB" aria-label="تبديل المظهر">
         <svg class="sun" viewBox="0 0 24 24"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>
         <svg class="moon" viewBox="0 0 24 24"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>
       </button>
@@ -270,7 +268,7 @@ body.loading .pr,body.loading .kv b{color:transparent;border-radius:8px;backgrou
 </header>
 
 <section class="tab on" id="t0">
-  <div class="card quote" id="qc"><div class="lnk" id="lnk"><i></i><div id="botMain"></div><div><b id="lnkT"></b><small id="lnkS"></small></div><button class="ib" id="retryB" aria-label="Retry" hidden><svg class="ic"><use href="#i-refresh"/></svg></button></div><div class="qt"><div><small>XAUUSD<span class="lv"><i></i><span id="lvT">SIM</span></span></small><div class="pr num" id="pr">—</div></div><div class="chg num" id="chg"></div></div>
+  <div class="card quote" id="qc"><div class="lnk" id="lnk"><i></i><div id="botMain"></div><div><b id="lnkT"></b><small id="lnkS"></small></div><button class="ib" id="retryB" aria-label="إعادة المحاولة" hidden><svg class="ic"><use href="#i-refresh"/></svg></button></div><div class="qt"><div><small>XAUUSD<span class="lv"><i></i><span id="lvT">SIM</span></span></small><div class="pr num" id="pr">—</div></div><div class="chg num" id="chg"></div></div>
     <svg class="spk" id="spk" viewBox="0 0 200 40" preserveAspectRatio="none"><defs><linearGradient id="sgf" x1="0" y1="0" x2="0" y2="1"><stop offset="0" style="stop-color:var(--gold);stop-opacity:.35"/><stop offset="1" style="stop-color:var(--gold);stop-opacity:0"/></linearGradient></defs><polygon id="spa" fill="url(#sgf)" points=""/><polyline id="spl" points=""/></svg>
 </div>
   <div id="dash"></div>
@@ -287,12 +285,11 @@ body.loading .pr,body.loading .kv b{color:transparent;border-radius:8px;backgrou
 </section>
 
 <section class="tab" id="t1"><div id="hist"></div></section>
-<section class="tab" id="t2"><div id="newsRoot"></div></section>
 
 
 </div>
 
-<nav class="nav" id="nav"><button class="on" data-k="0"><svg class="ic"><use href="#i-chart"/></svg><span data-t="nav0"></span></button><button data-k="1"><svg class="ic"><use href="#i-hist"/></svg><span data-t="nav1"></span></button><button data-k="2"><svg class="ic"><use href="#i-cal"/></svg><span data-t="n_nav"></span></button></nav>
+<nav class="nav" id="nav"><button class="on" data-k="0"><svg class="ic"><use href="#i-chart"/></svg><span data-t="nav0"></span></button><button data-k="1"><svg class="ic"><use href="#i-hist"/></svg><span data-t="nav1"></span></button></nav>
 <div class="ov" id="ov"><div class="sheet" id="sheet"></div></div>
 <div class="ov" id="sov"><div class="sheet" id="ssh"></div></div>
 <div class="toast" id="toast"></div>
@@ -312,109 +309,108 @@ const CONFIG={
   api:{baseUrl:"https://yetimmm-bridge.sayfhazeem078.workers.dev",pollMs:1000,headers:{}}
 };
 
-/* ═════════════ 2) I18N — [Arabic, English] ═════════════ */
+/* ═════════════ 2) TEXTS — Arabic only ═════════════ */
 const D={
-sub:["XAUUSD · الذهب مقابل الدولار","XAUUSD · Gold / US Dollar"],demo:["حساب تجريبي","Demo account"],live:["مباشر","Live"],offl:["غير متصل","Offline"],
-dB:["المسافة إلى Buy Stop","Distance to Buy Stop"],dS:["المسافة إلى Sell Stop","Distance to Sell Stop"],rng:["نطاق الدورة","Cycle range"],
-ordT:["الأوامر المعلقة وإدارة المخاطرة","Pending orders & risk"],buyL:["Buy Stop — أمر شراء معلق","Buy Stop — pending buy"],sellL:["Sell Stop — أمر بيع معلق","Sell Stop — pending sell"],
-abv:["أعلى من السعر","Above price"],blw:["أدنى من السعر","Below price"],apply:["تطبيق الأوامر","Apply orders"],
-nav0:["التداول","Trade"],nav1:["سجل الصفقات","History"],nav2:["الإعدادات","Settings"],
-st_STOPPED:["البوت متوقف","Bot stopped"],sx_STOPPED:["شغّل البوت لوضع الأوامر المعلقة","Start the bot to place pending orders"],
-st_IDLE:["بانتظار الأوامر","Waiting for orders"],sx_IDLE:["لا توجد أوامر معلقة حالياً","No pending orders right now"],
-st_TP_RESET:["تم جني الأرباح","Take profit hit"],sx_TP_RESET:["أدخل مستويات جديدة لمتابعة التداول","Enter new levels to continue"],
-st_ARMED:["الأوامر المعلقة نشطة","Pending orders active"],sx_ARMED:["Buy Stop و Sell Stop بانتظار السعر","Buy Stop & Sell Stop are waiting for price"],
-st_BUY_ACTIVE:["صفقة شراء مفتوحة","Buy trade open"],sx_BUY_ACTIVE:["تم حذف أمر Sell Stop","Sell Stop order removed"],
-st_SELL_ACTIVE:["صفقة بيع مفتوحة","Sell trade open"],sx_SELL_ACTIVE:["تم حذف أمر Buy Stop","Buy Stop order removed"],
-st_WAITING_REENTRY:["بانتظار عودة السعر","Waiting for price to return"],sx_WAITING_REENTRY:["السعر خارج نطاق الأوامر المعلقة","Price is outside the pending range"],
-st_ERROR:["خطأ — يلزم تدخل","Error — action needed"],sx_ERROR:["راجع الرسالة أدناه","See the message below"],
-stopB:["إيقاف البوت","Stop bot"],startB:["تشغيل البوت","Start bot"],closeB:["إغلاق الصفقة","Close trade"],buy:["شراء BUY","BUY"],sell:["بيع SELL","SELL"],
-flt:["الربح / الخسارة العائمة","Floating P/L"],slS:["وقف الخسارة","Stop loss"],tpS:["جني الأرباح","Take profit"],entry:["سعر الدخول","Entry"],slK:["وقف الخسارة SL","Stop loss SL"],tpK:["جني الأرباح TP","Take profit TP"],
-lot:["حجم اللوت","Lot size"],riskK:["المخاطرة","Risk"],expK:["الربح المتوقع","Expected profit"],rmT:["إدارة المخاطرة","Risk management"],seq:["الصفقة {0} في التسلسل","Trade {0} in sequence"],
-curR:["المخاطرة الحالية","Current risk"],accL:["الخسائر المتراكمة","Accumulated loss"],
-net:["صافي الأرباح والخسائر (Net P/L)","Net profit / loss (Net P/L)"],tot:["إجمالي الصفقات","Total trades"],win:["صفقات رابحة","Winning trades"],rate:["نسبة الربح","Win rate"],
-logT:["سجل الصفقات — هذا الأسبوع","Trade history — this week"],wkR:["من الاثنين 00:00 إلى الأحد 23:59 (توقيت السيرفر) · يُحتفظ بالسجل الكامل داخلياً","Monday 00:00 – Sunday 23:59 (server time) · the full history is kept internally"],e_generic:["تعذر تنفيذ العملية حالياً. يرجى المحاولة مرة أخرى.","The operation could not be completed right now. Please try again."],cyc_q:["إيقاف / إعادة ضبط الدورة","Stop / reset the cycle"],cyc_b:["سيتم حذف حالة الدورة المحفوظة{0}. لن يُحذف سجل الصفقات التاريخي.","The saved cycle state will be cleared{0}. The historical trade log is NOT deleted."],cyc_o:[" وإلغاء {0} أمر معلّق"," and {0} pending order(s) cancelled"],cyc_y:["متابعة","Continue"],cyc_blk:["لا يمكن إعادة ضبط الدورة الآن لأن هناك عملية تداول نشطة.","The cycle cannot be reset now: a trade is active."],cyc_pnd:["هناك أمر قيد التنفيذ. انتظر قليلاً ثم أعد المحاولة.","A command is still in progress. Wait a moment and try again."],cyc_ok:["أُرسل طلب إعادة ضبط الدورة","Cycle reset requested"],cyc_btn:["دورة جديدة","New cycle"],none:["لا توجد سجلات بعد","Nothing logged yet"],buyW:["شراء","Buy"],sellW:["بيع","Sell"],lots:["لوت","lots"],
-r_SL:["وقف الخسارة","Stop loss"],r_TP:["جني الأرباح","Take profit"],r_MANUAL:["إغلاق يدوي","Manual close"],
+sub:"XAUUSD · الذهب مقابل الدولار",demo:"حساب تجريبي",live:"مباشر",offl:"غير متصل",
+dB:"المسافة إلى Buy Stop",dS:"المسافة إلى Sell Stop",rng:"نطاق الدورة",
+ordT:"الأوامر المعلقة وإدارة المخاطرة",buyL:"Buy Stop — أمر شراء معلق",sellL:"Sell Stop — أمر بيع معلق",
+abv:"أعلى من السعر",blw:"أدنى من السعر",apply:"تطبيق الأوامر",
+nav0:"التداول",nav1:"سجل الصفقات",nav2:"الإعدادات",
+st_STOPPED:"البوت متوقف",sx_STOPPED:"شغّل البوت لوضع الأوامر المعلقة",
+st_IDLE:"بانتظار الأوامر",sx_IDLE:"لا توجد أوامر معلقة حالياً",
+st_TP_RESET:"تم جني الأرباح",sx_TP_RESET:"أدخل مستويات جديدة لمتابعة التداول",
+st_ARMED:"الأوامر المعلقة نشطة",sx_ARMED:"Buy Stop و Sell Stop بانتظار السعر",
+st_BUY_ACTIVE:"صفقة شراء مفتوحة",sx_BUY_ACTIVE:"تم حذف أمر Sell Stop",
+st_SELL_ACTIVE:"صفقة بيع مفتوحة",sx_SELL_ACTIVE:"تم حذف أمر Buy Stop",
+st_WAITING_REENTRY:"بانتظار عودة السعر",sx_WAITING_REENTRY:"السعر خارج نطاق الأوامر المعلقة",
+st_ERROR:"خطأ — يلزم تدخل",sx_ERROR:"راجع الرسالة أدناه",
+stopB:"إيقاف البوت",startB:"تشغيل البوت",closeB:"إغلاق الصفقة",buy:"شراء BUY",sell:"بيع SELL",
+flt:"الربح / الخسارة العائمة",slS:"وقف الخسارة",tpS:"جني الأرباح",entry:"سعر الدخول",slK:"وقف الخسارة SL",tpK:"جني الأرباح TP",
+lot:"حجم اللوت",riskK:"المخاطرة",expK:"الربح المتوقع",rmT:"إدارة المخاطرة",seq:"الصفقة {0} في التسلسل",
+curR:"المخاطرة الحالية",accL:"الخسائر المتراكمة",
+net:"صافي الأرباح والخسائر (Net P/L)",tot:"إجمالي الصفقات",win:"صفقات رابحة",rate:"نسبة الربح",
+logT:"سجل الصفقات — هذا الأسبوع",wkR:"من الاثنين 00:00 إلى الأحد 23:59 (توقيت السيرفر) · يُحتفظ بالسجل الكامل داخلياً",e_generic:"تعذر تنفيذ العملية حالياً. يرجى المحاولة مرة أخرى.",cyc_q:"إيقاف / إعادة ضبط الدورة",cyc_b:"سيتم حذف حالة الدورة المحفوظة{0}. لن يُحذف سجل الصفقات التاريخي.",cyc_o:" وإلغاء {0} أمر معلّق",cyc_y:"متابعة",cyc_blk:"لا يمكن إعادة ضبط الدورة الآن لأن هناك عملية تداول نشطة.",cyc_pnd:"هناك أمر قيد التنفيذ. انتظر قليلاً ثم أعد المحاولة.",cyc_ok:"أُرسل طلب إعادة ضبط الدورة",cyc_btn:"دورة جديدة",none:"لا توجد سجلات بعد",buyW:"شراء",sellW:"بيع",lots:"لوت",
+r_SL:"وقف الخسارة",r_TP:"جني الأرباح",r_MANUAL:"إغلاق يدوي",
 
-rrL:["نسبة المخاطرة إلى العائد (1:x)","Risk-to-reward ratio (1:x)"],rrN:["جني الأرباح = المسافة بين الأمرين × النسبة","Take profit = distance between orders × ratio"],
-dev:["أقصى انزلاق سعري (نقطة)","Max slippage (points)"],devN:["يُفحص بعد تنفيذ الأمر","Checked after order execution"],
-wrn:["تنبيه فرق السعر Spread (نقطة)","Spread alert (points)"],wrnN:["تنبيه فقط ولا يمنع التداول","Alert only, does not block trading"],
-brk:["عند ضرب وقف الخسارة","When stop loss is hit"],brkM:["فتح الصفقة المعاكسة فوراً","Open opposite trade now"],brkW:["انتظار عودة السعر","Wait for price to return"],
-lock:["لا يمكن تعديل هدف التعويض والنسبة أثناء وجود صفقة مفتوحة","Target and ratio can't be changed while a trade is open"],save:["حفظ الإعدادات","Save settings"],reset:["إعادة ضبط تسلسل المخاطرة","Reset risk sequence"],
-e_pos:["أدخل سعر Buy Stop وسعر Sell Stop","Enter the Buy Stop and Sell Stop prices"],e_ord:["سعر Buy Stop يجب أن يكون أعلى من سعر Sell Stop","Buy Stop must be above Sell Stop"],
-e_lot0:["تعذّر حساب حجم اللوت","Can't calculate lot size"],e_lotMin:["حجم اللوت المطلوب أقل من الحد الأدنى للوسيط ({0})","Required lot is below the broker minimum ({0})"],e_lotMax:["حجم اللوت يتجاوز الحد الأقصى للوسيط","Lot size exceeds the broker maximum"],
-e_buyP:["Buy Stop يجب أن يكون أعلى من السعر الحالي","Buy Stop must be above the current price"],e_sellP:["Sell Stop يجب أن يكون أدنى من السعر الحالي","Sell Stop must be below the current price"],
-e_rr:["النسبة يجب أن تكون أكبر من صفر","Ratio must be greater than zero"],e_neg:["القيم يجب ألا تكون سالبة","Values can't be negative"],
-aSL:["وقف الخسارة (تلقائي)","Stop loss (auto)"],aTP:["جني الأرباح TP","Take profit TP"],
-pv:["حجم اللوت {0} · أقصى خسارة ${1} · الربح المستهدف ${2}","Lot {0} · Max loss ${1} · Target profit ${2}"],pvA:[" · يُطبَّق بعد إغلاق الصفقة"," · applies after the trade closes"],
-t_start:["تم تشغيل البوت","Bot started"],t_startF:["❌ تعذّر التشغيل: {0}","❌ Can't start: {0}"],t_stop:["تم إيقاف البوت وحذف الأوامر المعلقة","Bot stopped and pending orders removed"],
-t_exec:["تم تنفيذ {0} عند {1}","{0} executed at {1}"],t_ob:["أمر الشراء","Buy order"],t_os:["أمر البيع","Sell order"],
-t_sl:["وقف الخسارة {0}$ · المخاطرة التالية ${1}","Stop loss {0}$ · next risk ${1}"],t_tp:["تم جني الأرباح {0}$","Take profit {0}$"],
-t_saved:["تم حفظ الإعدادات","Settings saved"],t_applied:["تم تحديث الأوامر المعلقة","Pending orders updated"],t_pend:["تم الحفظ — تُطبَّق بعد إغلاق الصفقة الحالية","Saved — applies after the current trade closes"],
-t_reset:["تمت إعادة ضبط تسلسل المخاطرة","Risk sequence reset"],t_noReset:["لا يمكن أثناء وجود صفقة مفتوحة","Not possible while a trade is open"],
-l_sim:["وضع تجريبي (محاكاة)","Demo mode (simulation)"],l_wait:["جارٍ الاتصال بالخادم…","Connecting…"],
-l_rec:["جارٍ إعادة الاتصال…","Reconnecting…"],l_recS:["انقطاع مؤقت — جلستك محفوظة وسيعود الاتصال تلقائياً","Brief interruption — your session is kept and it reconnects by itself"],l_net:["لا يوجد اتصال بالإنترنت على هاتفك","Your phone is offline"],l_netS:["سيعود التحديث تلقائياً فور عودة الإنترنت — لا حاجة لتسجيل الدخول من جديد","Updates resume automatically when the internet is back — no need to sign in again"],l_outg:["آخر انقطاع في المزامنة: {0} ث · قبل {1}","Last sync gap: {0}s · {1} ago"],l_outEa:["خطأ الـ EA: {0} ({1} محاولة)","EA error: {0} ({1} tries)"],l_srv:["تعذّر الوصول إلى الخادم","Server unreachable"],l_srvS:["تحقق من الإنترنت — جارٍ إعادة المحاولة","Check your internet — retrying"],
-l_auth:["انتهت الجلسة","Session expired"],l_authS:["سجّل الدخول من جديد","Please sign in again"],
-l_off:["الـ EA غير متصل","EA offline"],l_offS:["لا مزامنة من الـ EA (تحقّق: Algo Trading أخضر، الـ EA على XAUUSD، وسجل Experts بلا خطأ 4014). بعد تحديث الـ EA ينتظر الاتصال الأول بضع ثوانٍ.","No sync from the EA (check: Algo Trading is green, the EA is on XAUUSD, Experts log has no error 4014). After an EA update the first connection takes a few seconds."],l_last:["آخر اتصال قبل {0}","last seen {0} ago"],
-l_okWait:["البوت متصل · بانتظار الأوامر","Bot connected · waiting for commands"],l_okRun:["البوت متصل · يعمل","Bot connected · running"],
-l_okTrade:["البوت متصل · صفقة مفتوحة","Bot connected · trade open"],l_okErr:["البوت متصل · يوجد خطأ","Bot connected · error"],l_upd:["آخر تحديث قبل {0}","updated {0} ago"],
-noLink:["لا يمكن إرسال الأوامر — البوت غير متصل","Can't send — the bot is not connected"],t_sent:["تم إرسال الأمر إلى البوت…","Command sent to the bot…"],
-r_STOP:["إيقاف يدوي","Manual stop"],r_CANCEL:["إلغاء","Cancel"],r_EXT:["إغلاق خارجي","External close"],r_SO:["Stop Out","Stop Out"],r_DEV:["رفض الانزلاق","Slippage reject"],r_EXTRA:["إغلاق صفقة زائدة","Extra position closed"],r_PROT:["إغلاق حماية","Protection close"],r_OTH:["أخرى","Other"],
-back:["رجوع","Back"],q_open:["توجد صفقة مفتوحة","A trade is open"],q_openB:["سيتم إغلاق الصفقة ({0} $) ثم إيقاف البوت.","The trade ({0} $) will be closed, then the bot stops."],q_openY:["إغلاق وإيقاف","Close & stop"],
-q_close:["إغلاق الصفقة","Close trade"],q_closeB:["الربح/الخسارة الحالية: {0} $. لن يعيد البوت إنشاء الأوامر تلقائياً بعد الإغلاق اليدوي.","Current P/L: {0} $. The bot won't recreate orders automatically after a manual close."],
-q_reset:["إعادة ضبط تسلسل المخاطرة","Reset risk sequence"],q_resetB:["تُصفَّر الخسائر المتراكمة وتعود المخاطرة إلى ${0}","Accumulated losses are cleared and risk returns to ${0}"],q_resetY:["إعادة ضبط","Reset"],q2T:["تأكيد نهائي","Final confirmation"],q_stop:["إيقاف التداول","Stop trading"],q_stopB:["يوقف البوت ويحذف الأوامر المعلّقة. لا يُصفّر الخسائر المتراكمة ({0} $).","Stops the bot and deletes pending orders. It does not clear the accumulated loss ({0} $)."],q_stopY:["إيقاف","Stop"],q2_stop:["هل أنت متأكد من إيقاف البوت الآن؟{0}","Are you sure you want to stop the bot now?{0}"],q2_stopR:[" ملاحظة: بدء التشغيل بعد الإيقاف لا يصفّر الخسائر المتراكمة؛ التصفير فقط بإعادة الضبط المؤكدة."," Note: starting again after a stop does NOT clear the accumulated loss; only the confirmed Reset does."],q2_open:["تأكيد أخير: تُغلق الصفقة بسعر السوق الآن ثم يتوقف البوت.{0}","Last check: the trade is closed at market now, then the bot stops.{0}"],q2_close:["تأكيد أخير: تُغلق الصفقة بسعر السوق الآن. لا يتوقف البوت ولا تُحذف الأوامر ولا تُصفَّر الخسائر.","Last check: the trade is closed at market now. The bot is not stopped, no orders are deleted and losses are not cleared."],q_resetB2:["يُصفَّر التسلسل (Seq {1}) والخسارة التراكمية {2} $ وتعود المخاطرة إلى ${0}.","The sequence (Seq {1}) and the accumulated loss {2} $ are cleared and risk returns to ${0}."],q2_reset:["تأكيد أخير: لا يمكن التراجع. هذا ليس إيقافاً ولا إغلاقاً للصفقة.","Last check: this cannot be undone. It is not a stop and it does not close a trade."],
-ordsT:["الأوامر المعلقة الفعلية","Live pending orders"],oB:["Buy Stop","Buy Stop"],oS:["Sell Stop","Sell Stop"],delB:["حذف الأمر","Delete order"],
-q_del:["حذف الأمر المعلق","Delete pending order"],
-q_delB:["سيتم حذف {0} عند {1} (تذكرة #{2}) من MT5 فوراً، ويكمل البوت بالأمر الآخر فقط.","{0} at {1} (ticket #{2}) will be deleted from MT5 now; the bot continues with the other order only."],
-q_delB1:["سيتم حذف {0} عند {1} (تذكرة #{2}) من MT5 فوراً، وهو آخر أمر معلق فيتوقف البوت عن وضع أوامر جديدة.","{0} at {1} (ticket #{2}) will be deleted from MT5 now; it is the last pending order, so the bot stops placing orders."],
-q_delY:["حذف","Delete"],
-c_start:["تشغيل البوت","Start bot"],c_stop:["إيقاف البوت","Stop bot"],c_close:["إغلاق الصفقة","Close trade"],c_apply:["تطبيق الأوامر","Apply orders"],c_settings:["حفظ الإعدادات","Save settings"],c_reset:["إعادة ضبط المخاطرة","Reset risk"],c_delete:["حذف أمر معلق","Delete pending order"],
-cmdW:["أمر","Command"],rcvT:["استعادة مطلوبة (REQUIRED_RECOVERY): لا أوامر جديدة","Recovery required (REQUIRED_RECOVERY): no new orders"],rcvB:["البوت لا يرسل أوامر جديدة ولا يحذف شيئاً حتى تُحسم الحالة. أرسل /cancel لإزالة الأوامر المعلّقة أو /stop، أو حدّد المستويات ثم START. الدين المسجّل محفوظ.","The bot sends no new orders and deletes nothing until this is resolved. Send /cancel to remove the pending orders, or /stop, or set levels then START. The booked debt is kept."],csT:["حالة الأوامر","Command status"],cs_queued:["قيد الانتظار: لم يستلمه البوت بعد","Queued: the bot has not taken it yet"],cs_delivered:["استلمه البوت · بانتظار نتيجة التنفيذ","Received by the bot · waiting for the result"],cs_expired:["انتهت المهلة ولم يُنفَّذ (البوت غير متصل). أعد الإرسال","Expired, NOT executed (bot offline). Send it again"],cs_rejected:["رُفض: القائمة ممتلئة ولم يُقبل","Rejected: queue full, not accepted"],cs_done:["نُفِّذ","Executed"],cs_wait:["مقبول · بانتظار السعر","Accepted · waiting for price"],cs_fail:["رفضه البوت / فشل","Refused by the bot / failed"],cs_unk:["استلمه البوت لكن تعذّر تأكيد النتيجة","Received by the bot but the result could not be confirmed"],cmdSent:["بانتظار تأكيد البوت…","Waiting for the bot…"],cmdLost:["لم يصل تأكيد من البوت","No confirmation from the bot"],q_full:["قائمة الأوامر ممتلئة: لم يُقبل الأمر. حاول بعد قليل","The command queue is full: the command was NOT accepted. Try again shortly"],cmdExp:["انتهت صلاحية الأمر ولم يُنفَّذ (البوت غير متصل). أعد إرساله","The command expired and was NOT executed (bot offline). Send it again"],cmdOk:["تم التنفيذ","Executed"],cmdFail:["فشل","Failed"],fillM:["تعبئة أسعار صالحة من السوق","Fill valid levels from market"],fillE:["لا يوجد سعر حي من البوت","No live price from the bot"],mkB:["Buy Stop {0} تحت السعر الحالي (Ask {1}): يُقبل ويبقى بالانتظار، ويُوضع تلقائياً عندما يهبط Ask إلى {2} أو أقل","Buy Stop {0} is under the market (Ask {1}): accepted, it waits and is placed automatically when Ask falls to {2} or lower"],mkS:["Sell Stop {0} فوق السعر الحالي (Bid {1}): يُقبل ويبقى بالانتظار، ويُوضع تلقائياً عندما يصعد Bid إلى {2} أو أعلى","Sell Stop {0} is above the market (Bid {1}): accepted, it waits and is placed automatically when Bid rises to {2} or higher"],waitT:["بانتظار السعر","Waiting for price"],oldEA:["الـ EA المحمّل على MT5 نسخة قديمة: يرفض المستويات ولا يدعم الانتظار الذكي. ترجم Yetimmm.mq5 (v2.20) بـ F7 وأعد تحميله على الشارت.","The EA running in MT5 is an old version: it rejects levels and has no smart waiting. Compile Yetimmm.mq5 (v2.20) with F7 and reload it on the chart."],cmdWait:["مقبول · بانتظار السعر","Accepted · waiting for price"],cmdDone:["فُعِّل ","Activated "],cmdSup:["استُبدل","Superseded"],cmdCan:["أُلغي","Cancelled"],
-wB:["Ask الآن {0} · يُفعَّل عندما يهبط إلى {1} أو أقل · المتبقي {2}","Ask now {0} · activates when it falls to {1} or lower · {2} to go"],wS:["Bid الآن {0} · يُفعَّل عندما يصعد إلى {1} أو أعلى · المتبقي {2}","Bid now {0} · activates when it rises to {1} or higher · {2} to go"],
-fillA:["ضُبطت مستويات حسب السعر الحالي","Levels set from the live price"],ea_wb:["Buy Stop {0} بالانتظار: Ask الآن {1}، يُوضع تلقائياً عندما يهبط إلى {2} أو أقل","Buy Stop {0} waiting: Ask is {1}, placed automatically when it falls to {2} or lower"],ea_ws:["Sell Stop {0} بالانتظار: Bid الآن {1}، يُوضع تلقائياً عندما يصعد إلى {2} أو أعلى","Sell Stop {0} waiting: Bid is {1}, placed automatically when it rises to {2} or higher"],ea_buy:["Buy Stop {0} مرفوض: يجب أن يكون أعلى من Ask ({1})","Buy Stop {0} rejected: must be above Ask ({1})"],ea_sell:["Sell Stop {0} مرفوض: يجب أن يكون أدنى من Bid ({1})","Sell Stop {0} rejected: must be below Bid ({1})"],ea_conn:["لا يوجد اتصال بين MT5 وخادم الوسيط","MT5 has no connection to the broker server"],ea_at:["زر AutoTrading في MT5 متوقف","AutoTrading is disabled in MT5"],
-c_cancel:["إلغاء كل الأوامر المعلقة","Cancel all pending"],c_modify:["تعديل أمر معلق","Modify pending order"],c_place:["إضافة أمر معلق","Add pending order"],
-editB:["تعديل السعر","Edit price"],addB:["إضافة أمر {0}","Add {0} order"],canB:["إلغاء كل الأوامر","Cancel all orders"],okB:["تأكيد","Confirm"],newPx:["السعر الجديد لـ {0}","New price for {0}"],
-q_can:["إلغاء كل الأوامر؟","Cancel all orders?"],q_canB:["ستُحذف كل الأوامر المعلقة. الصفقة المفتوحة (إن وجدت) تبقى.","All pending orders will be deleted. An open trade (if any) stays."],
-acT:["الحساب","Account"],aBal:["الرصيد","Balance"],aEq:["الإكوتي","Equity"],aFl:["الربح العائم","Floating P/L"],aMg:["الهامش","Margin"],aFm:["الهامش الحر","Free margin"],aLev:["الرافعة","Leverage"],
-sxT:["إحصائيات مفصلة","Detailed statistics"],sPf:["معامل الربح","Profit factor"],sAw:["متوسط الربح","Avg win"],sAl:["متوسط الخسارة","Avg loss"],sMw:["أكبر ربح","Best trade"],sMl:["أكبر خسارة","Worst trade"],sBs:["شراء / بيع","Buy / Sell"],sVol:["الحجم الكلي","Total volume"],sCm:["العمولة + السواب","Comm. + swap"],sSt:["السلسلة الحالية","Current streak"],sHr:["أعلى مخاطرة","Peak risk"],
-stM:["البوت متوقف","Bot stopped"],stMB:["تم تجميد السعر عند {0} · لا أوامر ولا صفقات ولا تحديثات حتى تعيد التشغيل","Price frozen at {0} · no orders, trades or updates until you restart"],rst:["إعادة التشغيل","Restart"],vw:["عرض فقط","View only"],frzL:["السعر مجمّد","Price frozen"],q_delW:["سيتم حذف مستوى {0} عند {1} (ما زال بانتظار السعر ولم يُوضع في MT5) ولن يُنشأ لاحقاً.","The {0} level at {1} (still waiting for price, not in MT5 yet) will be deleted and never created later."]
+rrL:"نسبة المخاطرة إلى العائد (1:x)",rrN:"جني الأرباح = المسافة بين الأمرين × النسبة",
+dev:"أقصى انزلاق سعري (نقطة)",devN:"يُفحص بعد تنفيذ الأمر",
+wrn:"تنبيه فرق السعر Spread (نقطة)",wrnN:"تنبيه فقط ولا يمنع التداول",
+brk:"عند ضرب وقف الخسارة",brkM:"فتح الصفقة المعاكسة فوراً",brkW:"انتظار عودة السعر",
+lock:"لا يمكن تعديل هدف التعويض والنسبة أثناء وجود صفقة مفتوحة",save:"حفظ الإعدادات",reset:"إعادة ضبط تسلسل المخاطرة",
+e_pos:"أدخل سعر Buy Stop وسعر Sell Stop",e_ord:"سعر Buy Stop يجب أن يكون أعلى من سعر Sell Stop",
+e_lot0:"تعذّر حساب حجم اللوت",e_lotMin:"حجم اللوت المطلوب أقل من الحد الأدنى للوسيط ({0})",e_lotMax:"حجم اللوت يتجاوز الحد الأقصى للوسيط",
+e_buyP:"Buy Stop يجب أن يكون أعلى من السعر الحالي",e_sellP:"Sell Stop يجب أن يكون أدنى من السعر الحالي",
+e_rr:"النسبة يجب أن تكون أكبر من صفر",e_neg:"القيم يجب ألا تكون سالبة",
+aSL:"وقف الخسارة (تلقائي)",aTP:"جني الأرباح TP",
+pv:"حجم اللوت {0} · أقصى خسارة ${1} · الربح المستهدف ${2}",pvA:" · يُطبَّق بعد إغلاق الصفقة",
+t_start:"تم تشغيل البوت",t_startF:"❌ تعذّر التشغيل: {0}",t_stop:"تم إيقاف البوت وحذف الأوامر المعلقة",
+t_exec:"تم تنفيذ {0} عند {1}",t_ob:"أمر الشراء",t_os:"أمر البيع",
+t_sl:"وقف الخسارة {0}$ · المخاطرة التالية ${1}",t_tp:"تم جني الأرباح {0}$",
+t_saved:"تم حفظ الإعدادات",t_applied:"تم تحديث الأوامر المعلقة",t_pend:"تم الحفظ — تُطبَّق بعد إغلاق الصفقة الحالية",
+t_reset:"تمت إعادة ضبط تسلسل المخاطرة",t_noReset:"لا يمكن أثناء وجود صفقة مفتوحة",
+l_sim:"وضع تجريبي (محاكاة)",l_wait:"جارٍ الاتصال بالخادم…",
+l_rec:"جارٍ إعادة الاتصال…",l_recS:"انقطاع مؤقت — جلستك محفوظة وسيعود الاتصال تلقائياً",l_net:"لا يوجد اتصال بالإنترنت على هاتفك",l_netS:"سيعود التحديث تلقائياً فور عودة الإنترنت — لا حاجة لتسجيل الدخول من جديد",l_outg:"آخر انقطاع في المزامنة: {0} ث · قبل {1}",l_outEa:"خطأ الـ EA: {0} ({1} محاولة)",l_srv:"تعذّر الوصول إلى الخادم",l_srvS:"تحقق من الإنترنت — جارٍ إعادة المحاولة",
+l_auth:"انتهت الجلسة",l_authS:"سجّل الدخول من جديد",
+l_off:"الـ EA غير متصل",l_offS:"لا مزامنة من الـ EA (تحقّق: Algo Trading أخضر، الـ EA على XAUUSD، وسجل Experts بلا خطأ 4014). بعد تحديث الـ EA ينتظر الاتصال الأول بضع ثوانٍ.",l_last:"آخر اتصال قبل {0}",
+l_okWait:"البوت متصل · بانتظار الأوامر",l_okRun:"البوت متصل · يعمل",
+l_okTrade:"البوت متصل · صفقة مفتوحة",l_okErr:"البوت متصل · يوجد خطأ",l_upd:"آخر تحديث قبل {0}",
+noLink:"لا يمكن إرسال الأوامر — البوت غير متصل",t_sent:"تم إرسال الأمر إلى البوت…",
+r_STOP:"إيقاف يدوي",r_CANCEL:"إلغاء",r_EXT:"إغلاق خارجي",r_SO:"Stop Out",r_DEV:"رفض الانزلاق",r_EXTRA:"إغلاق صفقة زائدة",r_PROT:"إغلاق حماية",r_OTH:"أخرى",
+back:"رجوع",q_open:"توجد صفقة مفتوحة",q_openB:"سيتم إغلاق الصفقة ({0} $) ثم إيقاف البوت.",q_openY:"إغلاق وإيقاف",
+q_close:"إغلاق الصفقة",q_closeB:"الربح/الخسارة الحالية: {0} $. لن يعيد البوت إنشاء الأوامر تلقائياً بعد الإغلاق اليدوي.",
+q_reset:"إعادة ضبط تسلسل المخاطرة",q_resetB:"تُصفَّر الخسائر المتراكمة وتعود المخاطرة إلى ${0}",q_resetY:"إعادة ضبط",q2T:"تأكيد نهائي",q_stop:"إيقاف التداول",q_stopB:"يوقف البوت ويحذف الأوامر المعلّقة. لا يُصفّر الخسائر المتراكمة ({0} $).",q_stopY:"إيقاف",q2_stop:"هل أنت متأكد من إيقاف البوت الآن؟{0}",q2_stopR:" ملاحظة: بدء التشغيل بعد الإيقاف لا يصفّر الخسائر المتراكمة؛ التصفير فقط بإعادة الضبط المؤكدة.",q2_open:"تأكيد أخير: تُغلق الصفقة بسعر السوق الآن ثم يتوقف البوت.{0}",q2_close:"تأكيد أخير: تُغلق الصفقة بسعر السوق الآن. لا يتوقف البوت ولا تُحذف الأوامر ولا تُصفَّر الخسائر.",q_resetB2:"يُصفَّر التسلسل (Seq {1}) والخسارة التراكمية {2} $ وتعود المخاطرة إلى ${0}.",q2_reset:"تأكيد أخير: لا يمكن التراجع. هذا ليس إيقافاً ولا إغلاقاً للصفقة.",
+ordsT:"الأوامر المعلقة الفعلية",oB:"Buy Stop",oS:"Sell Stop",delB:"حذف الأمر",
+q_del:"حذف الأمر المعلق",
+q_delB:"سيتم حذف {0} عند {1} (تذكرة #{2}) من MT5 فوراً، ويكمل البوت بالأمر الآخر فقط.",
+q_delB1:"سيتم حذف {0} عند {1} (تذكرة #{2}) من MT5 فوراً، وهو آخر أمر معلق فيتوقف البوت عن وضع أوامر جديدة.",
+q_delY:"حذف",
+c_start:"تشغيل البوت",c_stop:"إيقاف البوت",c_close:"إغلاق الصفقة",c_apply:"تطبيق الأوامر",c_settings:"حفظ الإعدادات",c_reset:"إعادة ضبط المخاطرة",c_delete:"حذف أمر معلق",
+cmdW:"أمر",rcvT:"استعادة مطلوبة (REQUIRED_RECOVERY): لا أوامر جديدة",rcvB:"البوت لا يرسل أوامر جديدة ولا يحذف شيئاً حتى تُحسم الحالة. أرسل /cancel لإزالة الأوامر المعلّقة أو /stop، أو حدّد المستويات ثم START. الدين المسجّل محفوظ.",csT:"حالة الأوامر",cs_queued:"قيد الانتظار: لم يستلمه البوت بعد",cs_delivered:"استلمه البوت · بانتظار نتيجة التنفيذ",cs_expired:"انتهت المهلة ولم يُنفَّذ (البوت غير متصل). أعد الإرسال",cs_rejected:"رُفض: القائمة ممتلئة ولم يُقبل",cs_done:"نُفِّذ",cs_wait:"مقبول · بانتظار السعر",cs_fail:"رفضه البوت / فشل",cs_unk:"استلمه البوت لكن تعذّر تأكيد النتيجة",cmdSent:"بانتظار تأكيد البوت…",cmdLost:"لم يصل تأكيد من البوت",q_full:"قائمة الأوامر ممتلئة: لم يُقبل الأمر. حاول بعد قليل",cmdExp:"انتهت صلاحية الأمر ولم يُنفَّذ (البوت غير متصل). أعد إرساله",cmdOk:"تم التنفيذ",cmdFail:"فشل",fillM:"تعبئة أسعار صالحة من السوق",fillE:"لا يوجد سعر حي من البوت",mkB:"Buy Stop {0} تحت السعر الحالي (Ask {1}): يُقبل ويبقى بالانتظار، ويُوضع تلقائياً عندما يهبط Ask إلى {2} أو أقل",mkS:"Sell Stop {0} فوق السعر الحالي (Bid {1}): يُقبل ويبقى بالانتظار، ويُوضع تلقائياً عندما يصعد Bid إلى {2} أو أعلى",waitT:"بانتظار السعر",oldEA:"الـ EA المحمّل على MT5 نسخة قديمة: يرفض المستويات ولا يدعم الانتظار الذكي. ترجم Yetimmm.mq5 (v2.20) بـ F7 وأعد تحميله على الشارت.",cmdWait:"مقبول · بانتظار السعر",cmdDone:"فُعِّل ",cmdSup:"استُبدل",cmdCan:"أُلغي",
+wB:"Ask الآن {0} · يُفعَّل عندما يهبط إلى {1} أو أقل · المتبقي {2}",wS:"Bid الآن {0} · يُفعَّل عندما يصعد إلى {1} أو أعلى · المتبقي {2}",
+fillA:"ضُبطت مستويات حسب السعر الحالي",ea_wb:"Buy Stop {0} بالانتظار: Ask الآن {1}، يُوضع تلقائياً عندما يهبط إلى {2} أو أقل",ea_ws:"Sell Stop {0} بالانتظار: Bid الآن {1}، يُوضع تلقائياً عندما يصعد إلى {2} أو أعلى",ea_buy:"Buy Stop {0} مرفوض: يجب أن يكون أعلى من Ask ({1})",ea_sell:"Sell Stop {0} مرفوض: يجب أن يكون أدنى من Bid ({1})",ea_conn:"لا يوجد اتصال بين MT5 وخادم الوسيط",ea_at:"زر AutoTrading في MT5 متوقف",
+c_cancel:"إلغاء كل الأوامر المعلقة",c_modify:"تعديل أمر معلق",c_place:"إضافة أمر معلق",
+editB:"تعديل السعر",addB:"إضافة أمر {0}",canB:"إلغاء كل الأوامر",okB:"تأكيد",newPx:"السعر الجديد لـ {0}",
+q_can:"إلغاء كل الأوامر؟",q_canB:"ستُحذف كل الأوامر المعلقة. الصفقة المفتوحة (إن وجدت) تبقى.",
+acT:"الحساب",aBal:"الرصيد",aEq:"الإكوتي",aFl:"الربح العائم",aMg:"الهامش",aFm:"الهامش الحر",aLev:"الرافعة",
+sxT:"إحصائيات مفصلة",sPf:"معامل الربح",sAw:"متوسط الربح",sAl:"متوسط الخسارة",sMw:"أكبر ربح",sMl:"أكبر خسارة",sBs:"شراء / بيع",sVol:"الحجم الكلي",sCm:"العمولة + السواب",sSt:"السلسلة الحالية",sHr:"أعلى مخاطرة",
+stM:"البوت متوقف",stMB:"تم تجميد السعر عند {0} · لا أوامر ولا صفقات ولا تحديثات حتى تعيد التشغيل",rst:"إعادة التشغيل",vw:"عرض فقط",frzL:"السعر مجمّد",q_delW:"سيتم حذف مستوى {0} عند {1} (ما زال بانتظار السعر ولم يُوضع في MT5) ولن يُنشأ لاحقاً."
 };
-let LG=0;                                             // 0 = Arabic, 1 = English
 Object.assign(D,{
-op_ing:["جارٍ الحذف…","Deleting…"],
-op_busy:["العملية قيد التنفيذ، انتظر نتيجتها","An operation is already in progress, wait for its result"],
-op_delOk:["تم حذف الأمر من MT5 وتأكد اختفاؤه","Order deleted from MT5 and verified"],
-op_delFail:["لم يُحذف الأمر: {0}","The order was not deleted: {0}"],
-op_filled:["لم يُحذف الأمر لأنه نُفّذ فعلاً وصار صفقة","Not deleted: the order was already filled and is now a trade"],
-op_unver:["لم يتأكد الحذف خلال المهلة. الأمر معروض كما يظهر في MT5 الآن","Delete not confirmed in time. The order is shown as MT5 reports it now"],
-op_unverG:["تعذّر تأكيد نتيجة الأمر حتى الآن. قد يكون نُفِّذ: راجع «حالة الأوامر» وMT5 قبل أي إعادة إرسال","The result of the command could not be confirmed yet. It may have been executed: check «Command status» and MT5 before sending again"],op_wait:["الأمر أُرسل وما زال قيد التأكيد. لا تُعد الإرسال: ستظهر النتيجة هنا تلقائياً","The command was sent and is still being confirmed. Do not send it again: the result will appear here automatically"],cs_hand:["أُرسل للبوت · بانتظار التنفيذ","Sent to the bot · awaiting execution"],
-op_wait:["بانتظار تنفيذ MT5…","Waiting for MT5…"],
-out_ing:["جارٍ الخروج…","Signing out…"],
-out_ic:["ستُنهى الجلسة على هذا الجهاز ويُطلب إبطالها من الخادم.","This device's session will be ended and revoked on the server."],
-lg_busy:["جارٍ التحقق…","Verifying…"]
+op_ing:"جارٍ الحذف…",
+op_busy:"العملية قيد التنفيذ، انتظر نتيجتها",
+op_delOk:"تم حذف الأمر من MT5 وتأكد اختفاؤه",
+op_delFail:"لم يُحذف الأمر: {0}",
+op_filled:"لم يُحذف الأمر لأنه نُفّذ فعلاً وصار صفقة",
+op_unver:"لم يتأكد الحذف خلال المهلة. الأمر معروض كما يظهر في MT5 الآن",
+op_unverG:"تعذّر تأكيد نتيجة الأمر حتى الآن. قد يكون نُفِّذ: راجع «حالة الأوامر» وMT5 قبل أي إعادة إرسال",op_wait:"الأمر أُرسل وما زال قيد التأكيد. لا تُعد الإرسال: ستظهر النتيجة هنا تلقائياً",cs_hand:"أُرسل للبوت · بانتظار التنفيذ",
+op_wait:"بانتظار تنفيذ MT5…",
+out_ing:"جارٍ الخروج…",
+out_ic:"ستُنهى الجلسة على هذا الجهاز ويُطلب إبطالها من الخادم.",
+lg_busy:"جارٍ التحقق…"
 });
-const t=(k,...a)=>(D[k]?D[k][LG]:String(k).replace(/^(r|st|sx)_/,"")).replace(/\{(\d)\}/g,(_,i)=>a[i]);
+const t=(k,...a)=>(D[k]?D[k]:String(k).replace(/^(r|st|sx)_/,"")).replace(/\{(\d)\}/g,(_,i)=>a[i]);
 
 /* ═════════════ 3) STATE + helpers ═════════════ */
 
-Object.assign(D,{plc:["جارٍ وضع الأمر في MT5…","Placing the order in MT5…"],pdT:["الأوامر المعلقة","Pending orders"],editBoth:["تعديل الأمرين","Edit both"],delBoth:["حذف الأمرين","Delete both"],q_delBoth:["حذف الأمرين معًا؟","Delete both orders?"],q_delBothB:["سيُحذف Buy Stop و Sell Stop معًا من MT5 في خطوة واحدة. الصفقة المفتوحة (إن وجدت) تبقى.","Buy Stop and Sell Stop will be deleted from MT5 together in one step. An open trade (if any) stays."],mpT:["تعديل الأمرين","Edit both orders"]});
-Object.assign(D,{lg_t:["تسجيل الدخول","Sign in"],lg_s:["ادخل رقم حساب MT5 وكلمة السر للتحكم بالبوت","Enter your MT5 account number and password to control the bot"],lg_acc:["رقم حساب MT5","MT5 account number"],lg_pw:["كلمة السر","Password"],lg_show:["إظهار","Show"],lg_go:["تسجيل الدخول","Sign in"],
-lg_hint:["اكتب رقم حساب MT5 وكلمة السر. البوت لازم يكون شغّال على MT5، وبعد الدخول يبقى حسابك مسجَّلاً تلقائياً.","Enter your MT5 account number and the password. The bot must be running on MT5; after signing in you stay signed in automatically."],
-lg_wait:["جاري الاتصال بالبوت…","Connecting to the bot…"],lg_waitS:["انتظر لحظات","Please wait"],lg_ok:["تم تسجيل الدخول","Signed in"],
-e_login:["رقم الحساب غير صحيح","Invalid account number"],e_pw_short:["كلمة السر غير صحيحة","Wrong password"],
-e_bad_pw:["كلمة السر غير صحيحة","Wrong password"],e_locked:["محاولات كثيرة، حاول بعد دقيقتين","Too many attempts, try again in 2 minutes"],
-e_ea_offline:["الـ EA غير متصل بالجسر حالياً (لا مزامنة منذ أكثر من 30 ث). تأكد أن AutoTrading مفعّل والـ EA على الشارت، ثم أعد المحاولة.","The EA is not connected to the bridge right now (no sync for 30s+). Make sure AutoTrading is ON and the EA is on the chart, then retry."],
-e_pair_closed:["الحساب غير مربوط بعد ونافذة الربط انتهت. أعد تشغيل البوت على MT5 ثم حاول.","This account is not paired yet and the pairing window has closed. Restart the bot on MT5, then try again."],
-e_srv:["تعذّر الاتصال بالخادم","Could not reach the server"],e_not_configured:["الخادم غير مهيّأ: لم تُضبط كلمة السر بعد (wrangler secret put APP_PASSWORD)","Server not configured: no password set yet (wrangler secret put APP_PASSWORD)"],e_too_large:["الطلب كبير جداً","Request too large"],
-e_relogin:["انتهت الجلسة. سجّل الدخول من جديد.","Your session ended. Please sign in again."],e_tg_only:["افتح التطبيق من داخل بوت تلجرام لتسجيل الدخول","Open the app from inside the Telegram bot to sign in"],e_pw_empty:["اكتب كلمة السر","Enter the password"],
-q_out:["تسجيل الخروج","Sign out"],q_outB:["ستخرج من الحساب وتعود لصفحة تسجيل الدخول، ويُعاد تحميل كل شيء من جديد.","You will leave this account and return to the sign-in page; everything reloads from scratch."],q_outY:["خروج","Sign out"],outB:["خروج","Sign out"],
-offT:["الـ EA مطفي","The EA is off"],offB:["يرجى تشغيل Yetimmm على شارت XAUUSD داخل MT5 (وتأكد أن AutoTrading مفعّل). بعد التشغيل ستدخل تلقائياً.","Please start Yetimmm on an XAUUSD chart in MT5 (and make sure AutoTrading is ON). After it starts you will be signed in automatically."],
-st_ea:["البوت (EA)","EA"],st_br:["الجسر (Worker)","Bridge"],st_mt:["منصة MT5","MT5"],st_tr:["التداول","Trading"],
-v_on:["يعمل","Online"],v_off:["متوقف","Offline"],v_con:["متصل","Connected"],v_dis:["غير متصل","Disconnected"],v_unk:["غير معروف","Unknown"],v_en:["مفعّل","Enabled"],v_dsb:["معطّل","Disabled"],
-tr_auto:["زر AutoTrading في MT5 مطفي","AutoTrading is OFF in MT5"],tr_exp:["التداول الآلي غير مسموح لهذا الـ EA (راجع إعدادات الـ EA)","Algo trading is not allowed for this EA (check the EA settings)"],tr_acc:["الحساب لا يسمح بالتداول","Trading is disabled on this account"],tr_exa:["الحساب لا يسمح بالتداول عبر الخبراء (EA)","This account does not allow Expert Advisors"],tr_tm:["السوق مغلق أو الرمز لا يقبل أوامر الآن","Market closed or the symbol is not tradable right now"],
-trOffT:["التداول معطّل في MT5","Trading is disabled in MT5"],
-wfT:["بانتظار السعر","WAITING FOR PRICE"],wfR:["السبب","Reason"],wfR1:["السعر خارج منطقة وضع الأوامر — ستوضع الأوامر تلقائياً عند دخول السعر المنطقة","Price is outside the placement zone — the orders are placed automatically when the market enters it"],wfR2:["بانتظار دخول السوق إلى منطقة وضع الأوامر","Waiting for the market to enter the placement zone"],
-rrHi:["⚠️ نسبة عالية 1:{0} — الهدف TP يبعد {0} ضعف مسافة الوقف ({1}$) · شراء TP {2} · بيع TP {3}","⚠️ High ratio 1:{0} — TP is {0}× the SL distance (${1}) · BUY TP {2} · SELL TP {3}"],
-aVol:["حجم الصفقات المفتوحة","Open volume"],aNp:["الصفقات المفتوحة","Open positions"],aMl:["مستوى الهامش","Margin level"],aSrv:["السيرفر","Server"],aLot:["لوت","lots"]});
+Object.assign(D,{plc:"جارٍ وضع الأمر في MT5…",pdT:"الأوامر المعلقة",editBoth:"تعديل الأمرين",delBoth:"حذف الأمرين",q_delBoth:"حذف الأمرين معًا؟",q_delBothB:"سيُحذف Buy Stop و Sell Stop معًا من MT5 في خطوة واحدة. الصفقة المفتوحة (إن وجدت) تبقى.",mpT:"تعديل الأمرين"});
+Object.assign(D,{lg_t:"تسجيل الدخول",lg_s:"ادخل رقم حساب MT5 وكلمة السر للتحكم بالبوت",lg_acc:"رقم حساب MT5",lg_pw:"كلمة السر",lg_show:"إظهار",lg_go:"تسجيل الدخول",
+lg_hint:"اكتب رقم حساب MT5 وكلمة السر. البوت لازم يكون شغّال على MT5، وبعد الدخول يبقى حسابك مسجَّلاً تلقائياً.",
+lg_wait:"جاري الاتصال بالبوت…",lg_waitS:"انتظر لحظات",lg_ok:"تم تسجيل الدخول",
+e_login:"رقم الحساب غير صحيح",e_pw_short:"كلمة السر غير صحيحة",
+e_bad_pw:"كلمة السر غير صحيحة",e_locked:"محاولات كثيرة، حاول بعد دقيقتين",
+e_ea_offline:"الـ EA غير متصل بالجسر حالياً (لا مزامنة منذ أكثر من 30 ث). تأكد أن AutoTrading مفعّل والـ EA على الشارت، ثم أعد المحاولة.",
+e_pair_closed:"الحساب غير مربوط بعد ونافذة الربط انتهت. أعد تشغيل البوت على MT5 ثم حاول.",
+e_srv:"تعذّر الاتصال بالخادم",e_not_configured:"الخادم غير مهيّأ: لم تُضبط كلمة السر بعد (wrangler secret put APP_PASSWORD)",e_too_large:"الطلب كبير جداً",
+e_relogin:"انتهت الجلسة. سجّل الدخول من جديد.",e_tg_only:"افتح التطبيق من داخل بوت تلجرام لتسجيل الدخول",e_pw_empty:"اكتب كلمة السر",
+q_out:"تسجيل الخروج",q_outB:"ستخرج من الحساب وتعود لصفحة تسجيل الدخول، ويُعاد تحميل كل شيء من جديد.",q_outY:"خروج",outB:"خروج",
+offT:"الـ EA مطفي",offB:"يرجى تشغيل Yetimmm على شارت XAUUSD داخل MT5 (وتأكد أن AutoTrading مفعّل). بعد التشغيل ستدخل تلقائياً.",
+st_ea:"البوت (EA)",st_br:"الجسر (Worker)",st_mt:"منصة MT5",st_tr:"التداول",
+v_on:"يعمل",v_off:"متوقف",v_con:"متصل",v_dis:"غير متصل",v_unk:"غير معروف",v_en:"مفعّل",v_dsb:"معطّل",
+tr_auto:"زر AutoTrading في MT5 مطفي",tr_exp:"التداول الآلي غير مسموح لهذا الـ EA (راجع إعدادات الـ EA)",tr_acc:"الحساب لا يسمح بالتداول",tr_exa:"الحساب لا يسمح بالتداول عبر الخبراء (EA)",tr_tm:"السوق مغلق أو الرمز لا يقبل أوامر الآن",
+trOffT:"التداول معطّل في MT5",
+wfT:"بانتظار السعر",wfR:"السبب",wfR1:"السعر خارج منطقة وضع الأوامر — ستوضع الأوامر تلقائياً عند دخول السعر المنطقة",wfR2:"بانتظار دخول السوق إلى منطقة وضع الأوامر",
+rrHi:"⚠️ نسبة عالية 1:{0} — الهدف TP يبعد {0} ضعف مسافة الوقف ({1}$) · شراء TP {2} · بيع TP {3}",
+aVol:"حجم الصفقات المفتوحة",aNp:"الصفقات المفتوحة",aMl:"مستوى الهامش",aSrv:"السيرفر",aLot:"لوت"});
 const $=i=>document.getElementById(i);
 const ic=n=>`<svg class="ic i3 i-${n}"><use href="#i-${n}"/></svg>`;
 const f=(v,d=2)=>Number(v).toLocaleString("en-US",{minimumFractionDigits:d,maximumFractionDigits:d});
@@ -494,6 +490,7 @@ try{UI=JSON.parse(localStorage.getItem("ytUI"))||{}}catch(e){}
 prev=S.price;const SP=S.price?[S.price]:[];
 const save=()=>{try{localStorage.setItem("ytPro",JSON.stringify(S))}catch(e){}};
 const saveUI=()=>{try{localStorage.setItem("ytUI",JSON.stringify(UI))}catch(e){}};
+if("lg" in UI||"lgManual" in UI){delete UI.lg;delete UI.lgManual;saveUI()}   // fix25: language is fixed to Arabic; a language saved by an older release can never come back
 let tt;const toast=m=>{try{window.YT&&YT.onToast(String(m).startsWith("❌"))}catch(x){}try{const hf=TG.wa&&TG.wa.HapticFeedback;hf&&hf.notificationOccurred(String(m).startsWith("❌")?"error":"success")}catch(x){}const e=$("toast"),bad=m.startsWith("❌"),sp=document.createElement("span");e.innerHTML=ic(bad?"alert":"check");sp.textContent=bad?m.slice(1).trim():m;e.append(sp);e.classList.toggle("bad",bad);e.classList.add("show");clearTimeout(tt);tt=setTimeout(()=>e.classList.remove("show"),2800)};
 const vib=()=>{try{(!navigator.userActivation||navigator.userActivation.hasBeenActive)&&navigator.vibrate&&navigator.vibrate(12);const h=TG.wa&&TG.wa.HapticFeedback;h&&h.impactOccurred("light")}catch(e){}};
 
@@ -682,7 +679,7 @@ function mktNote(b,s){
 }
 const placeErr=(b,s)=>b<=S.price?t("e_buyP"):s>=S.price?t("e_sellP"):"";   // simulation only: the live bot keeps the level and waits for the price
 const TECH=/retcode|\b100[0-4]\d\b|HTTP\s*\d{3}|exception|TypeError|ReferenceError|SyntaxError|\bJSON\b|stack\s*trace|traceback|parse error|internal error|server error|server rejected|\bundefined\b|\bNaN\b/i;   // same rule as the Worker: technical text is never displayed
-function trEA(x){x=String(x==null?"":x);if(LG)return x;if(x.indexOf(" | ")>0&&/waits for the price|^(Activated|Superseded|Cancelled):/.test(x))return x.split(" | ").map(trEA).join("\n");let m;
+function trEA(x){x=String(x==null?"":x);if(x.indexOf(" | ")>0&&/waits for the price|^(Activated|Superseded|Cancelled):/.test(x))return x.split(" | ").map(trEA).join("\n");let m;
   if(m=x.match(/^Activated: (Buy|Sell) Stop #(\d+) @ ([\d.]+) at ([\d:]+)(?: \((\d+) ms)?/i))return "فُعِّل: "+m[1]+" Stop #"+m[2]+" عند "+m[3]+" · "+m[4]+(m[5]?" · "+m[5]+"ms بعد وصول السعر":"");
   if(m=x.match(/^Superseded: (Buy|Sell) Stop ([\d.]+)/i))return "استُبدل: "+m[1]+" Stop "+m[2]+" بمستوى أحدث";
   if(m=x.match(/^Cancelled: (Buy|Sell) Stop ([\d.]+)/i))return "أُلغي: "+m[1]+" Stop "+m[2]+" (توقف البوت أو أُلغيت الأوامر)";
@@ -844,11 +841,11 @@ function linkRows(){
 /* ═════ v4.13 · ONE order = ONE card (layer) · one delete · a real bar per order ═════
    An "order" is the Buy Stop + Sell Stop pair of one cycle. Everything shown here comes from what the EA reports
    (mode / orders / waits / pend / price) — never from the app's own input fields. Several layers stack, each with its own number. */
-Object.assign(D,{lyT:["الأوردر #{0}","Order #{0}"],lyQ:["مجدول · الدورة القادمة","Queued · next cycle"],lyN:["طبقة {0} من {1}","Layer {0} of {1}"],
-  lyDel:["حذف الأوردر","Delete order"],lyDelQ:["حذف الأوردر؟","Delete this order?"],lyDelB:["سيتم حذف Buy Stop و Sell Stop معًا من MT5 بأمر واحد. الصفقة المفتوحة (إن وجدت) تبقى.","Buy Stop and Sell Stop will be deleted from MT5 together with one command. An open trade (if any) stays."],
-  lyDelQB:["سيُحذف هذا الأوردر المجدول بالكامل (Buy Stop و Sell Stop) ولن يُوضع لاحقاً.","This queued order (Buy Stop + Sell Stop) will be deleted and never placed."],
-  lyLive:["نشط في MT5","Live in MT5"],lyWait:["بانتظار السعر","Waiting for price"],lyZone:["بانتظار دخول السعر المنطقة","Waiting for price to enter the zone"],lyQd:["مجدول","Queued"],
-  lyOut:["السعر خارج النطاق","Price is outside the range"],lyPx:["السعر","Price"]});
+Object.assign(D,{lyT:"الأوردر #{0}",lyQ:"مجدول · الدورة القادمة",lyN:"طبقة {0} من {1}",
+  lyDel:"حذف الأوردر",lyDelQ:"حذف الأوردر؟",lyDelB:"سيتم حذف Buy Stop و Sell Stop معًا من MT5 بأمر واحد. الصفقة المفتوحة (إن وجدت) تبقى.",
+  lyDelQB:"سيُحذف هذا الأوردر المجدول بالكامل (Buy Stop و Sell Stop) ولن يُوضع لاحقاً.",
+  lyLive:"نشط في MT5",lyWait:"بانتظار السعر",lyZone:"بانتظار دخول السعر المنطقة",lyQd:"مجدول",
+  lyOut:"السعر خارج النطاق",lyPx:"السعر"});
 function lyBar(buy,sell){
   const px=S.price;if(!(buy>sell&&px>0))return"";
   const raw=(px-sell)/(buy-sell)*100,pc=Math.max(0,Math.min(100,raw)),out=raw<0||raw>100;
@@ -879,7 +876,7 @@ function layersHtml(dis){
     const live=y.kind==="live",bz=live?(Ops.m.has("cancel")||Ops.m.has("apply")):Ops.m.has("delpend");
     const rows=live?y.sides.map(x=>{const b=x.sd==="BUY",o=x.o,w=x.w;
       const sub=o?`#${o.ticket} · ${f(o.lot)} ${t("lots")} · SL ${f(o.sl)} · TP ${f(o.tp)}`:w?(w.placing?t("plc"):t(b?"wB":"wS",f(w.now),f(w.trig),f(w.dist))):t("lyZone");
-      return `<div class="hi${bz?" busy":""}"><div class="hl2"><i class="hs ${o?(b?"up":"dn"):"gd"}">${ic(o?(b?"up":"dn"):"clock")}</i><div><b>${t(b?"oB":"oS")} · <span class="num">${f(x.lv)}</span></b><small class="num">${sub}</small></div></div><span class="mu" style="font-size:11px">${o?t("lyLive"):t("lyWait")}${window.YTN?YTN.obell(o?"t"+o.ticket:"w"+x.sd,dis):""}</span></div>`}).join("")
+      return `<div class="hi${bz?" busy":""}"><div class="hl2"><i class="hs ${o?(b?"up":"dn"):"gd"}">${ic(o?(b?"up":"dn"):"clock")}</i><div><b>${t(b?"oB":"oS")} · <span class="num">${f(x.lv)}</span></b><small class="num">${sub}</small></div></div><span class="mu" style="font-size:11px">${o?t("lyLive"):t("lyWait")}</span></div>`}).join("")
       :[["BUY",y.buy],["SELL",y.sell]].map(([sd,lv])=>{const b=sd==="BUY";return `<div class="hi"><div class="hl2"><i class="hs gd">${ic("clock")}</i><div><b>${t(b?"oB":"oS")} · <span class="num">${f(lv)}</span></b><small>${t("lyQd")}</small></div></div></div>`}).join("");
     const both=live&&y.buy>0&&y.sell>0,one=live&&!both&&y.sides.length===1&&S.run&&!S.pos;
     const btns=`<div class="btns" style="margin-top:10px">${both?`<button class="btn" onclick="modPair()"${dis||(bz?" disabled":"")}>${ic("edit")}${t("editBoth")}</button>`:""}${one?`<button class="btn go" onclick="addOrder('${y.sides[0].sd==="BUY"?"SELL":"BUY"}')"${dis}>${ic("bolt")}${t("addB",t(y.sides[0].sd==="BUY"?"oS":"oB"))}</button>`:""}<button class="btn dg${both||one?"":" w"}" onclick="delLayer(${i})"${dis||(bz?" disabled":"")}>${ic("trash")}${t("lyDel")}</button></div>`;
@@ -955,7 +952,7 @@ function fillInputs(force){
   for(const id in m){const v=m[id];if(v==null||isNaN(v))continue;const s=(v>0||id==="in_lot")?String(v):"";if($(id).value!==s)$(id).value=s}
   prevCalc();
 }
-const ago=s=>{s=Math.max(0,Math.round(s));return s<60?s+(LG?"s":"ث"):Math.floor(s/60)+(LG?"m":"د")};
+const ago=s=>{s=Math.max(0,Math.round(s));return s<60?s+"ث":Math.floor(s/60)+"د"};
 const eaAge=()=>S.eaAge==null?null:S.eaAge+(Date.now()-Bridge.at)/1000;
 /* sim | wait | srv | auth | off | ok */
 function link(){
@@ -1057,8 +1054,8 @@ function newCycleUI(){
   ask(t("cyc_q"),t("cyc_b",n?t("cyc_o",n):""),t("cyc_y"),()=>run("newcycle"))}
 function resetUI(){ask2(t("q_reset"),t("q_resetB2",f(S.risk),S.seq||0,f(S.acc||0)),t("q_resetY"),t("q2_reset"),t("q_resetY"),()=>run("reset",{confirm:1}))}
 
-/* shell: tabs, theme, language */
-$("nav").onclick=e=>{const b=e.target.closest("button"),i=b&&b.dataset.k;if(i===undefined)return;vib();tab=+i;document.querySelectorAll(".tab").forEach((x,j)=>x.classList.toggle("on",j===tab));[...$("nav").children].forEach((c,j)=>c.classList.toggle("on",j===tab));if(tab===1)renderHist();if(tab===2&&window.YTN)YTN.open();window.scrollTo(0,0)};
+/* shell: tabs, theme */
+$("nav").onclick=e=>{const b=e.target.closest("button"),i=b&&b.dataset.k;if(i===undefined)return;vib();tab=+i;document.querySelectorAll(".tab").forEach((x,j)=>x.classList.toggle("on",j===tab));[...$("nav").children].forEach((c,j)=>c.classList.toggle("on",j===tab));if(tab===1)renderHist();window.scrollTo(0,0)};
 function setMode(){
   const off=live()&&link()!=="ok";$("mode").classList.toggle("off",off);
   $("lvT").textContent=live()?(off?"OFFLINE":S.frz?"STOPPED":"LIVE"):"SIM";$("modeT").textContent=t(off?"offl":live()?"live":"demo");
@@ -1067,15 +1064,11 @@ function setTheme(v){
   v=v==="light"?"light":"dark";document.documentElement.dataset.theme=v;
   $("tc").content=v==="light"?"#f4f1e8":"#070b0a";UI.th=v;saveUI();
 }
-function setLang(v){
-  LG=v?1:0;UI.lg=LG;saveUI();
-  document.documentElement.lang=LG?"en":"ar";document.documentElement.dir=LG?"ltr":"rtl";
+function applyTexts(){
   document.querySelectorAll("[data-t]").forEach(e=>e.textContent=t(e.dataset.t));
-  $("lgB").textContent=LG?"ع":"EN";
   setMode();prevCalc();render();
 }
 $("thB").onclick=()=>{vib();setTheme(document.documentElement.dataset.theme==="light"?"dark":"light")};
-$("lgB").onclick=()=>{vib();UI.lgManual=1;setLang(LG?0:1)};
 
 /* ═════════════ 10) PUBLIC API — for bots, Telegram Mini App, iframes ═════════════ */
 window.YetimmmAPI={
@@ -1088,7 +1081,6 @@ window.YetimmmAPI={
   patch(o){Object.assign(S,o);render()},
   simProfile(n){if(SIM_PROFILES[n]){SIMP=n;render();return true}return false},
   profiles:()=>Object.keys(SIM_PROFILES),
-  setLang:v=>setLang(v==="en"||v===1),
   setTheme
 };
 
@@ -1144,9 +1136,9 @@ $("lgGo").onclick=()=>Login.go();
 $("lgP").addEventListener("keydown",e=>{if(e.key==="Enter"){e.preventDefault();Login.go()}});
 $("lgA").addEventListener("keydown",e=>{if(e.key==="Enter"){e.preventDefault();$("lgP").focus()}});
 $("lgE").onclick=()=>{const p=$("lgP");p.type=p.type==="password"?"text":"password";$("lgE").textContent=t(p.type==="password"?"lg_show":"lg_hide")};
-D.lg_hide=["إخفاء","Hide"];
+D.lg_hide="إخفاء";
 /* v4.16 · login polish (additive: the sign-in logic above is untouched) */
-Object.assign(D,{lg_caps:["⇪ زر Caps Lock مفعّل","⇪ Caps Lock is on"],lg_sec:["اتصال مشفّر — لا تُحفظ كلمة السر على هذا الجهاز","Encrypted connection — the password is never stored on this device"]});
+Object.assign(D,{lg_caps:"⇪ زر Caps Lock مفعّل",lg_sec:"اتصال مشفّر — لا تُحفظ كلمة السر على هذا الجهاز"});
 (()=>{const A=$("lgA"),P=$("lgP"),E=$("lgE"),cap=$("lgCap"),sec=$("lgSec"),er=$("lgEr"),go=$("lgGo");
   const bad=(el,on)=>el.setAttribute("aria-invalid",on?"true":"false");
   const clear=()=>{bad(A,false);bad(P,false);if(!go.disabled&&!er.classList.contains("okm"))er.textContent=""};
@@ -1161,22 +1153,22 @@ Object.assign(D,{lg_caps:["⇪ زر Caps Lock مفعّل","⇪ Caps Lock is on"]
   Login.show=function(m){show.call(this,m);bad(A,false);bad(P,false);cap.hidden=true;E.setAttribute("aria-pressed","false");sec.hidden=!(location.protocol==="https:"||location.hostname==="localhost");
     try{if(matchMedia("(pointer:fine)").matches&&!$("lg").className)(A.value?P:A).focus()}catch(x){}};
 })();
-D.out_ok=["تم تسجيل الخروج بنجاح.","You have been signed out."];
-D.out_warn=["تم الخروج من هذا الجهاز، لكن تعذّر تأكيد إنهاء الجلسة على الخادم. تنتهي تلقائياً بانتهاء مدتها.","Signed out on this device, but the server could not confirm ending the session. It will expire on its own."];
-Object.assign(D,{rkReq:["المخاطرة المطلوبة","Requested risk"],rkMin:["أقل مخاطرة ينفّذها الوسيط","Broker minimum risk"],rkEff:["المخاطرة الفعلية","Effective risk"],rkPol:["السياسة","Policy"],
-rk_BELOW_MIN:["المخاطرة المطلوبة {0} أقل من أقل مخاطرة يمكن للوسيط تنفيذها ({1}، أقل لوت {2}). البوت ينتظر حجماً صالحاً — ارفع المخاطرة أو وسّع المستويين أو فعّل CLAMP_TO_MIN في الـ EA.","Requested risk {0} is below the smallest risk the broker can execute ({1}, min lot {2}). The bot WAITS for a valid volume — raise the risk, widen the levels or enable CLAMP_TO_MIN in the EA."],
-rk_ABOVE_MAX:["الحجم المطلوب يتجاوز الحد الأقصى للوسيط — البوت ينتظر","The required volume exceeds the broker maximum — the bot waits"],rk_ABOVE_LIMIT:["حد الحجم الإجمالي لدى الوسيط (Volume Limit) سيُتجاوز — البوت ينتظر","The broker's Volume Limit would be exceeded — the bot waits"],
-rk_CLAMPED:["استُخدم أقل لوت للوسيط: المخاطرة المطلوبة {0} ← الفعلية {1}","Minimum lot used: requested {0} → effective {1}"],
-w_WAITING_VOLUME:["بانتظار حجم صالح","Waiting for a valid volume"],w_WAITING_MARGIN:["بانتظار هامش كافٍ","Waiting for enough margin"],w_WAITING_SPREAD:["بانتظار انخفاض السبريد","Waiting for the spread to narrow"],w_WAITING_MARKET:["السوق مغلق — بانتظار الافتتاح","Market closed — waiting for the open"],
-w_WAITING_SEQCAP:["بانتظار — بلغت الخسائر المتتالية السقف","Paused — consecutive-loss cap reached"],w_WAITING_RISKCAP:["بانتظار — المخاطرة التالية فوق سقف الرصيد","Paused — next risk is above the balance cap"],w_WAITING_ACCLOSSCAP:["بانتظار — الخسارة التراكمية ستتجاوز السقف","Paused — accumulated loss would exceed the cap"],w_WAITING_MARGINLVL:["بانتظار — مستوى الهامش أقل من الحد الأدنى","Paused — margin level below the minimum"],w_WAITING_DAYLOSS:["بانتظار — بلغت الخسارة اليومية الحد المسموح","Paused — daily loss limit reached"],w_WAITING_NEXTDAY:["اكتملت دورة اليوم — الدورة التالية غدًا","Today's cycle is complete — next cycle tomorrow"],w_WAITING_BROKER:["بانتظار الوسيط","Waiting for the broker"],w_WAITING_PRICE:["بانتظار السعر","Waiting for the price"],w_WAITING_REENTRY:["بانتظار إعادة الدخول","Waiting to re-enter"],
-e_pair:["لا يمكن وضع Buy Stop و Sell Stop معاً بهذا العرض. أقل عرض الآن = {0}","A Buy Stop and a Sell Stop cannot exist together at this width. Minimum width now = {0}"],
-pvEA:["يحسب الـ EA اللوت والمخاطرة الفعلية بعد التطبيق","The EA calculates the lot and effective risk after Apply"]});
-Object.assign(D,{vf_t:["التحقق من الاتصال","Connection check"],vf_s:["فحص سريع قبل الدخول التلقائي","Quick check before automatic sign-in"],
-vf_a:["الحساب","Account"],vf_tg:["تلجرام","Telegram"],vf_b:["البوت","Bot"],vf_se:["الجلسة","Session"],vf_go:["تحقق اتصال","Check connection"],vf_alt:["تسجيل الدخول بحساب آخر","Sign in with another account"],
-vf_run:["جارٍ الفحص…","Checking…"],vf_okM:["كل شيء سليم — جارٍ الدخول","All good — signing you in"],vf_wait:["البوت مطفي. سيتم الدخول تلقائياً عند تشغيله.","The bot is off. You will be signed in automatically when it starts."],
-e_pw_changed:["تم تغيير كلمة السر. سجّل الدخول من جديد.","The password was changed. Please sign in again."],e_expired:["انتهت صلاحية الجلسة. سجّل الدخول من جديد.","Your session expired. Please sign in again."],
-e_acct:["تغيّر حساب أو سيرفر MT5. سجّل الدخول من جديد.","The MT5 account or server changed. Please sign in again."],e_tgchg:["حساب تلجرام غير مسجَّل لهذا الحساب. سجّل الدخول من جديد.","This Telegram account is not registered for this account. Please sign in again."],
-e_lockT:["محاولات كثيرة، حاول بعد {0}","Too many attempts, try again in {0}"],e_left:["كلمة السر غير صحيحة (باقي {0} محاولات)","Wrong password ({0} attempts left)"]});
+D.out_ok="تم تسجيل الخروج بنجاح.";
+D.out_warn="تم الخروج من هذا الجهاز، لكن تعذّر تأكيد إنهاء الجلسة على الخادم. تنتهي تلقائياً بانتهاء مدتها.";
+Object.assign(D,{rkReq:"المخاطرة المطلوبة",rkMin:"أقل مخاطرة ينفّذها الوسيط",rkEff:"المخاطرة الفعلية",rkPol:"السياسة",
+rk_BELOW_MIN:"المخاطرة المطلوبة {0} أقل من أقل مخاطرة يمكن للوسيط تنفيذها ({1}، أقل لوت {2}). البوت ينتظر حجماً صالحاً — ارفع المخاطرة أو وسّع المستويين أو فعّل CLAMP_TO_MIN في الـ EA.",
+rk_ABOVE_MAX:"الحجم المطلوب يتجاوز الحد الأقصى للوسيط — البوت ينتظر",rk_ABOVE_LIMIT:"حد الحجم الإجمالي لدى الوسيط (Volume Limit) سيُتجاوز — البوت ينتظر",
+rk_CLAMPED:"استُخدم أقل لوت للوسيط: المخاطرة المطلوبة {0} ← الفعلية {1}",
+w_WAITING_VOLUME:"بانتظار حجم صالح",w_WAITING_MARGIN:"بانتظار هامش كافٍ",w_WAITING_SPREAD:"بانتظار انخفاض السبريد",w_WAITING_MARKET:"السوق مغلق — بانتظار الافتتاح",
+w_WAITING_SEQCAP:"بانتظار — بلغت الخسائر المتتالية السقف",w_WAITING_RISKCAP:"بانتظار — المخاطرة التالية فوق سقف الرصيد",w_WAITING_ACCLOSSCAP:"بانتظار — الخسارة التراكمية ستتجاوز السقف",w_WAITING_MARGINLVL:"بانتظار — مستوى الهامش أقل من الحد الأدنى",w_WAITING_DAYLOSS:"بانتظار — بلغت الخسارة اليومية الحد المسموح",w_WAITING_NEXTDAY:"اكتملت دورة اليوم — الدورة التالية غدًا",w_WAITING_BROKER:"بانتظار الوسيط",w_WAITING_PRICE:"بانتظار السعر",w_WAITING_REENTRY:"بانتظار إعادة الدخول",
+e_pair:"لا يمكن وضع Buy Stop و Sell Stop معاً بهذا العرض. أقل عرض الآن = {0}",
+pvEA:"يحسب الـ EA اللوت والمخاطرة الفعلية بعد التطبيق"});
+Object.assign(D,{vf_t:"التحقق من الاتصال",vf_s:"فحص سريع قبل الدخول التلقائي",
+vf_a:"الحساب",vf_tg:"تلجرام",vf_b:"البوت",vf_se:"الجلسة",vf_go:"تحقق اتصال",vf_alt:"تسجيل الدخول بحساب آخر",
+vf_run:"جارٍ الفحص…",vf_okM:"كل شيء سليم — جارٍ الدخول",vf_wait:"البوت مطفي. سيتم الدخول تلقائياً عند تشغيله.",
+e_pw_changed:"تم تغيير كلمة السر. سجّل الدخول من جديد.",e_expired:"انتهت صلاحية الجلسة. سجّل الدخول من جديد.",
+e_acct:"تغيّر حساب أو سيرفر MT5. سجّل الدخول من جديد.",e_tgchg:"حساب تلجرام غير مسجَّل لهذا الحساب. سجّل الدخول من جديد.",
+e_lockT:"محاولات كثيرة، حاول بعد {0}",e_left:"كلمة السر غير صحيحة (باقي {0} محاولات)"});
 
 
 
@@ -1215,39 +1207,37 @@ $("vfAlt").onclick=()=>Login.out(true);
 window.addEventListener("load",()=>TG.init());
 setTheme(UI.th||(matchMedia("(prefers-color-scheme: light)").matches?"light":"dark"));
 Object.assign(D,{
-lotL:["حجم اللوت (يدوي) — الحقل الذي تتحكم به أنت","Lot size (manual) — the field YOU control"],
+lotL:"حجم اللوت (يدوي) — الحقل الذي تتحكم به أنت",
 
-lotMode:["اللوت اليدوي","Manual lot"],
-e_lotReq:["أدخل حجم اللوت (أكبر من صفر)","Enter the lot size (greater than zero)"],
-e_lotStep:["اللوت لا يطابق خطوة الوسيط ({0})","The lot does not fit the broker lot step ({0})"],
+lotMode:"اللوت اليدوي",
+e_lotReq:"أدخل حجم اللوت (أكبر من صفر)",
+e_lotStep:"اللوت لا يطابق خطوة الوسيط ({0})",
 
 
-t_sl:["وقف الخسارة {0}$ · اللوت ثابت {1}","Stop loss {0}$ · lot unchanged {1}"],
-lr_wait:["بانتظار مواصفات الوسيط من الـ EA لحساب المخاطرة بدقة","Waiting for the broker specification from the EA to calculate the exact risk"],
-lr_nolot:["أدخل حجم اللوت: لا يوجد لوت تلقائي","Enter the lot size: there is no automatic lot"],
-lr_loss:["الخسارة عند وقف الخسارة (SL)","Loss if the SL is hit"],
-lr_lossA:["الخسارة عند SL (لوت تلقائي)","Loss at SL (auto lot)"],
-lr_tp:["ربح الهدف TP (1:{0})","Profit at TP (1:{0})"],
-lr_comm:["العمولة (ذهاب وإياب)","Commission (round trip)"],
-lr_tot:["إجمالي الخسارة مع العمولة","Total loss incl. commission"],
-lr_net:["صافي ربح TP بعد العمولة","Net profit at TP after commission"],
-lr_pct:["نسبة من الرصيد","Share of the balance"],
-lr_mg:["الهامش المطلوب","Margin required"],
-lr_fm:["الهامش الحر","Free margin"],
-lr_near:["أقرب لوت صالح","Nearest valid lot"],
-lr_max:["أكبر لوت مسموح {0}","Largest allowed lot {0}"],
-lr_capLot:["اللوت يتجاوز سقف Max Lot في الـ EA ({0})","The lot exceeds the EA Max Lot cap ({0})"],
-lr_w_capPct:["المخاطرة تتجاوز سقف {0}% من الرصيد ({1}) — لن تُرسل أوامر حتى تخفض اللوت","The risk exceeds the {0}% of balance cap ({1}) — no orders are sent until you lower the lot"],
-lr_w_capUsd:["المخاطرة تتجاوز سقف الصفقة ({0}) — لن تُرسل أوامر حتى تخفض اللوت","The risk exceeds the per-trade cap ({0}) — no orders are sent until you lower the lot"],
-lr_w_capDay:["خسارة اليوم ({1}) + هذه المخاطرة تتجاوز حد اليوم ({0}) — الأوامر تنتظر اليوم التالي","Today's loss ({1}) + this risk exceeds the daily limit ({0}) — orders wait for the next day"],
-lr_w_noMargin:["الهامش المطلوب ({0}) أكبر من الهامش الحر ({1}) — الأوامر تنتظر","Required margin ({0}) is above the free margin ({1}) — orders wait"],
-lr_src_ok:["حساب الوسيط مباشرة (OrderCalcProfit) · أرقام اسمية بلا انزلاق سعري أو سواب","Broker figure (OrderCalcProfit) · nominal: no slippage or swap"],
-lr_src_est:["تقدير من مواصفات الرمز (Tick × قيمة Tick) — أعد ترجمة الـ EA (F7) للحصول على حساب الوسيط الدقيق","Estimate from the symbol spec (tick × tick value) — recompile the EA (F7) for the exact broker figure"],
-lr_src_sim:["محاكاة — ملف الوسيط: {0}","Simulation — broker profile: {0}"]});
+t_sl:"وقف الخسارة {0}$ · اللوت ثابت {1}",
+lr_wait:"بانتظار مواصفات الوسيط من الـ EA لحساب المخاطرة بدقة",
+lr_nolot:"أدخل حجم اللوت: لا يوجد لوت تلقائي",
+lr_loss:"الخسارة عند وقف الخسارة (SL)",
+lr_lossA:"الخسارة عند SL (لوت تلقائي)",
+lr_tp:"ربح الهدف TP (1:{0})",
+lr_comm:"العمولة (ذهاب وإياب)",
+lr_tot:"إجمالي الخسارة مع العمولة",
+lr_net:"صافي ربح TP بعد العمولة",
+lr_pct:"نسبة من الرصيد",
+lr_mg:"الهامش المطلوب",
+lr_fm:"الهامش الحر",
+lr_near:"أقرب لوت صالح",
+lr_max:"أكبر لوت مسموح {0}",
+lr_capLot:"اللوت يتجاوز سقف Max Lot في الـ EA ({0})",
+lr_w_capPct:"المخاطرة تتجاوز سقف {0}% من الرصيد ({1}) — لن تُرسل أوامر حتى تخفض اللوت",
+lr_w_capUsd:"المخاطرة تتجاوز سقف الصفقة ({0}) — لن تُرسل أوامر حتى تخفض اللوت",
+lr_w_capDay:"خسارة اليوم ({1}) + هذه المخاطرة تتجاوز حد اليوم ({0}) — الأوامر تنتظر اليوم التالي",
+lr_w_noMargin:"الهامش المطلوب ({0}) أكبر من الهامش الحر ({1}) — الأوامر تنتظر",
+lr_src_ok:"حساب الوسيط مباشرة (OrderCalcProfit) · أرقام اسمية بلا انزلاق سعري أو سواب",
+lr_src_est:"تقدير من مواصفات الرمز (Tick × قيمة Tick) — أعد ترجمة الـ EA (F7) للحصول على حساب الوسيط الدقيق",
+lr_src_sim:"محاكاة — ملف الوسيط: {0}"});
 $("in_b").value=S.buy;$("in_s").value=S.sell;$("in_lot").value=S.mlot;$("in_rr").value=S.rr;
-const phoneLang=()=>{try{const w=TG.wa||(window.Telegram&&Telegram.WebApp),u=w&&w.initDataUnsafe&&w.initDataUnsafe.user,l=String((u&&u.language_code)||navigator.language||(navigator.languages&&navigator.languages[0])||"ar").toLowerCase();return l.indexOf("ar")===0?0:1}catch(e){return 0}};
-setLang(UI.lgManual?(UI.lg||0):phoneLang());   // phone language (Telegram / system) unless the user switched manually with the language button
-window.addEventListener("load",()=>{if(!UI.lgManual){const v=phoneLang();if(v!==LG)setLang(v)}});   // the Telegram script loads async: re-check once it is there
+applyTexts();   // Arabic is the only language: the texts are applied once at start
 if(live()){if(Login.has())Verify.run();else Login.show(Login.msg());setInterval(()=>{if(!document.hidden&&Login.has()&&Verify.ok&&Date.now()>=Bridge.nextAt)Bridge.pull()},CONFIG.api.pollMs);setInterval(()=>{setMode();renderLink()},1000);
   /* v4.31.1: recovery triggers - the phone is back online / the app is visible again / the page was restored from the back-forward cache: retry NOW and re-run the entry check if it had stalled */
   const wake=()=>{if(document.hidden||!Login.has())return;if(Verify.ok)Bridge.kick();else if(!Verify.busy){Verify.tries=0;Verify.run()}};
@@ -1264,6 +1254,5 @@ if(live()){if(Login.has())Verify.run();else Login.show(Login.msg());setInterval(
 })();
 </script>
 <script src="anim/yt-anim.js"></script>
-<script src="news/yt-news.js"></script>
 </body>
 </html>

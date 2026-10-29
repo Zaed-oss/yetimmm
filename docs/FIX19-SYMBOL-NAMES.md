@@ -12,7 +12,6 @@
 | Logging | `Symbol check | <symbol> | policy | GOLD / NOT gold | score=... base=... path=... desc=... calc=...` on every start. |
 | Symbol change | The saved cycle is keyed by Magic only; a different symbol name with an open cycle raises `SYMCHG` (the ledger is carried over; use Reset / New Cycle if unwanted). |
 | Heartbeat | `bs.bccy` (base currency) and `bs.cls` (`gold` / `other`) are sent next to `pccy`. |
-| Mini App news | `symCur()` maps broker gold names to XAU + USD, so the USD tag still appears. |
 
 ## Verification (required, not done here)
 1. Compile (F7) in MetaEditor - this package was NOT compiled.
